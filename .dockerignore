@@ -1,0 +1,5 @@
+dist/
+.git/
+*.md
+.goreleaser.yaml
+.github/

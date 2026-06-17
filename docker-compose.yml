@@ -1,0 +1,39 @@
+# Одно-нодовый telemux в Docker (telemux + PostgreSQL).
+# Схема накатывается автоматически из migrations/ при первом старте PG.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: telemux
+      POSTGRES_USER: telemux
+      POSTGRES_PASSWORD: telemux
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations/0001_init.sql:/docker-entrypoint-initdb.d/0001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telemux"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  telemux:
+    build:
+      context: .
+      args:
+        VERSION: docker
+    environment:
+      DATABASE_URL: postgres://telemux:telemux@postgres:5432/telemux?sslmode=disable
+      # telemt API ноды. На том же хосте — host.docker.internal (Docker Desktop) или host-gateway.
+      TELEMT_API_URL: http://host.docker.internal:9091
+      TELEMUX_LISTEN: ":8080"
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata: {}
