@@ -6,9 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/AndreyOsipuk/telemux/internal/role"
+	"github.com/AndreyOsipuk/telemux/internal/selfupdate"
 	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/store"
 	"github.com/AndreyOsipuk/telemux/internal/telemt"
@@ -28,6 +30,8 @@ func main() {
 		os.Exit(runRole(os.Args[2:]))
 	case "sync":
 		os.Exit(runSync(os.Args[2:]))
+	case "update":
+		os.Exit(runUpdate(os.Args[2:]))
 	case "-version", "--version", "version":
 		fmt.Printf("telemux %s\n", version)
 	default:
@@ -36,7 +40,40 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  probe --api <url> [--auth h]            — проверить связь с telemt-API")
 		fmt.Fprintln(os.Stderr, "  role  --db <dsn>                        — роль ноды (master/replica) из локального PG")
 		fmt.Fprintln(os.Stderr, "  sync  --db <dsn> --api <url> [--apply]  — синхронизировать локальный telemt (shadow по умолч.)")
+		fmt.Fprintln(os.Stderr, "  update [--owner o --repo r]             — обновить бинарь до последнего релиза (checksum+swap)")
 	}
+}
+
+func runUpdate(args []string) int {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	owner := fs.String("owner", "AndreyOsipuk", "GitHub owner")
+	repo := fs.String("repo", "telemux", "GitHub repo")
+	apiBase := fs.String("api-base", "", "база GitHub API (для зеркала); пусто = api.github.com")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "не определить путь бинаря: %v\n", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	from, to, err := selfupdate.Update(ctx, selfupdate.Options{
+		Owner: *owner, Repo: *repo, CurrentVersion: version,
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, BinaryPath: exe, APIBase: *apiBase,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "обновление: %v\n", err)
+		return 1
+	}
+	if from == to {
+		fmt.Printf("уже последняя версия (%s)\n", to)
+		return 0
+	}
+	fmt.Printf("обновлено %s → %s. Перезапустите сервис: systemctl restart telemux\n", from, to)
+	fmt.Printf("(старый бинарь сохранён в %s.bak — авто-откат при сбое делает контрол-плейн)\n", exe)
+	return 0
 }
 
 func runProbe(args []string) int {

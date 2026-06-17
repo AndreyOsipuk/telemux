@@ -1,0 +1,37 @@
+version: 2
+project_name: telemux
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/telemux
+    binary: telemux
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+# Публикуем СЫРЫЕ бинари (без tar.gz) — чтобы telemux update качал и подменял напрямую.
+archives:
+  - formats: [ binary ]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+release:
+  github:
+    owner: AndreyOsipuk
+    name: telemux
+
+changelog:
+  use: github
+  sort: asc
