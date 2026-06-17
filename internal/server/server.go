@@ -34,6 +34,12 @@ type Deps struct {
 	Cluster       ClusterStore
 	ClusterSecret string // Bearer для heartbeat/join-token
 	PublicURL     string // внешний URL мастера (для join-команды)
+
+	// Идентичность ноды для heartbeat (пусто → heartbeat выключен).
+	SelfCode      string
+	SelfAddress   string
+	SelfTelemtURL string
+	MasterURL     string // куда replica шлёт heartbeat
 }
 
 // Server — HTTP-демон + фоновый sync-loop.
@@ -158,12 +164,14 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 func (s *Server) syncLoop(ctx context.Context) {
 	t := time.NewTicker(s.deps.Interval)
 	defer t.Stop()
+	s.reportHeartbeat(ctx)
 	s.runSync(ctx) // сразу при старте
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			s.reportHeartbeat(ctx)
 			s.runSync(ctx)
 		}
 	}

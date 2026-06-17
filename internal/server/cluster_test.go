@@ -116,6 +116,50 @@ func TestCluster_JoinTokenFlow(t *testing.T) {
 	}
 }
 
+func TestHeartbeat_MasterSelfRegisters(t *testing.T) {
+	fc := &fakeCluster{}
+	s := New(Deps{
+		Store: fakeStore{inRecovery: false}, Node: &fakeNode{}, SyncOpts: syncpkg.Options{Mode: syncpkg.Shadow},
+		Cluster: fc, SelfCode: "ps1", SelfAddress: "10.0.0.1",
+	})
+	s.reportHeartbeat(context.Background())
+	if len(fc.nodes) != 1 || fc.nodes[0].Code != "ps1" || fc.nodes[0].Role != "master" {
+		t.Fatalf("master должен зарегистрировать себя как master: %+v", fc.nodes)
+	}
+}
+
+func TestHeartbeat_ReplicaPostsToMaster(t *testing.T) {
+	var got store.Node
+	var gotAuth string
+	master := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(200)
+	}))
+	defer master.Close()
+	s := New(Deps{
+		Store: fakeStore{inRecovery: true}, Node: &fakeNode{}, SyncOpts: syncpkg.Options{Mode: syncpkg.Shadow},
+		Cluster: &fakeCluster{}, SelfCode: "ps2", SelfAddress: "10.0.0.2",
+		MasterURL: master.URL, ClusterSecret: "sek",
+	})
+	s.reportHeartbeat(context.Background())
+	if got.Code != "ps2" || got.Role != "replica" {
+		t.Fatalf("replica должна слать свой статус мастеру: %+v", got)
+	}
+	if gotAuth != "Bearer sek" {
+		t.Fatalf("heartbeat должен нести Bearer-секрет, получили %q", gotAuth)
+	}
+}
+
+func TestHeartbeat_NoCodeNoop(t *testing.T) {
+	fc := &fakeCluster{}
+	s := New(Deps{Store: fakeStore{}, Node: &fakeNode{}, SyncOpts: syncpkg.Options{Mode: syncpkg.Shadow}, Cluster: fc})
+	s.reportHeartbeat(context.Background()) // SelfCode пуст → no-op
+	if len(fc.nodes) != 0 {
+		t.Fatal("без SelfCode heartbeat не должен ничего регистрировать")
+	}
+}
+
 func TestCluster_DisabledWhenNoStore(t *testing.T) {
 	// Без Cluster кластер-маршруты не смонтированы.
 	s := New(Deps{Store: fakeStore{}, Node: &fakeNode{}, SyncOpts: syncpkg.Options{Mode: syncpkg.Shadow}})

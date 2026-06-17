@@ -84,6 +84,10 @@ func runServe(args []string) int {
 		Cluster:       st, // store реализует реестр нод + join-token
 		ClusterSecret: envOr("TELEMUX_CLUSTER_SECRET", ""),
 		PublicURL:     envOr("TELEMUX_PUBLIC_URL", "http://127.0.0.1"+*listen),
+		SelfCode:      envOr("TELEMUX_NODE_CODE", ""),
+		SelfAddress:   envOr("TELEMUX_NODE_ADDRESS", ""),
+		SelfTelemtURL: *api,
+		MasterURL:     envOr("TELEMUX_MASTER_URL", ""),
 	})
 	if err := srv.Run(ctx, *listen); err != nil {
 		logger.Error("serve", "err", err)

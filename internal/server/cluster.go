@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AndreyOsipuk/telemux/internal/role"
 	"github.com/AndreyOsipuk/telemux/internal/store"
 )
 
@@ -37,6 +38,50 @@ func (s *Server) clusterAuthed(r *http.Request) bool {
 	}
 	h := r.Header.Get("Authorization")
 	return strings.TrimPrefix(h, "Bearer ") == s.deps.ClusterSecret
+}
+
+// reportHeartbeat регистрирует присутствие ноды в реестре кластера:
+//   master  → пишет свою строку напрямую в локальный (primary) PG;
+//   replica → POST на master/api/cluster/heartbeat (Bearer cluster-secret).
+// No-op, если не задан SelfCode (одно-нодовый/ненастроенный режим).
+func (s *Server) reportHeartbeat(ctx context.Context) {
+	if s.deps.SelfCode == "" || s.deps.Cluster == nil {
+		return
+	}
+	rl, err := role.Detect(ctx, s.deps.Store)
+	if err != nil {
+		s.deps.Log.Error("heartbeat: роль", "err", err)
+		return
+	}
+	node := store.Node{
+		Code: s.deps.SelfCode, Address: s.deps.SelfAddress,
+		TelemtAPIURL: s.deps.SelfTelemtURL, Role: string(rl),
+	}
+	if rl.IsMaster() {
+		if err := s.deps.Cluster.UpsertNode(ctx, node); err != nil {
+			s.deps.Log.Error("heartbeat: upsert self", "err", err)
+		}
+		return
+	}
+	// replica → мастеру
+	if s.deps.MasterURL == "" {
+		return
+	}
+	body, _ := json.Marshal(node)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.deps.MasterURL+"/api/cluster/heartbeat", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	if s.deps.ClusterSecret != "" {
+		req.Header.Set("Authorization", "Bearer "+s.deps.ClusterSecret)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		s.deps.Log.Error("heartbeat: POST мастеру", "err", err)
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		s.deps.Log.Error("heartbeat: мастер вернул", "code", resp.StatusCode)
+	}
 }
 
 func (s *Server) routesCluster() {
