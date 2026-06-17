@@ -1,0 +1,25 @@
+# Сборка
+/dist/
+/telemux
+*.test
+
+# Локальное окружение
+.env
+.env.*
+!.env.example
+
+# Фронт (SPA) — артефакты сборки
+/web/node_modules/
+/web/dist/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Claude Code / AI-тулинг (не тащим в публичный репо)
+.claude/
+.claude.json
+CLAUDE.md
+.mcp.json
+AGENTS.md
