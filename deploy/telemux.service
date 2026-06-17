@@ -1,0 +1,19 @@
+[Unit]
+Description=telemux — панель управления кластером telemt
+Documentation=https://github.com/AndreyOsipuk/telemux
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/telemux/telemux.env
+ExecStart=/usr/local/bin/telemux serve
+Restart=always
+RestartSec=3
+# Безопасность
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

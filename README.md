@@ -46,10 +46,19 @@ docker run --rm -v "$PWD":/src -w /src -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=
 psql "$DATABASE_URL" -f migrations/0001_init.sql
 ```
 
-### Вариант B — бинарь + systemd «на железо» (планируется install-скрипт)
+### Вариант B — бинарь + systemd «на железо»
+
+Скрипт `install.sh` качает последний релиз (с проверкой SHA256), ставит бинарь,
+создаёт `/etc/telemux/telemux.env` и systemd-юнит (заработает после публикации релиза):
 
 ```sh
-# (планируется) curl -fsSL https://raw.githubusercontent.com/AndreyOsipuk/telemux/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/AndreyOsipuk/telemux/main/install.sh | sudo bash
+# затем отредактировать /etc/telemux/telemux.env (DATABASE_URL) и: systemctl start telemux
+```
+
+Вручную:
+
+```sh
 sudo install -m0755 telemux /usr/local/bin/telemux
 sudo tee /etc/systemd/system/telemux.service >/dev/null <<'UNIT'
 [Unit]
@@ -105,6 +114,15 @@ telemux sync  --db "$DATABASE_URL" --api http://127.0.0.1:9091 --apply  # при
 
 `sync` без `--apply` — **shadow**: считает diff (create/patch/delete), но не меняет ноду.
 Есть guard от массового сноса (нужен `--force`, если намеренно).
+
+## Тесты
+
+```sh
+go test ./...                                   # unit (без БД)
+# интеграционные (нужен PostgreSQL); -p 1 обязателен — пакеты делят одну БД:
+TELEMUX_TEST_DSN=postgres://user:pass@127.0.0.1:5432/telemux \
+  go test -tags=integration -p 1 ./internal/store ./internal/e2e
+```
 
 ## Дорожная карта
 
