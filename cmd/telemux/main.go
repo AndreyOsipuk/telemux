@@ -5,12 +5,16 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/AndreyOsipuk/telemux/internal/role"
 	"github.com/AndreyOsipuk/telemux/internal/selfupdate"
+	"github.com/AndreyOsipuk/telemux/internal/server"
 	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/store"
 	"github.com/AndreyOsipuk/telemux/internal/telemt"
@@ -32,6 +36,8 @@ func main() {
 		os.Exit(runSync(os.Args[2:]))
 	case "update":
 		os.Exit(runUpdate(os.Args[2:]))
+	case "serve":
+		os.Exit(runServe(os.Args[2:]))
 	case "-version", "--version", "version":
 		fmt.Printf("telemux %s\n", version)
 	default:
@@ -41,7 +47,53 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  role  --db <dsn>                        — роль ноды (master/replica) из локального PG")
 		fmt.Fprintln(os.Stderr, "  sync  --db <dsn> --api <url> [--apply]  — синхронизировать локальный telemt (shadow по умолч.)")
 		fmt.Fprintln(os.Stderr, "  update [--owner o --repo r]             — обновить бинарь до последнего релиза (checksum+swap)")
+		fmt.Fprintln(os.Stderr, "  serve --db <dsn> --api <url> [--apply --listen :8080]  — демон: HTTP API + дашборд + автосинхра")
 	}
+}
+
+func runServe(args []string) int {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	dsn := fs.String("db", envOr("DATABASE_URL", ""), "DSN локального PG")
+	api := fs.String("api", envOr("TELEMT_API_URL", "http://127.0.0.1:9091"), "URL telemt machine-API")
+	auth := fs.String("auth", envOr("TELEMT_API_AUTH", ""), "Authorization для API")
+	listen := fs.String("listen", envOr("TELEMUX_LISTEN", ":8080"), "адрес HTTP-демона")
+	apply := fs.Bool("apply", false, "автосинхра применяет изменения (по умолчанию shadow)")
+	interval := fs.Duration("interval", 60*time.Second, "период автосинхры")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	st, err := store.Open(ctx, *dsn)
+	if err != nil {
+		logger.Error("PG", "err", err)
+		return 1
+	}
+	defer st.Close()
+
+	mode := syncpkg.Shadow
+	if *apply {
+		mode = syncpkg.Apply
+	}
+	srv := server.New(server.Deps{
+		Store: st, Node: telemt.New(*api, *auth), Version: version,
+		Interval: *interval, SyncOpts: syncpkg.Options{Mode: mode}, Log: logger,
+	})
+	if err := srv.Run(ctx, *listen); err != nil {
+		logger.Error("serve", "err", err)
+		return 1
+	}
+	return 0
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func runUpdate(args []string) int {

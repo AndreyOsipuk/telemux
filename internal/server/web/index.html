@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>telemux</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         background:#0e1116; color:#e6edf3; }
+  header { padding:18px 24px; border-bottom:1px solid #21262d; display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  .badge { font-size:12px; padding:2px 8px; border-radius:10px; background:#1f6feb33; color:#79c0ff; }
+  main { max-width:880px; margin:24px auto; padding:0 16px; display:grid; gap:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+  .card { background:#161b22; border:1px solid #21262d; border-radius:10px; padding:16px; }
+  .card .k { font-size:12px; color:#8b949e; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:24px; font-weight:600; margin-top:4px; }
+  .v.master { color:#3fb950; } .v.replica { color:#79c0ff; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid #30363d;
+           background:#21262d; color:#e6edf3; cursor:pointer; }
+  button:hover { background:#30363d; }
+  button.primary { background:#238636; border-color:#2ea043; }
+  pre { background:#0d1117; border:1px solid #21262d; border-radius:8px; padding:12px; overflow:auto; font-size:13px; }
+  .muted { color:#8b949e; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>telemux</h1>
+  <span class="badge" id="version">…</span>
+  <span class="badge" id="role">…</span>
+</header>
+<main>
+  <div class="grid">
+    <div class="card"><div class="k">Роль ноды</div><div class="v" id="role-v">…</div></div>
+    <div class="card"><div class="k">Юзеров (desired)</div><div class="v" id="users-v">…</div></div>
+    <div class="card"><div class="k">Последняя синхра</div><div class="v" id="sync-at">—</div></div>
+    <div class="card"><div class="k">Diff (C/P/D)</div><div class="v" id="sync-diff">—</div></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button class="primary" id="btn-sync">Синхронизировать сейчас</button>
+      <button id="btn-refresh">Обновить данные</button>
+      <span class="muted" id="status"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="k">Статус синхронизации</div>
+    <pre id="sync-json">—</pre>
+  </div>
+
+  <p class="muted">telemux — панель управления кластером telemt. Это базовый дашборд (v1);
+  полноценный SPA и управление кластером — в разработке.</p>
+</main>
+
+<script>
+async function j(url, opts) { const r = await fetch(url, opts); if(!r.ok) throw new Error(url+': '+r.status); return r.json(); }
+function setStatus(t){ document.getElementById('status').textContent = t || ''; }
+
+async function refresh() {
+  try {
+    const [ver, role, users, st] = await Promise.all([
+      j('/api/version'), j('/api/role'), j('/api/users'), j('/api/sync/status')
+    ]);
+    document.getElementById('version').textContent = ver.version;
+    const roleTxt = role.role || '?';
+    document.getElementById('role').textContent = roleTxt;
+    const rv = document.getElementById('role-v');
+    rv.textContent = roleTxt; rv.className = 'v ' + roleTxt;
+    document.getElementById('users-v').textContent = users.total;
+    renderSync(st);
+    setStatus('');
+  } catch(e){ setStatus('ошибка: '+e.message); }
+}
+function renderSync(st){
+  document.getElementById('sync-at').textContent = st.at && st.at.startsWith('0001') ? '—' : (st.at ? new Date(st.at).toLocaleString() : '—');
+  document.getElementById('sync-diff').textContent = (st.creates||0)+' / '+(st.patches||0)+' / '+(st.deletes||0);
+  document.getElementById('sync-json').textContent = JSON.stringify(st, null, 2);
+}
+document.getElementById('btn-refresh').onclick = refresh;
+document.getElementById('btn-sync').onclick = async () => {
+  setStatus('синхронизация…');
+  try { renderSync(await j('/api/sync', {method:'POST'})); setStatus('готово'); }
+  catch(e){ setStatus('ошибка: '+e.message); }
+};
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>
