@@ -81,6 +81,9 @@ func runServe(args []string) int {
 	srv := server.New(server.Deps{
 		Store: st, Node: telemt.New(*api, *auth), Version: version,
 		Interval: *interval, SyncOpts: syncpkg.Options{Mode: mode}, Log: logger,
+		Cluster:       st, // store реализует реестр нод + join-token
+		ClusterSecret: envOr("TELEMUX_CLUSTER_SECRET", ""),
+		PublicURL:     envOr("TELEMUX_PUBLIC_URL", "http://127.0.0.1"+*listen),
 	})
 	if err := srv.Run(ctx, *listen); err != nil {
 		logger.Error("serve", "err", err)

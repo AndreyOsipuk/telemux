@@ -29,6 +29,11 @@ type Deps struct {
 	Interval time.Duration   // период автосинхры (0 → 60с)
 	SyncOpts syncpkg.Options // режим (shadow/apply) и пр.
 	Log      *slog.Logger
+
+	// Кластер (опционально; nil → одно-нодовый режим без реестра/add-node).
+	Cluster       ClusterStore
+	ClusterSecret string // Bearer для heartbeat/join-token
+	PublicURL     string // внешний URL мастера (для join-команды)
 }
 
 // Server — HTTP-демон + фоновый sync-loop.
@@ -102,6 +107,9 @@ func (s *Server) routes() {
 		st := s.runSync(r.Context())
 		writeJSON(w, st)
 	})
+	if s.deps.Cluster != nil {
+		s.routesCluster()
+	}
 	// Дашборд (встроенный, см. web.go).
 	s.mux.HandleFunc("GET /", s.handleIndex)
 }

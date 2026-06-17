@@ -49,6 +49,17 @@
     </div>
   </div>
 
+  <div class="card" id="nodes-card" style="display:none">
+    <div class="k">Ноды кластера</div>
+    <table id="nodes-table" style="width:100%; border-collapse:collapse; margin-top:8px; font-size:14px">
+      <thead><tr style="text-align:left; color:#8b949e">
+        <th style="padding:4px 8px">code</th><th style="padding:4px 8px">роль</th>
+        <th style="padding:4px 8px">адрес</th><th style="padding:4px 8px">last seen</th>
+      </tr></thead>
+      <tbody id="nodes-body"></tbody>
+    </table>
+  </div>
+
   <div class="card">
     <div class="k">Статус синхронизации</div>
     <pre id="sync-json">—</pre>
@@ -76,6 +87,22 @@ async function refresh() {
     renderSync(st);
     setStatus('');
   } catch(e){ setStatus('ошибка: '+e.message); }
+  refreshNodes();
+}
+async function refreshNodes(){
+  try {
+    const r = await fetch('/api/nodes');
+    if(!r.ok) { document.getElementById('nodes-card').style.display='none'; return; }
+    const {nodes} = await r.json();
+    document.getElementById('nodes-card').style.display = '';
+    const body = document.getElementById('nodes-body');
+    body.innerHTML = (nodes||[]).map(n => `<tr>
+      <td style="padding:4px 8px">${n.code||''}</td>
+      <td style="padding:4px 8px" class="${n.role}">${n.role||''}</td>
+      <td style="padding:4px 8px">${n.address||''}</td>
+      <td style="padding:4px 8px">${n.last_seen_at ? new Date(n.last_seen_at).toLocaleString() : '—'}</td>
+    </tr>`).join('') || '<tr><td colspan=4 style="padding:8px;color:#8b949e">нод пока нет</td></tr>';
+  } catch(e){ document.getElementById('nodes-card').style.display='none'; }
 }
 function renderSync(st){
   document.getElementById('sync-at').textContent = st.at && st.at.startsWith('0001') ? '—' : (st.at ? new Date(st.at).toLocaleString() : '—');
