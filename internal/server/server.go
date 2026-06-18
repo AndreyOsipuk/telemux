@@ -30,6 +30,10 @@ type Deps struct {
 	SyncOpts syncpkg.Options // режим (shadow/apply) и пр.
 	Log      *slog.Logger
 
+	// Авторизация панели (если AdminPassword пуст — auth выключен, открытый режим).
+	AdminUser     string
+	AdminPassword string
+
 	// Управление юзерами (опционально; nil → CRUD-маршруты не монтируются).
 	Users UserAdmin
 
@@ -49,6 +53,7 @@ type Deps struct {
 type Server struct {
 	deps Deps
 	mux  *http.ServeMux
+	auth *auth
 
 	mu       sync.RWMutex
 	lastSync syncStatus
@@ -74,13 +79,15 @@ func New(d Deps) *Server {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
-	s := &Server{deps: d, mux: http.NewServeMux()}
+	s := &Server{deps: d, mux: http.NewServeMux(), auth: newAuth(d.AdminUser, d.AdminPassword)}
 	s.routes()
+	s.auth.routes(s.mux)
 	return s
 }
 
-// Handler — http.Handler демона (для httptest и реального ListenAndServe).
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler — http.Handler демона (для httptest и реального ListenAndServe),
+// обёрнутый middleware авторизации.
+func (s *Server) Handler() http.Handler { return s.auth.wrap(s.mux) }
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +152,7 @@ func (s *Server) runSync(ctx context.Context) syncStatus {
 // Run запускает HTTP-сервер + фоновый sync-loop; блокирует до отмены ctx.
 func (s *Server) Run(ctx context.Context, addr string) error {
 	go s.syncLoop(ctx)
-	srv := &http.Server{Addr: addr, Handler: s.mux}
+	srv := &http.Server{Addr: addr, Handler: s.Handler()}
 	go func() {
 		<-ctx.Done()
 		sh, cancel := context.WithTimeout(context.Background(), 5*time.Second)

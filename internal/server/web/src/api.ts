@@ -31,6 +31,10 @@ const post = (url: string, body?: unknown) =>
   j(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
 
 export const api = {
+  me: () => j<{ auth_enabled: boolean; authed: boolean }>('/api/me'),
+  login: (username: string, password: string) => post('/api/login', { username, password }),
+  logout: () => post('/api/logout'),
+
   version: () => j<{ version: string }>('/api/version'),
   role: () => j<Role>('/api/role'),
   syncStatus: () => j<SyncStatus>('/api/sync/status'),

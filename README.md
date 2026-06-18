@@ -98,7 +98,9 @@ volumes: { pgdata: {} }
 |---|---|---|
 | DSN локального PG | `--db` / `DATABASE_URL` | — |
 | URL telemt API | `--api` / `TELEMT_API_URL` | `http://127.0.0.1:9091` |
-| Authorization для API | `--auth` / `TELEMT_API_AUTH` | пусто (без авторизации) |
+| Authorization для API telemt | `--auth` / `TELEMT_API_AUTH` | пусто (без авторизации) |
+| Логин панели | `TELEMUX_ADMIN_USER` | `admin` |
+| Пароль панели | `TELEMUX_ADMIN_PASSWORD` | пусто = auth выключен |
 
 PostgreSQL держать на loopback (`listen_addresses='127.0.0.1'`) + фаервол; наружу не открывать.
 Реплики стримят с primary по TLS + `pg_hba` allowlist.
