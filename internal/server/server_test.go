@@ -38,6 +38,7 @@ func newTestServer(inRecovery bool, n int) *Server {
 	}
 	return New(Deps{
 		Store:    fakeStore{users: users, inRecovery: inRecovery},
+		Users:    newFakeUsers(n),
 		Node:     &fakeNode{},
 		Version:  "v9.9.9",
 		SyncOpts: syncpkg.Options{Mode: syncpkg.Shadow},
@@ -74,8 +75,9 @@ func TestAPIVersionRoleUsers(t *testing.T) {
 	if role["role"] != "master" || role["is_master"] != true {
 		t.Fatalf("role: %v", role)
 	}
-	if get(t, s, "/api/users")["total"].(float64) != 3 {
-		t.Fatal("users total")
+	paging := get(t, s, "/api/users")["paging"].(map[string]any)
+	if paging["total"].(float64) != 3 {
+		t.Fatalf("users paging.total: %v", paging)
 	}
 
 	sr := newTestServer(true, 0) // standby → replica

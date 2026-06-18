@@ -81,6 +81,7 @@ func runServe(args []string) int {
 	srv := server.New(server.Deps{
 		Store: st, Node: telemt.New(*api, *auth), Version: version,
 		Interval: *interval, SyncOpts: syncpkg.Options{Mode: mode}, Log: logger,
+		Users:         st, // store реализует user-CRUD
 		Cluster:       st, // store реализует реестр нод + join-token
 		ClusterSecret: envOr("TELEMUX_CLUSTER_SECRET", ""),
 		PublicURL:     envOr("TELEMUX_PUBLIC_URL", "http://127.0.0.1"+*listen),

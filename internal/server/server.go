@@ -30,6 +30,9 @@ type Deps struct {
 	SyncOpts syncpkg.Options // режим (shadow/apply) и пр.
 	Log      *slog.Logger
 
+	// Управление юзерами (опционально; nil → CRUD-маршруты не монтируются).
+	Users UserAdmin
+
 	// Кластер (опционально; nil → одно-нодовый режим без реестра/add-node).
 	Cluster       ClusterStore
 	ClusterSecret string // Bearer для heartbeat/join-token
@@ -95,14 +98,6 @@ func (s *Server) routes() {
 		}
 		writeJSON(w, map[string]any{"role": string(rl), "is_master": rl.IsMaster()})
 	})
-	s.mux.HandleFunc("GET /api/users", func(w http.ResponseWriter, r *http.Request) {
-		des, err := s.deps.Store.ListDesired(r.Context())
-		if err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
-			return
-		}
-		writeJSON(w, map[string]any{"total": len(des)})
-	})
 	s.mux.HandleFunc("GET /api/sync/status", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()
 		st := s.lastSync
@@ -113,6 +108,9 @@ func (s *Server) routes() {
 		st := s.runSync(r.Context())
 		writeJSON(w, st)
 	})
+	if s.deps.Users != nil {
+		s.routesUsers()
+	}
 	if s.deps.Cluster != nil {
 		s.routesCluster()
 	}
