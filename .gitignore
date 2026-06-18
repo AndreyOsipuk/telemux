@@ -8,9 +8,8 @@
 .env.*
 !.env.example
 
-# Фронт (SPA) — артефакты сборки
-/web/node_modules/
-/web/dist/
+# Фронт (SPA): node_modules не коммитим; dist КОММИТИМ (вшивается в бинарь через embed)
+internal/server/web/node_modules/
 
 # IDE
 .idea/
