@@ -77,6 +77,7 @@ func (s *Server) routesUsers() {
 			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
 			return
 		}
+		s.markDirty() // немедленная синхра на ноды
 		w.WriteHeader(http.StatusCreated)
 		writeJSON(w, u)
 	})
@@ -95,6 +96,7 @@ func (s *Server) routesUsers() {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("нет такого юзера"), s.deps.Log)
 			return
 		}
+		s.markDirty()
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -119,6 +121,7 @@ func (s *Server) routesUsers() {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("нет такого юзера"), s.deps.Log)
 			return
 		}
+		s.markDirty()
 		writeJSON(w, map[string]any{"ok": true})
 	})
 
@@ -141,6 +144,7 @@ func (s *Server) routesUsers() {
 				writeErr(w, http.StatusNotFound, fmt.Errorf("нет такого юзера"), s.deps.Log)
 				return
 			}
+			s.markDirty()
 			writeJSON(w, map[string]any{"ok": true})
 		})
 	}

@@ -55,8 +55,20 @@ type Server struct {
 	mux  *http.ServeMux
 	auth *auth
 
+	dirty chan struct{} // сигнал «синхронизироваться немедленно» (debounce cap 1)
+	runMu sync.Mutex    // сериализует runSync (периодический/ручной/триггер)
+
 	mu       sync.RWMutex
 	lastSync syncStatus
+}
+
+// markDirty просит sync-loop синхронизироваться немедленно (не дожидаясь интервала).
+// Неблокирующе: если сигнал уже стоит — повторный игнорируется (debounce).
+func (s *Server) markDirty() {
+	select {
+	case s.dirty <- struct{}{}:
+	default:
+	}
 }
 
 type syncStatus struct {
@@ -79,7 +91,7 @@ func New(d Deps) *Server {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
-	s := &Server{deps: d, mux: http.NewServeMux(), auth: newAuth(d.AdminUser, d.AdminPassword)}
+	s := &Server{deps: d, mux: http.NewServeMux(), auth: newAuth(d.AdminUser, d.AdminPassword), dirty: make(chan struct{}, 1)}
 	s.routes()
 	s.auth.routes(s.mux)
 	return s
@@ -126,7 +138,10 @@ func (s *Server) routes() {
 }
 
 // runSync выполняет один проход синхронизации и сохраняет статус.
+// Сериализован runMu — параллельные вызовы (тик/ручной/триггер) не наезжают.
 func (s *Server) runSync(ctx context.Context) syncStatus {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
 	res, err := syncpkg.SyncNode(ctx, s.deps.Store, s.deps.Node, s.deps.SyncOpts)
 	st := syncStatus{At: time.Now().UTC(), Mode: string(s.deps.SyncOpts.Mode), Applied: res.Applied, Failed: res.Failed, Aborted: res.Aborted}
 	for _, op := range res.Ops {
@@ -178,6 +193,8 @@ func (s *Server) syncLoop(ctx context.Context) {
 		case <-t.C:
 			s.reportHeartbeat(ctx)
 			s.runSync(ctx)
+		case <-s.dirty:
+			s.runSync(ctx) // немедленная синхра после изменения юзеров
 		}
 	}
 }

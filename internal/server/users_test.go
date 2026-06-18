@@ -123,6 +123,12 @@ func TestUsers_CreateMaster(t *testing.T) {
 	if _, ok := fu.m["sub_new"]; !ok {
 		t.Fatal("юзер не создан")
 	}
+	// create должен дёрнуть немедленную синхру (dirty-сигнал)
+	select {
+	case <-s.dirty:
+	default:
+		t.Fatal("успешный create должен пометить dirty (немедленная синхра)")
+	}
 	// дубль → 409
 	if do(s, "POST", "/api/users", "", `{"username":"sub_new"}`).Code != http.StatusConflict {
 		t.Fatal("дубль username → 409")
