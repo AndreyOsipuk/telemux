@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AndreyOsipuk/telemux/internal/backend/mtgmulti"
 	"github.com/AndreyOsipuk/telemux/internal/role"
 	"github.com/AndreyOsipuk/telemux/internal/selfupdate"
 	"github.com/AndreyOsipuk/telemux/internal/server"
@@ -83,6 +84,16 @@ func runServe(args []string) int {
 	if *apply {
 		mode = syncpkg.Apply
 	}
+
+	// mtg-multi backend (опционально): включается заданием TELEMUX_MTG_SSH_KEY —
+	// путь к приватному ключу для доставки config на mtg-ноды по SSH. Без него
+	// синхронизируются только telemt-ноды (обратная совместимость).
+	var mtg *server.MtgDeps
+	if key := os.Getenv("TELEMUX_MTG_SSH_KEY"); key != "" {
+		mtg = &server.MtgDeps{Store: st, Syncer: mtgmulti.New(mtgmulti.NewSSHDelivery(key))}
+		logger.Info("mtg-multi backend включён", "ssh_key", key)
+	}
+
 	srv := server.New(server.Deps{
 		Store: st, Node: telemt.New(*api, *auth), Version: version,
 		Interval: *interval, SyncOpts: syncpkg.Options{Mode: mode}, Log: logger,
@@ -96,6 +107,7 @@ func runServe(args []string) int {
 		SelfAddress:   envOr("TELEMUX_NODE_ADDRESS", ""),
 		SelfTelemtURL: *api,
 		MasterURL:     envOr("TELEMUX_MASTER_URL", ""),
+		Mtg:           mtg, // nil → mtg-ноды не синхронизируются
 	})
 	if err := srv.Run(ctx, *listen); err != nil {
 		logger.Error("serve", "err", err)
