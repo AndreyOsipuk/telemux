@@ -73,6 +73,43 @@ func (f *fakeUsers) SetEnabled(_ context.Context, username string, en bool) (boo
 	f.m[username] = u
 	return true, nil
 }
+func (f *fakeUsers) ReconcileUsers(_ context.Context, rows []store.ImportRow, force bool) (store.ReconcileResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var res store.ReconcileResult
+	current := len(f.m)
+	keep := map[string]bool{}
+	for _, r := range rows {
+		keep[r.Username] = true
+		if _, ok := f.m[r.Username]; ok {
+			res.Updated++
+		} else {
+			res.Inserted++
+		}
+	}
+	toDelete := 0
+	for n := range f.m {
+		if !keep[n] {
+			toDelete++
+		}
+	}
+	massDelete := len(rows) == 0 || (current >= 10 && float64(toDelete)/float64(current) > store.ShrinkGuardThreshold)
+	if massDelete && !force {
+		res.Aborted = true
+		return res, nil
+	}
+	for _, r := range rows {
+		f.m[r.Username] = store.User{Username: r.Username, Secret: r.Secret, ExpirationAt: r.ExpirationAt, MaxTCPConns: r.MaxTCPConns, Enabled: true}
+	}
+	for n := range f.m {
+		if !keep[n] {
+			delete(f.m, n)
+			res.Deleted++
+		}
+	}
+	return res, nil
+}
+
 func (f *fakeUsers) ListUsersPage(_ context.Context, limit, offset int) ([]store.User, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

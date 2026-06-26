@@ -41,8 +41,10 @@ func (s *Server) clusterAuthed(r *http.Request) bool {
 }
 
 // reportHeartbeat регистрирует присутствие ноды в реестре кластера:
-//   master  → пишет свою строку напрямую в локальный (primary) PG;
-//   replica → POST на master/api/cluster/heartbeat (Bearer cluster-secret).
+//
+//	master  → пишет свою строку напрямую в локальный (primary) PG;
+//	replica → POST на master/api/cluster/heartbeat (Bearer cluster-secret).
+//
 // No-op, если не задан SelfCode (одно-нодовый/ненастроенный режим).
 func (s *Server) reportHeartbeat(ctx context.Context) {
 	if s.deps.SelfCode == "" || s.deps.Cluster == nil {
@@ -111,6 +113,58 @@ func (s *Server) routesCluster() {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
+	})
+
+	// Bulk-sync: бот пушит ПОЛНЫЙ активный набор юзеров → реконсиляция telemux-PG
+	// (upsert + удалить отсутствующих). Bearer cluster-secret, только master.
+	// Guard массового сноса → 409 (источник, похоже, отдал пустой/битый набор).
+	s.mux.HandleFunc("POST /api/cluster/users-sync", func(w http.ResponseWriter, r *http.Request) {
+		if !s.clusterAuthed(r) {
+			writeErr(w, http.StatusUnauthorized, fmt.Errorf("неверный cluster-secret"), s.deps.Log)
+			return
+		}
+		if s.deps.Users == nil {
+			writeErr(w, http.StatusNotImplemented, fmt.Errorf("user-admin не сконфигурирован"), s.deps.Log)
+			return
+		}
+		if !s.requireMaster(w, r) {
+			return
+		}
+		var body struct {
+			Force bool `json:"force"`
+			Users []struct {
+				Username     string     `json:"username"`
+				Secret       string     `json:"secret"`
+				ExpirationAt *time.Time `json:"expiration_at"`
+				MaxTCPConns  *int       `json:"max_tcp_conns"`
+			} `json:"users"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("нужен JSON {users:[...]}"), s.deps.Log)
+			return
+		}
+		rows := make([]store.ImportRow, 0, len(body.Users))
+		for _, u := range body.Users {
+			rows = append(rows, store.ImportRow{
+				Username: u.Username, Secret: u.Secret,
+				ExpirationAt: u.ExpirationAt, MaxTCPConns: u.MaxTCPConns,
+			})
+		}
+		res, err := s.deps.Users.ReconcileUsers(r.Context(), rows, body.Force)
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+			return
+		}
+		if res.Aborted {
+			// guard сработал — отдаём 409, изменений не было (бот увидит и не будет ретраить молча)
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(res)
+			s.deps.Log.Error("users-sync ЗАБЛОКИРОВАН guard'ом массового сноса", "incoming", len(rows))
+			return
+		}
+		s.markDirty() // немедленная синхра на telemt
+		writeJSON(w, res)
 	})
 
 	// Создать одноразовый join-token (кнопка «Add node» в UI).

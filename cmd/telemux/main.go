@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -15,9 +16,10 @@ import (
 	"github.com/AndreyOsipuk/telemux/internal/role"
 	"github.com/AndreyOsipuk/telemux/internal/selfupdate"
 	"github.com/AndreyOsipuk/telemux/internal/server"
-	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/store"
+	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/telemt"
+	"github.com/AndreyOsipuk/telemux/internal/telemtcfg"
 )
 
 var version = "dev"
@@ -34,6 +36,8 @@ func main() {
 		os.Exit(runRole(os.Args[2:]))
 	case "sync":
 		os.Exit(runSync(os.Args[2:]))
+	case "import-toml":
+		os.Exit(runImportToml(os.Args[2:]))
 	case "update":
 		os.Exit(runUpdate(os.Args[2:]))
 	case "serve":
@@ -46,6 +50,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  probe --api <url> [--auth h]            — проверить связь с telemt-API")
 		fmt.Fprintln(os.Stderr, "  role  --db <dsn>                        — роль ноды (master/replica) из локального PG")
 		fmt.Fprintln(os.Stderr, "  sync  --db <dsn> --api <url> [--apply]  — синхронизировать локальный telemt (shadow по умолч.)")
+		fmt.Fprintln(os.Stderr, "  import-toml --db <dsn> --file users.toml — импорт существующих юзеров С СЕКРЕТАМИ (обратная совместимость)")
 		fmt.Fprintln(os.Stderr, "  update [--owner o --repo r]             — обновить бинарь до последнего релиза (checksum+swap)")
 		fmt.Fprintln(os.Stderr, "  serve --db <dsn> --api <url> [--apply --listen :8080]  — демон: HTTP API + дашборд + автосинхра")
 	}
@@ -104,6 +109,67 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// runImportToml импортирует юзеров из telemt users.toml (с секретами) в telemux-PG.
+// Путь обратной совместимости: секреты совпадают с тем, что на ноде → старые ссылки живут.
+func runImportToml(args []string) int {
+	fs := flag.NewFlagSet("import-toml", flag.ContinueOnError)
+	dsn := fs.String("db", envOr("DATABASE_URL", ""), "DSN telemux-PG")
+	file := fs.String("file", "", "путь к users.toml (пусто = stdin)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	var data []byte
+	var err error
+	if *file == "" || *file == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(*file)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "чтение users.toml: %v\n", err)
+		return 1
+	}
+	parsed := telemtcfg.ParseUsersToml(string(data))
+	if len(parsed) == 0 {
+		fmt.Fprintln(os.Stderr, "в файле не найдено юзеров (секция [access.users])")
+		return 1
+	}
+	rows := make([]store.ImportRow, 0, len(parsed))
+	for _, u := range parsed {
+		rows = append(rows, store.ImportRow{
+			Username: u.Username, Secret: u.Secret,
+			ExpirationAt: u.ExpirationAt, MaxTCPConns: u.MaxTCPConns,
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	st, err := store.Open(ctx, *dsn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "PG: %v\n", err)
+		return 1
+	}
+	defer st.Close()
+
+	r, err := role.Detect(ctx, st)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "роль: %v\n", err)
+		return 1
+	}
+	if !r.IsMaster() {
+		fmt.Fprintln(os.Stderr, "это replica (PG read-only); импорт делается на master")
+		return 1
+	}
+
+	ins, upd, err := st.ImportUsers(ctx, rows)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "импорт: %v\n", err)
+		return 1
+	}
+	fmt.Printf("импортировано: новых=%d обновлено=%d (всего в файле=%d)\n", ins, upd, len(parsed))
+	return 0
 }
 
 func runUpdate(args []string) int {

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/store"
+	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 )
 
 type fakeCluster struct {
@@ -166,4 +166,63 @@ func TestCluster_DisabledWhenNoStore(t *testing.T) {
 	if do(s, "GET", "/api/nodes", "", "").Code != http.StatusNotFound {
 		t.Fatal("без Cluster /api/nodes должен быть 404")
 	}
+}
+
+func TestCluster_UsersSync(t *testing.T) {
+	fu := newFakeUsers(20) // 20 текущих юзеров (sub_0..sub_19)
+	fc := &fakeCluster{}
+	s := New(Deps{
+		Store: fakeStore{}, Node: &fakeNode{}, Version: "v1",
+		SyncOpts: syncpkg.Options{Mode: syncpkg.Shadow},
+		Users:    fu, Cluster: fc, ClusterSecret: "sek",
+	})
+
+	// неверный bearer → 401
+	if do(s, "POST", "/api/cluster/users-sync", "wrong", `{"users":[]}`).Code != http.StatusUnauthorized {
+		t.Fatal("неверный секрет → 401")
+	}
+
+	// нормальный reconcile: 20 старых → 21 новый (20 upsert + 1 новый), удалений 0
+	body := `{"users":[`
+	for i := 0; i < 21; i++ {
+		if i > 0 {
+			body += ","
+		}
+		body += `{"username":"sub_` + itoa(i) + `","secret":"ee` + itoa(i) + `"}`
+	}
+	body += `]}`
+	rec := do(s, "POST", "/api/cluster/users-sync", "sek", body)
+	if rec.Code != 200 {
+		t.Fatalf("reconcile → ждали 200, получили %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(fu.m) != 21 {
+		t.Fatalf("ждали 21 юзера, получили %d", len(fu.m))
+	}
+
+	// guard массового сноса: прислали 1 юзера при 21 текущем (удалили бы 20/21 > 20%) → 409, без изменений
+	rec = do(s, "POST", "/api/cluster/users-sync", "sek", `{"users":[{"username":"sub_0","secret":"ee0"}]}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("массовый снос без force → ждали 409, получили %d", rec.Code)
+	}
+	if len(fu.m) != 21 {
+		t.Fatalf("после заблокированного reconcile набор не должен меняться, получили %d", len(fu.m))
+	}
+
+	// с force → проходит, остаётся 1
+	rec = do(s, "POST", "/api/cluster/users-sync", "sek", `{"force":true,"users":[{"username":"sub_0","secret":"ee0"}]}`)
+	if rec.Code != 200 || len(fu.m) != 1 {
+		t.Fatalf("force reconcile → 200 и 1 юзер, получили code=%d len=%d", rec.Code, len(fu.m))
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	s := ""
+	for n > 0 {
+		s = string(rune('0'+n%10)) + s
+		n /= 10
+	}
+	return s
 }
