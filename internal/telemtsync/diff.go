@@ -103,7 +103,10 @@ func ExpirationEquals(a, b *string) bool {
 	if ea != nil || eb != nil {
 		return *a == *b
 	}
-	return ta.Equal(tb)
+	// Сравниваем с точностью до секунды: ListDesired форматирует PG-срок как
+	// RFC3339 (роняет доли секунды), а нода отдаёт с миллисекундами — мс-расхождение
+	// это артефакт форматирования, а не реальное изменение срока подписки.
+	return ta.Truncate(time.Second).Equal(tb.Truncate(time.Second))
 }
 
 func intEqual(a, b *int) bool {
