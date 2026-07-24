@@ -1,6 +1,7 @@
 # Сборка
 /dist/
 /telemux
+/telemux-*
 *.test
 
 # Локальное окружение
@@ -22,3 +23,4 @@ internal/server/web/node_modules/
 CLAUDE.md
 .mcp.json
 AGENTS.md
+scripts/CONSOLIDATION_RUNBOOK.md

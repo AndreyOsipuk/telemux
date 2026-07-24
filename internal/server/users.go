@@ -20,6 +20,7 @@ type UserAdmin interface {
 	SetExpiration(ctx context.Context, username string, exp *time.Time) (bool, error)
 	SetEnabled(ctx context.Context, username string, enabled bool) (bool, error)
 	ListUsersPage(ctx context.Context, limit, offset int) ([]store.User, int, error)
+	ReconcileUsers(ctx context.Context, rows []store.ImportRow, force bool) (store.ReconcileResult, error)
 }
 
 // requireMaster: write-операции разрешены только когда локальный PG = primary.

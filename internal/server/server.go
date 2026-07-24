@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AndreyOsipuk/telemux/internal/mtgsync"
 	"github.com/AndreyOsipuk/telemux/internal/role"
 	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/telemtsync"
@@ -17,7 +18,7 @@ import (
 
 // Store — то, что демон ждёт от локального PG.
 type Store interface {
-	role.RecoveryChecker                                              // IsInRecovery
+	role.RecoveryChecker // IsInRecovery
 	ListDesired(ctx context.Context) ([]telemtsync.DesiredUser, error)
 }
 
@@ -47,6 +48,16 @@ type Deps struct {
 	SelfAddress   string
 	SelfTelemtURL string
 	MasterURL     string // куда replica шлёт heartbeat
+
+	// mtg-multi backend (опционально; nil → mtg-ноды не синхронизируются).
+	// Тот же sync-loop, что и telemt, но отдельным проходом по mtg-нодам.
+	Mtg *MtgDeps
+}
+
+// MtgDeps — зависимости синхронизации mtg-multi нод (store + backend-плагин).
+type MtgDeps struct {
+	Store  mtgsync.Store  // ListDesired + ListMtgNodes
+	Syncer mtgsync.Syncer // плагин mtg-multi (генерит config + SSH-доставка)
 }
 
 // Server — HTTP-демон + фоновый sync-loop.
@@ -72,15 +83,17 @@ func (s *Server) markDirty() {
 }
 
 type syncStatus struct {
-	At      time.Time `json:"at"`
-	Mode    string    `json:"mode"`
-	Creates int       `json:"creates"`
-	Patches int       `json:"patches"`
-	Deletes int       `json:"deletes"`
-	Applied int       `json:"applied"`
-	Failed  int       `json:"failed"`
-	Aborted bool      `json:"aborted"`
-	Error   string    `json:"error,omitempty"`
+	At         time.Time `json:"at"`
+	Mode       string    `json:"mode"`
+	Creates    int       `json:"creates"`
+	Patches    int       `json:"patches"`
+	Deletes    int       `json:"deletes"`
+	Applied    int       `json:"applied"`
+	Failed     int       `json:"failed"`
+	MtgChanged int       `json:"mtg_changed"`
+	MtgFailed  int       `json:"mtg_failed"`
+	Aborted    bool      `json:"aborted"`
+	Error      string    `json:"error,omitempty"`
 }
 
 // New собирает демон и маршруты.
@@ -157,6 +170,24 @@ func (s *Server) runSync(ctx context.Context) syncStatus {
 	if err != nil {
 		st.Error = err.Error()
 		s.deps.Log.Error("sync", "err", err)
+	}
+	// mtg-multi ноды — отдельный проход (если backend сконфигурирован). Не влияет
+	// на telemt-статус: ошибки логируются, telemt-синхру не валят.
+	if s.deps.Mtg != nil && s.deps.SyncOpts.Mode == syncpkg.Apply {
+		currentRole, roleErr := role.Detect(ctx, s.deps.Store)
+		if roleErr != nil {
+			st.MtgFailed++
+			s.deps.Log.Error("mtg sync role fencing", "err", roleErr)
+		} else if currentRole.IsMaster() {
+			if sum, mErr := mtgsync.Run(ctx, s.deps.Mtg.Store, s.deps.Mtg.Syncer); mErr != nil {
+				st.MtgFailed++
+				s.deps.Log.Error("mtg sync", "err", mErr)
+			} else if sum.Changed > 0 || sum.Failed > 0 {
+				st.MtgChanged = sum.Changed
+				st.MtgFailed = sum.Failed
+				s.deps.Log.Info("mtg sync", "changed", sum.Changed, "failed", sum.Failed, "nodes", len(sum.Results))
+			}
+		}
 	}
 	s.mu.Lock()
 	s.lastSync = st

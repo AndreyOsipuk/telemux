@@ -43,7 +43,9 @@ docker run --rm -v "$PWD":/src -w /src -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=
 Применить схему БД:
 
 ```sh
-psql "$DATABASE_URL" -f migrations/0001_init.sql
+for migration in migrations/*.sql; do
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"
+done
 ```
 
 ### Вариант B — бинарь + systemd «на железо»
@@ -99,11 +101,19 @@ volumes: { pgdata: {} }
 | DSN локального PG | `--db` / `DATABASE_URL` | — |
 | URL telemt API | `--api` / `TELEMT_API_URL` | `http://127.0.0.1:9091` |
 | Authorization для API telemt | `--auth` / `TELEMT_API_AUTH` | пусто (без авторизации) |
+| SSH-ключ для mtg-multi нод | `TELEMUX_MTG_SSH_KEY` | пусто = backend выключен |
+| Проверенные host keys mtg-нод | `TELEMUX_MTG_KNOWN_HOSTS` | `/etc/telemux/known_hosts` |
 | Логин панели | `TELEMUX_ADMIN_USER` | `admin` |
 | Пароль панели | `TELEMUX_ADMIN_PASSWORD` | пусто = auth выключен |
 
 PostgreSQL держать на loopback (`listen_addresses='127.0.0.1'`) + фаервол; наружу не открывать.
 Реплики стримят с primary по TLS + `pg_hba` allowlist.
+
+При включении mtg-multi backend файл `known_hosts` обязателен. Заполните его
+заранее проверенными ключами нод; отключение проверки host key не поддерживается.
+MTG-синхронизация выполняется только в режиме `--apply` и только экземпляром
+telemux на PostgreSQL primary. Реплики никогда не перезаписывают глобальные
+MTG-ноды, даже если на них ошибочно установлен SSH-ключ.
 
 ## Команды (CLI, доступно сейчас)
 

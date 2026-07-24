@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/AndreyOsipuk/telemux/internal/backend"
+	"github.com/AndreyOsipuk/telemux/internal/mtgsync"
 	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/telemtsync"
 )
@@ -30,6 +32,29 @@ func (n *fakeNode) ApplyOp(context.Context, telemtsync.SyncOp, string) (string, 
 	n.applied++
 	return "rev2", nil
 }
+
+type fakeMtgStore struct{}
+
+func (fakeMtgStore) ListDesired(context.Context) ([]telemtsync.DesiredUser, error) {
+	return []telemtsync.DesiredUser{{Username: "sub_1", Secret: "0123456789abcdef0123456789abcdef"}}, nil
+}
+func (fakeMtgStore) ListMtgNodes(context.Context) ([]backend.Node, error) {
+	return []backend.Node{{Code: "ps5", Backend: "mtg-multi", Mtg: &backend.MtgNodeCfg{}}}, nil
+}
+
+type countingMtgSyncer struct{ calls int }
+
+func (s *countingMtgSyncer) Sync(
+	context.Context,
+	backend.Node,
+	[]telemtsync.DesiredUser,
+) (backend.Result, error) {
+	s.calls++
+	return backend.Result{Changed: true}, nil
+}
+
+var _ mtgsync.Store = fakeMtgStore{}
+var _ mtgsync.Syncer = (*countingMtgSyncer)(nil)
 
 func newTestServer(inRecovery bool, n int) *Server {
 	users := make([]telemtsync.DesiredUser, n)
@@ -97,6 +122,51 @@ func TestSyncEndpoint(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &st)
 	if st.Creates != 2 || st.Mode != "shadow" {
 		t.Fatalf("ждали 2 create в shadow, получили %+v", st)
+	}
+}
+
+func TestMtgSyncDoesNotMutateInShadowMode(t *testing.T) {
+	syncer := &countingMtgSyncer{}
+	s := New(Deps{
+		Store:    fakeStore{},
+		Node:     &fakeNode{},
+		SyncOpts: syncpkg.Options{Mode: syncpkg.Shadow},
+		Mtg:      &MtgDeps{Store: fakeMtgStore{}, Syncer: syncer},
+	})
+
+	st := s.runSync(context.Background())
+	if syncer.calls != 0 || st.MtgChanged != 0 || st.MtgFailed != 0 {
+		t.Fatalf("shadow не должен запускать mutating MTG sync: calls=%d status=%+v", syncer.calls, st)
+	}
+}
+
+func TestMtgSyncRunsInApplyMode(t *testing.T) {
+	syncer := &countingMtgSyncer{}
+	s := New(Deps{
+		Store:    fakeStore{},
+		Node:     &fakeNode{},
+		SyncOpts: syncpkg.Options{Mode: syncpkg.Apply},
+		Mtg:      &MtgDeps{Store: fakeMtgStore{}, Syncer: syncer},
+	})
+
+	st := s.runSync(context.Background())
+	if syncer.calls != 1 || st.MtgChanged != 1 || st.MtgFailed != 0 {
+		t.Fatalf("apply должен запускать MTG sync: calls=%d status=%+v", syncer.calls, st)
+	}
+}
+
+func TestMtgSyncDoesNotMutateFromReplica(t *testing.T) {
+	syncer := &countingMtgSyncer{}
+	s := New(Deps{
+		Store:    fakeStore{inRecovery: true},
+		Node:     &fakeNode{},
+		SyncOpts: syncpkg.Options{Mode: syncpkg.Apply},
+		Mtg:      &MtgDeps{Store: fakeMtgStore{}, Syncer: syncer},
+	})
+
+	st := s.runSync(context.Background())
+	if syncer.calls != 0 || st.MtgChanged != 0 || st.MtgFailed != 0 {
+		t.Fatalf("replica не должна управлять глобальными MTG-нодами: calls=%d status=%+v", syncer.calls, st)
 	}
 }
 

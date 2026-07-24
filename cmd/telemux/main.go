@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -12,12 +13,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AndreyOsipuk/telemux/internal/backend/mtgmulti"
 	"github.com/AndreyOsipuk/telemux/internal/role"
 	"github.com/AndreyOsipuk/telemux/internal/selfupdate"
 	"github.com/AndreyOsipuk/telemux/internal/server"
-	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/store"
+	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/telemt"
+	"github.com/AndreyOsipuk/telemux/internal/telemtcfg"
 )
 
 var version = "dev"
@@ -34,6 +37,8 @@ func main() {
 		os.Exit(runRole(os.Args[2:]))
 	case "sync":
 		os.Exit(runSync(os.Args[2:]))
+	case "import-toml":
+		os.Exit(runImportToml(os.Args[2:]))
 	case "update":
 		os.Exit(runUpdate(os.Args[2:]))
 	case "serve":
@@ -46,6 +51,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  probe --api <url> [--auth h]            — проверить связь с telemt-API")
 		fmt.Fprintln(os.Stderr, "  role  --db <dsn>                        — роль ноды (master/replica) из локального PG")
 		fmt.Fprintln(os.Stderr, "  sync  --db <dsn> --api <url> [--apply]  — синхронизировать локальный telemt (shadow по умолч.)")
+		fmt.Fprintln(os.Stderr, "  import-toml --db <dsn> --file users.toml — импорт существующих юзеров С СЕКРЕТАМИ (обратная совместимость)")
 		fmt.Fprintln(os.Stderr, "  update [--owner o --repo r]             — обновить бинарь до последнего релиза (checksum+swap)")
 		fmt.Fprintln(os.Stderr, "  serve --db <dsn> --api <url> [--apply --listen :8080]  — демон: HTTP API + дашборд + автосинхра")
 	}
@@ -78,6 +84,22 @@ func runServe(args []string) int {
 	if *apply {
 		mode = syncpkg.Apply
 	}
+
+	// mtg-multi backend (опционально): включается заданием TELEMUX_MTG_SSH_KEY —
+	// путь к приватному ключу для доставки config на mtg-ноды по SSH. Без него
+	// синхронизируются только telemt-ноды (обратная совместимость).
+	var mtg *server.MtgDeps
+	if key := os.Getenv("TELEMUX_MTG_SSH_KEY"); key != "" {
+		knownHosts := envOr("TELEMUX_MTG_KNOWN_HOSTS", "/etc/telemux/known_hosts")
+		delivery, err := mtgmulti.NewSSHDelivery(key, knownHosts)
+		if err != nil {
+			logger.Error("mtg-multi SSH", "err", err)
+			return 1
+		}
+		mtg = &server.MtgDeps{Store: st, Syncer: mtgmulti.New(delivery)}
+		logger.Info("mtg-multi backend включён", "known_hosts", knownHosts)
+	}
+
 	srv := server.New(server.Deps{
 		Store: st, Node: telemt.New(*api, *auth), Version: version,
 		Interval: *interval, SyncOpts: syncpkg.Options{Mode: mode}, Log: logger,
@@ -91,6 +113,7 @@ func runServe(args []string) int {
 		SelfAddress:   envOr("TELEMUX_NODE_ADDRESS", ""),
 		SelfTelemtURL: *api,
 		MasterURL:     envOr("TELEMUX_MASTER_URL", ""),
+		Mtg:           mtg, // nil → mtg-ноды не синхронизируются
 	})
 	if err := srv.Run(ctx, *listen); err != nil {
 		logger.Error("serve", "err", err)
@@ -104,6 +127,67 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// runImportToml импортирует юзеров из telemt users.toml (с секретами) в telemux-PG.
+// Путь обратной совместимости: секреты совпадают с тем, что на ноде → старые ссылки живут.
+func runImportToml(args []string) int {
+	fs := flag.NewFlagSet("import-toml", flag.ContinueOnError)
+	dsn := fs.String("db", envOr("DATABASE_URL", ""), "DSN telemux-PG")
+	file := fs.String("file", "", "путь к users.toml (пусто = stdin)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	var data []byte
+	var err error
+	if *file == "" || *file == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(*file)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "чтение users.toml: %v\n", err)
+		return 1
+	}
+	parsed := telemtcfg.ParseUsersToml(string(data))
+	if len(parsed) == 0 {
+		fmt.Fprintln(os.Stderr, "в файле не найдено юзеров (секция [access.users])")
+		return 1
+	}
+	rows := make([]store.ImportRow, 0, len(parsed))
+	for _, u := range parsed {
+		rows = append(rows, store.ImportRow{
+			Username: u.Username, Secret: u.Secret,
+			ExpirationAt: u.ExpirationAt, MaxTCPConns: u.MaxTCPConns,
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	st, err := store.Open(ctx, *dsn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "PG: %v\n", err)
+		return 1
+	}
+	defer st.Close()
+
+	r, err := role.Detect(ctx, st)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "роль: %v\n", err)
+		return 1
+	}
+	if !r.IsMaster() {
+		fmt.Fprintln(os.Stderr, "это replica (PG read-only); импорт делается на master")
+		return 1
+	}
+
+	ins, upd, err := st.ImportUsers(ctx, rows)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "импорт: %v\n", err)
+		return 1
+	}
+	fmt.Printf("импортировано: новых=%d обновлено=%d (всего в файле=%d)\n", ins, upd, len(parsed))
+	return 0
 }
 
 func runUpdate(args []string) int {
