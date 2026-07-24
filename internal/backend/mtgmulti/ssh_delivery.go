@@ -5,39 +5,49 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/AndreyOsipuk/telemux/internal/backend"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // SSHDelivery — доставка config на mtg-ноду по SSH. Читает текущий config,
 // атомарно перезаписывает (tmp+mv) и рестартит демон одной сессией.
-//
-// Тестами не покрыта (реальный I/O); Sync-логика, которая её использует, покрыта
-// через mockDelivery. HostKey пока InsecureIgnoreHostKey — для прода заменить на
-// known_hosts (TODO), сейчас ноды в доверенной сети + ключевая авторизация.
 type SSHDelivery struct {
-	KeyPath     string        // путь к приватному ключу
-	DialTimeout time.Duration // таймаут соединения (0 → 10s)
+	signer          ssh.Signer
+	hostKeyCallback ssh.HostKeyCallback
+	DialTimeout     time.Duration // таймаут соединения (0 → 10s)
 }
 
-// NewSSHDelivery создаёт доставку с ключом keyPath.
-func NewSSHDelivery(keyPath string) *SSHDelivery {
-	return &SSHDelivery{KeyPath: keyPath, DialTimeout: 10 * time.Second}
-}
+var systemdUnitPattern = regexp.MustCompile(`^[A-Za-z0-9_.@:-]+$`)
 
-func (d *SSHDelivery) client(node backend.Node) (*ssh.Client, error) {
-	keyBytes, err := os.ReadFile(d.KeyPath)
+// NewSSHDelivery создаёт доставку с ключом keyPath и обязательной проверкой
+// host key по OpenSSH known_hosts.
+func NewSSHDelivery(keyPath, knownHostsPath string) (*SSHDelivery, error) {
+	keyBytes, err := os.ReadFile(keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("ssh: чтение ключа %q: %w", d.KeyPath, err)
+		return nil, fmt.Errorf("ssh: чтение ключа %q: %w", keyPath, err)
 	}
 	signer, err := ssh.ParsePrivateKey(keyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("ssh: парсинг ключа: %w", err)
 	}
+	hostKeyCallback, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		return nil, fmt.Errorf("ssh: known_hosts %q: %w", knownHostsPath, err)
+	}
+	return &SSHDelivery{
+		signer:          signer,
+		hostKeyCallback: hostKeyCallback,
+		DialTimeout:     10 * time.Second,
+	}, nil
+}
+
+func (d *SSHDelivery) client(ctx context.Context, node backend.Node) (*ssh.Client, error) {
 	user := node.SSHUser
 	if user == "" {
 		user = "root"
@@ -52,12 +62,35 @@ func (d *SSHDelivery) client(node backend.Node) (*ssh.Client, error) {
 	}
 	cfg := &ssh.ClientConfig{
 		User:            user,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: known_hosts для прода
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(d.signer)},
+		HostKeyCallback: d.hostKeyCallback,
 		Timeout:         to,
 	}
 	addr := net.JoinHostPort(node.Address, strconv.Itoa(port))
-	return ssh.Dial("tcp", addr, cfg)
+	raw, err := (&net.Dialer{Timeout: to}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("ssh: dial %s: %w", addr, err)
+	}
+
+	deadline := time.Now().Add(to)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := raw.SetDeadline(deadline); err != nil {
+		raw.Close()
+		return nil, fmt.Errorf("ssh: deadline %s: %w", addr, err)
+	}
+
+	conn, chans, reqs, err := ssh.NewClientConn(raw, addr, cfg)
+	if err != nil {
+		raw.Close()
+		return nil, fmt.Errorf("ssh: handshake %s: %w", addr, err)
+	}
+	if err := raw.SetDeadline(time.Time{}); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("ssh: clear deadline %s: %w", addr, err)
+	}
+	return ssh.NewClient(conn, chans, reqs), nil
 }
 
 // ReadConfig читает config.toml с ноды. Отсутствие файла → "" без ошибки.
@@ -65,7 +98,7 @@ func (d *SSHDelivery) ReadConfig(ctx context.Context, node backend.Node) (string
 	if node.Mtg == nil || node.Mtg.ConfigPath == "" {
 		return "", fmt.Errorf("ssh: не задан ConfigPath ноды %q", node.Code)
 	}
-	cl, err := d.client(node)
+	cl, err := d.client(ctx, node)
 	if err != nil {
 		return "", err
 	}
@@ -77,8 +110,11 @@ func (d *SSHDelivery) ReadConfig(ctx context.Context, node backend.Node) (string
 	}
 	defer sess.Close()
 
-	// `cat файл 2>/dev/null || true` — нет файла → пусто, не ошибка.
-	out, err := sess.Output("cat " + shellQuote(node.Mtg.ConfigPath) + " 2>/dev/null || true")
+	path := shellQuote(node.Mtg.ConfigPath)
+	// Отсутствующий config допустим для новой ноды. Любая другая ошибка чтения
+	// должна дойти до Sync, иначе transient SSH/permission failure вызовет
+	// ошибочную перезапись и рестарт.
+	out, err := outputContext(ctx, sess, "if [ ! -e "+path+" ]; then exit 0; fi; cat "+path)
 	if err != nil {
 		return "", fmt.Errorf("ssh: cat config на %q: %w", node.Code, err)
 	}
@@ -90,11 +126,14 @@ func (d *SSHDelivery) WriteAndReload(ctx context.Context, node backend.Node, con
 	if node.Mtg == nil || node.Mtg.ConfigPath == "" {
 		return fmt.Errorf("ssh: не задан ConfigPath ноды %q", node.Code)
 	}
-	reload := node.Mtg.ReloadCmd
-	if reload == "" {
-		reload = "systemctl restart mtg-multi"
+	service := node.Mtg.ServiceName
+	if service == "" {
+		service = "mtg-multi"
 	}
-	cl, err := d.client(node)
+	if !systemdUnitPattern.MatchString(service) {
+		return fmt.Errorf("ssh: недопустимое имя systemd-сервиса %q", service)
+	}
+	cl, err := d.client(ctx, node)
 	if err != nil {
 		return err
 	}
@@ -108,17 +147,70 @@ func (d *SSHDelivery) WriteAndReload(ctx context.Context, node backend.Node, con
 
 	path := node.Mtg.ConfigPath
 	tmp := path + ".tmp"
-	// config подаётся в stdin → пишется в tmp → атомарный mv → рестарт.
-	// `cat > tmp` берёт ровно stdin, без интерполяции (секреты безопасны).
+	backup := path + ".telemux-backup"
+	// Config подаётся в stdin, ставится с mode 0600 и заменяется атомарно. При
+	// неуспешном restart восстанавливаем предыдущую версию и пытаемся поднять её.
 	script := fmt.Sprintf(
-		"set -e; mkdir -p %s; cat > %s; mv %s %s; %s",
-		shellQuote(dirOf(path)), shellQuote(tmp), shellQuote(tmp), shellQuote(path), reload,
+		"set -e; umask 077; mkdir -p %s; cat > %s; chmod 600 %s; "+
+			"had_old=0; if [ -e %s ]; then cp -p %s %s; had_old=1; fi; "+
+			"mv %s %s; "+
+			"if systemctl restart -- %s; then rm -f %s; exit 0; fi; "+
+			"if [ \"$had_old\" -eq 1 ]; then mv %s %s; systemctl restart -- %s || true; else rm -f %s; fi; exit 1",
+		shellQuote(dirOf(path)),
+		shellQuote(tmp),
+		shellQuote(tmp),
+		shellQuote(path),
+		shellQuote(path),
+		shellQuote(backup),
+		shellQuote(tmp),
+		shellQuote(path),
+		shellQuote(service),
+		shellQuote(backup),
+		shellQuote(backup),
+		shellQuote(path),
+		shellQuote(service),
+		shellQuote(path),
 	)
 	sess.Stdin = strings.NewReader(config)
-	if out, err := sess.CombinedOutput(script); err != nil {
+	if out, err := combinedOutputContext(ctx, sess, script); err != nil {
 		return fmt.Errorf("ssh: write+reload на %q: %w (вывод: %s)", node.Code, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+type sessionResult struct {
+	output []byte
+	err    error
+}
+
+func outputContext(ctx context.Context, sess *ssh.Session, command string) ([]byte, error) {
+	result := make(chan sessionResult, 1)
+	go func() {
+		output, err := sess.Output(command)
+		result <- sessionResult{output: output, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = sess.Close()
+		return nil, ctx.Err()
+	case r := <-result:
+		return r.output, r.err
+	}
+}
+
+func combinedOutputContext(ctx context.Context, sess *ssh.Session, command string) ([]byte, error) {
+	result := make(chan sessionResult, 1)
+	go func() {
+		output, err := sess.CombinedOutput(command)
+		result <- sessionResult{output: output, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = sess.Close()
+		return nil, ctx.Err()
+	case r := <-result:
+		return r.output, r.err
+	}
 }
 
 // shellQuote — безопасное одинарное квотирование для shell.

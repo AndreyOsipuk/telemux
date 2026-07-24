@@ -148,6 +148,19 @@ func TestSync_DeliveryError(t *testing.T) {
 	}
 }
 
+func TestSync_ReadErrorDoesNotOverwriteNode(t *testing.T) {
+	m := &mockDelivery{readErr: errors.New("ssh read timeout")}
+	p := New(m)
+
+	if _, err := p.Sync(context.Background(), testNode(),
+		[]telemtsync.DesiredUser{{Username: "sub_1", Secret: key32}}); err == nil {
+		t.Fatal("ошибка чтения должна пробрасываться")
+	}
+	if m.writeCalled != 0 {
+		t.Fatal("при ошибке чтения нельзя перезаписывать config и рестартить ноду")
+	}
+}
+
 func TestPlugin_Kind(t *testing.T) {
 	if New(&mockDelivery{}).Kind() != "mtg-multi" {
 		t.Error("Kind должен быть mtg-multi")

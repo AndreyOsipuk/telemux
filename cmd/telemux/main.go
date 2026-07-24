@@ -90,8 +90,14 @@ func runServe(args []string) int {
 	// синхронизируются только telemt-ноды (обратная совместимость).
 	var mtg *server.MtgDeps
 	if key := os.Getenv("TELEMUX_MTG_SSH_KEY"); key != "" {
-		mtg = &server.MtgDeps{Store: st, Syncer: mtgmulti.New(mtgmulti.NewSSHDelivery(key))}
-		logger.Info("mtg-multi backend включён", "ssh_key", key)
+		knownHosts := envOr("TELEMUX_MTG_KNOWN_HOSTS", "/etc/telemux/known_hosts")
+		delivery, err := mtgmulti.NewSSHDelivery(key, knownHosts)
+		if err != nil {
+			logger.Error("mtg-multi SSH", "err", err)
+			return 1
+		}
+		mtg = &server.MtgDeps{Store: st, Syncer: mtgmulti.New(delivery)}
+		logger.Info("mtg-multi backend включён", "known_hosts", knownHosts)
 	}
 
 	srv := server.New(server.Deps{

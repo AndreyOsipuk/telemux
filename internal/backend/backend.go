@@ -23,7 +23,7 @@ type MtgNodeCfg struct {
 	PreferIP       string // "only-ipv4"
 	MaxConns       int    // throttle; 0 = off
 	ConfigPath     string // "/etc/mtg-multi/config.toml"
-	ReloadCmd      string // "systemctl restart mtg-multi"
+	ServiceName    string // "mtg-multi"
 }
 
 // Node — нода с точки зрения backend-слоя (подмножество store.Node + backend-поля).

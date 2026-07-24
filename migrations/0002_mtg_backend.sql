@@ -17,4 +17,4 @@ ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_fronting_domain TEXT;  -- static-
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_prefer_ip       TEXT;  -- only-ipv4
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_max_conns       INTEGER; -- throttle; NULL/0 = off
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_config_path     TEXT;  -- /etc/mtg-multi/config.toml
-ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_reload_cmd      TEXT;  -- systemctl restart mtg-multi
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_service_name    TEXT;  -- mtg-multi

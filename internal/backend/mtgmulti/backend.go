@@ -50,8 +50,10 @@ func (p *Plugin) Sync(ctx context.Context, node backend.Node, desired []telemtsy
 	}
 	applied := countActive(desired, now)
 
-	// Текущий config с ноды (ошибка чтения = считаем пустым → перезапишем).
-	cur, _ := p.deliver.ReadConfig(ctx, node)
+	cur, err := p.deliver.ReadConfig(ctx, node)
+	if err != nil {
+		return backend.Result{}, fmt.Errorf("mtgmulti: чтение текущего config на %q: %w", node.Code, err)
+	}
 	if strings.TrimSpace(cur) == strings.TrimSpace(cfg) {
 		return backend.Result{Changed: false, Restarted: false, Applied: applied}, nil
 	}

@@ -1,6 +1,7 @@
 # Сборка
 /dist/
 /telemux
+/telemux-*
 *.test
 
 # Локальное окружение
