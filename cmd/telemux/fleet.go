@@ -110,7 +110,10 @@ func runAgent(args []string) int {
 	tokenFile := fs.String("token-file", envOr("TELEMUX_AGENT_TOKEN_FILE", "/etc/telemux/agent.token"), "файл с токеном машины")
 	target := fs.String("target", envOr("TELEMUX_AGENT_TARGET", ""), "код этой машины")
 	usersFile := fs.String("users-file", envOr("TELEMUX_AGENT_USERS_FILE", "/etc/telemt/users.toml"), "users.toml на машине")
-	mode := fs.String("mode", envOr("TELEMUX_AGENT_MODE", agent.ModeCompare), "режим: compare (только сравнить)")
+	mode := fs.String("mode", envOr("TELEMUX_AGENT_MODE", agent.ModeCompare), "режим: compare (только сравнить) или apply (применять)")
+	configFile := fs.String("config-file", envOr("TELEMUX_AGENT_CONFIG_FILE", "/etc/telemt/telemt.toml"), "telemt.toml (WEB-профили) для режима apply")
+	stateURL := fs.String("state-url", envOr("TELEMUX_AGENT_STATE_URL", agent.DefaultStateURL), "API telemt: принят ли конфиг")
+	unit := fs.String("telemt-unit", envOr("TELEMUX_AGENT_TELEMT_UNIT", "telemt"), "юнит systemd telemt (SIGHUP)")
 	via := fs.String("via", envOr("TELEMUX_AGENT_VIA", ""), "через какой мост ходит агент (для отчёта)")
 	wait := fs.Duration("wait", 55*time.Second, "long-poll")
 	recheck := fs.Duration("recheck", 5*time.Minute, "перепроверка диска без новой ревизии")
@@ -123,7 +126,12 @@ func runAgent(args []string) int {
 		return 2
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	var applier *agent.Applier
+	if *mode == agent.ModeApply {
+		applier = &agent.Applier{ConfigFile: *configFile, StateURL: *stateURL, Reloader: agent.SystemdReloader{Unit: *unit}}
+	}
 	a, err := agent.New(agent.Config{
+		Applier:    applier,
 		MasterURLs: splitList(*masters), Token: strings.TrimSpace(string(raw)), Target: *target,
 		Version: version, Via: *via, UsersFile: *usersFile, Mode: *mode,
 		Wait: *wait, RecheckEvery: *recheck, Log: logger,

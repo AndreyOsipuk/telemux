@@ -1,8 +1,9 @@
 // Package agent - агент telemux на машине флота (ADR 0001): сам забирает
 // желаемое состояние у мастера по HTTP long-poll и отчитывается о нём.
 //
-// Сейчас поддержан режим «только сравнить»: агент сравнивает users.toml на
-// диске с желаемым и отчитывается, но файл не трогает. Применение - этап 3 плана.
+// Режимы: compare - сравнить users.toml на диске с желаемым и отчитаться, ничего
+// не меняя; apply - применить (users.toml + WEB-профили, проверка «telemt принял»,
+// откат при отказе, см. apply.go).
 package agent
 
 import (
@@ -26,8 +27,12 @@ import (
 	"github.com/AndreyOsipuk/telemux/internal/telemtcfg"
 )
 
-// ModeCompare - только сравнивать с желаемым, ничего не менять на машине.
-const ModeCompare = "compare"
+const (
+	// ModeCompare - только сравнивать с желаемым, ничего не менять на машине.
+	ModeCompare = "compare"
+	// ModeApply - применять желаемое с проверкой и откатом.
+	ModeApply = "apply"
+)
 
 // Config - настройки агента.
 type Config struct {
@@ -37,7 +42,8 @@ type Config struct {
 	Version      string        // версия агента для отчёта
 	Via          string        // через какой мост ходит агент (для отчёта), необязательно
 	UsersFile    string        // путь к users.toml на машине
-	Mode         string        // пока только ModeCompare
+	Mode         string        // ModeCompare или ModeApply
+	Applier      *Applier      // для ModeApply; UsersFile берётся из конфига агента
 	Wait         time.Duration // сколько мастер держит long-poll; по умолчанию 55 с
 	RecheckEvery time.Duration // как часто перепроверять диск без новой ревизии; по умолчанию 5 мин
 	Log          *slog.Logger
@@ -53,6 +59,9 @@ type Agent struct {
 	users     *store.Desired // последнее желаемое telemt.users
 	lastCheck time.Time      // когда последний раз сверяли диск
 	force     bool           // перепроверить диск в следующем цикле
+
+	failedRev int64  // ревизия, которую telemt отверг: повторно не применяется
+	failedErr string // причина отказа для повторных отчётов
 }
 
 // New проверяет конфиг и создаёт агента.
@@ -66,8 +75,13 @@ func New(cfg Config) (*Agent, error) {
 		return nil, errors.New("нужен код машины")
 	case cfg.UsersFile == "":
 		return nil, errors.New("нужен путь к users.toml")
-	case cfg.Mode != ModeCompare:
-		return nil, fmt.Errorf("режим %q не поддержан, доступен только %q", cfg.Mode, ModeCompare)
+	case cfg.Mode != ModeCompare && cfg.Mode != ModeApply:
+		return nil, fmt.Errorf("режим %q не поддержан: %q или %q", cfg.Mode, ModeCompare, ModeApply)
+	case cfg.Mode == ModeApply && cfg.Applier == nil:
+		return nil, errors.New("для режима apply нужен Applier")
+	}
+	if cfg.Applier != nil {
+		cfg.Applier.UsersFile = cfg.UsersFile
 	}
 	if cfg.Wait <= 0 {
 		cfg.Wait = 55 * time.Second
@@ -194,13 +208,11 @@ func (a *Agent) checkAndReport(ctx context.Context, base string) error {
 	if !due {
 		return nil
 	}
-	res := store.ObservedResource{Resource: store.ResourceTelemtUsers, Revision: d.Revision, SHA256: d.SHA256, Status: "compared"}
-	onDisk, err := os.ReadFile(a.cfg.UsersFile)
-	if err != nil {
-		res.Status = "failed"
-		res.Error = fmt.Sprintf("users.toml не читается: %v", err)
-	} else if eq, diff := CompareUsers(d.Content, onDisk); !eq {
-		res.Error = diff
+	var res store.ObservedResource
+	if a.cfg.Mode == ModeApply {
+		res = a.applyUsers(ctx, d)
+	} else {
+		res = a.compareUsers(d)
 	}
 	rep := store.ObservedReport{Target: a.cfg.Target, AgentVersion: a.cfg.Version, Via: a.cfg.Via, Resources: []store.ObservedResource{res}}
 	if err := a.report(ctx, base, rep); err != nil {
@@ -212,6 +224,40 @@ func (a *Agent) checkAndReport(ctx context.Context, base string) error {
 	a.mu.Unlock()
 	a.cfg.Log.Info("агент: сверка", "revision", d.Revision, "status", res.Status, "diff", res.Error)
 	return nil
+}
+
+func (a *Agent) compareUsers(d *store.Desired) store.ObservedResource {
+	res := store.ObservedResource{Resource: store.ResourceTelemtUsers, Revision: d.Revision, SHA256: d.SHA256, Status: "compared"}
+	onDisk, err := os.ReadFile(a.cfg.UsersFile)
+	if err != nil {
+		res.Status = "failed"
+		res.Error = fmt.Sprintf("users.toml не читается: %v", err)
+	} else if eq, diff := CompareUsers(d.Content, onDisk); !eq {
+		res.Error = diff
+	}
+	return res
+}
+
+// applyUsers применяет ревизию; отвергнутую ревизию не повторяет - ждёт новую.
+func (a *Agent) applyUsers(ctx context.Context, d *store.Desired) store.ObservedResource {
+	res := store.ObservedResource{Resource: store.ResourceTelemtUsers, Revision: d.Revision, SHA256: d.SHA256}
+	a.mu.Lock()
+	failedRev, failedErr := a.failedRev, a.failedErr
+	a.mu.Unlock()
+	if failedRev == d.Revision {
+		res.Status, res.Error = "failed", failedErr
+		return res
+	}
+	r := a.cfg.Applier.Apply(ctx, d.Content)
+	res.Status, res.Error = r.Status, r.Error
+	a.mu.Lock()
+	if r.Status == "failed" {
+		a.failedRev, a.failedErr = d.Revision, r.Error
+	} else {
+		a.failedRev, a.failedErr = 0, ""
+	}
+	a.mu.Unlock()
+	return res
 }
 
 func (a *Agent) report(ctx context.Context, base string, rep store.ObservedReport) error {

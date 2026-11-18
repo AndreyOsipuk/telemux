@@ -8,9 +8,10 @@ EnvironmentFile=/etc/telemux/agent.env
 ExecStart=/usr/local/bin/telemux agent
 Restart=always
 RestartSec=5
-# Режим сравнения только читает users.toml.
+# Система только для чтения, кроме конфигов telemt: в режиме apply агент заменяет
+# users.toml и telemt.toml (рядом - .telemux-bak). В режиме compare он их только читает.
 ProtectSystem=strict
-ReadOnlyPaths=/etc/telemt
+ReadWritePaths=/etc/telemt
 ProtectHome=true
 NoNewPrivileges=true
 
