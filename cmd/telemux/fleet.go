@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/AndreyOsipuk/telemux/internal/agent"
+	"github.com/AndreyOsipuk/telemux/internal/bridge"
 	"github.com/AndreyOsipuk/telemux/internal/store"
 )
 
@@ -144,5 +145,29 @@ func runAgent(args []string) int {
 	defer stop()
 	logger.Info("агент запущен", "target", *target, "mode", *mode, "masters", *masters, "version", version)
 	a.Run(ctx)
+	return 0
+}
+
+// runBridge: мост на машине-выходе - принимает агента релея из туннеля и
+// пересылает его запросы мастеру; при недоступном мастере отдаёт кэш.
+func runBridge(args []string) int {
+	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
+	listen := fs.String("listen", envOr("TELEMUX_BRIDGE_LISTEN", "127.0.0.1:18480"), "адрес моста (loopback, куда приходит туннель)")
+	masters := fs.String("master", envOr("TELEMUX_BRIDGE_MASTERS", ""), "адреса мастера через запятую по приоритету")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	b, err := bridge.New(bridge.Config{MasterURLs: splitList(*masters), Log: logger})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := b.Run(ctx, *listen); err != nil {
+		logger.Error("мост", "err", err)
+		return 1
+	}
 	return 0
 }

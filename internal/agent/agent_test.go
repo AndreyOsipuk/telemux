@@ -273,3 +273,24 @@ func TestNew_Validates(t *testing.T) {
 		}
 	}
 }
+
+// Мост при недоступном мастере принимает отчёт с 202 - для агента это успех.
+func TestAgent_AcceptsQueuedReport(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "users.toml")
+	_ = os.WriteFile(file, []byte(botFormat), 0o600)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/observed" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(store.Bundle{Target: "pr2", Revision: 1, Resources: []store.Desired{
+			{Resource: store.ResourceTelemtUsers, Revision: 1, SHA256: "x", Content: desiredTwo()},
+		}})
+	}))
+	defer srv.Close()
+	a := newAgent(t, []string{srv.URL}, file)
+	if _, err := a.RunOnce(context.Background()); err != nil {
+		t.Fatalf("202 от моста должен считаться успехом: %v", err)
+	}
+}

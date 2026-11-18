@@ -1,0 +1,17 @@
+[Unit]
+Description=telemux bridge - мост для агента релея через туннель
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/telemux/bridge.env
+ExecStart=/usr/local/bin/telemux bridge
+Restart=always
+RestartSec=5
+DynamicUser=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

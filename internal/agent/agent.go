@@ -273,7 +273,8 @@ func (a *Agent) report(ctx context.Context, base string, rep store.ObservedRepor
 		return fmt.Errorf("отчёт: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+	// 202 - мост принял отчёт в очередь и дошлёт мастеру сам.
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("отчёт: мастер ответил %d: %s", resp.StatusCode, msg)
 	}
