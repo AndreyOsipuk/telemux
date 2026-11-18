@@ -155,8 +155,11 @@ func runServe(args []string) int {
 	}
 
 	srv := server.New(server.Deps{
-		Panel: panel,
-		Store: st, Node: telemt.New(*api, *auth), Version: version,
+		Panel:       panel,
+		TLSListen:   envOr("TELEMUX_TLS_LISTEN", ""),
+		TLSCertFile: envOr("TELEMUX_TLS_CERT", "/etc/telemux/tls/cert.pem"),
+		TLSKeyFile:  envOr("TELEMUX_TLS_KEY", "/etc/telemux/tls/key.pem"),
+		Store:       st, Node: telemt.New(*api, *auth), Version: version,
 		Interval: *interval, SyncOpts: syncpkg.Options{Mode: mode}, Log: logger,
 		AdminUser:     envOr("TELEMUX_ADMIN_USER", "admin"),
 		AdminPassword: envOr("TELEMUX_ADMIN_PASSWORD", ""),

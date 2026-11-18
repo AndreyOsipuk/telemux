@@ -12,7 +12,7 @@ RestartSec=5
 # заменяет users.toml, telemt.toml и config.toml mtg (рядом - .telemux-bak). В режиме
 # compare он их только читает.
 ProtectSystem=strict
-ReadWritePaths=/etc/telemt /etc/mtg-multi
+ReadWritePaths=-/etc/telemt -/etc/mtg-multi
 ProtectHome=true
 NoNewPrivileges=true
 
