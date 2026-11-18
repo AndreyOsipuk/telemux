@@ -33,7 +33,7 @@ func setupAll(t *testing.T) *Store {
 			t.Fatalf("миграция %s: %v", f, err)
 		}
 	}
-	if _, err := st.pool.Exec(ctx, `TRUNCATE users, targets, desired_config, observed_state, apply_log`); err != nil {
+	if _, err := st.pool.Exec(ctx, `TRUNCATE users, targets, desired_config, observed_state, apply_log, agent_tokens`); err != nil {
 		t.Fatalf("TRUNCATE: %v", err)
 	}
 	return st

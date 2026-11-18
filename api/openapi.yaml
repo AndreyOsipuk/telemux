@@ -132,12 +132,60 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /v1/desired:
+    get:
+      summary: Желаемое состояние машины (long-poll агента)
+      description: |
+        Ответ сразу, если есть ревизия новее `rev`; иначе запрос ждёт до `wait`
+        (максимум 60 с) и возвращает 304. Токен машины даёт доступ только к её бандлу.
+      operationId: getDesired
+      security:
+        - agentToken: []
+      parameters:
+        - { name: target, in: query, required: true, schema: { type: string } }
+        - { name: rev, in: query, required: true, schema: { type: integer, minimum: 0 } }
+        - { name: wait, in: query, schema: { type: string, example: 55s } }
+      responses:
+        '200':
+          description: Бандл новее известной агенту ревизии
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bundle' }
+        '304': { description: Новее нет }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /v1/observed:
+    post:
+      summary: Отчёт агента о состоянии машины
+      operationId: postObserved
+      security:
+        - agentToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ObservedReport' }
+      responses:
+        '204': { description: Отчёт принят }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     botToken:
       type: http
       scheme: bearer
       description: Токен бота (TELEMUX_BOT_TOKEN)
+    agentToken:
+      type: http
+      scheme: bearer
+      description: Токен машины (telemux agent-token)
     session:
       type: apiKey
       in: cookie
@@ -208,6 +256,42 @@ components:
           enum: [applied, failed, pending, compared, unknown]
         seen_at: { type: string, format: date-time, nullable: true }
         applied: { type: boolean }
+    Bundle:
+      type: object
+      required: [target, revision, resources]
+      properties:
+        target: { type: string }
+        revision: { type: integer }
+        resources:
+          type: array
+          items:
+            type: object
+            required: [resource, revision, sha256, content]
+            properties:
+              resource: { type: string, example: telemt.users }
+              revision: { type: integer }
+              sha256: { type: string }
+              content: { type: string, format: byte, description: Содержимое файла в base64 }
+    ObservedReport:
+      type: object
+      required: [target, resources]
+      properties:
+        target: { type: string }
+        agent_version: { type: string }
+        via: { type: string, description: Через какой мост пришёл отчёт }
+        resources:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            required: [resource, revision, status]
+            properties:
+              resource: { type: string }
+              revision: { type: integer, minimum: 0 }
+              sha256: { type: string }
+              status: { type: string, enum: [applied, failed, pending, compared] }
+              error: { type: string, description: "Причина отказа или описание расхождения (в режиме сравнения)" }
     Error:
       type: object
       required: [code, message]

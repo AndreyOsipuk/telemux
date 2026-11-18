@@ -46,7 +46,12 @@ type Deps struct {
 	Revisions       RevisionStore
 	BotToken        string // Bearer бота для /api/v1/users и /api/v1/revisions
 	DefaultMaxConns int    // лимит подключений по умолчанию в users.toml
-	PublicURL       string // внешний URL мастера (для join-команды)
+
+	// API агентов на машинах (/v1/desired, /v1/observed); nil → выключено.
+	Agents AgentStore
+	// Как часто long-poll перепроверяет базу (публикации с других узлов). По умолчанию 1 с.
+	DesiredPollInterval time.Duration
+	PublicURL           string // внешний URL мастера (для join-команды)
 
 	// Идентичность ноды для heartbeat (пусто → heartbeat выключен).
 	SelfCode      string
@@ -81,6 +86,8 @@ type Server struct {
 
 	mu       sync.RWMutex
 	lastSync syncStatus
+
+	revs revisionWatch // будит long-poll агентов после публикации
 }
 
 // markDirty просит sync-loop синхронизироваться немедленно (не дожидаясь интервала).
@@ -111,6 +118,9 @@ func New(d Deps) *Server {
 	}
 	if d.Log == nil {
 		d.Log = slog.Default()
+	}
+	if d.DesiredPollInterval <= 0 {
+		d.DesiredPollInterval = time.Second
 	}
 	s := &Server{deps: d, mux: http.NewServeMux(), auth: newAuth(d.AdminUser, d.AdminPassword), dirty: make(chan struct{}, 1)}
 	s.routes()
@@ -149,6 +159,9 @@ func (s *Server) routes() {
 	}
 	if s.deps.Revisions != nil && s.deps.Users != nil {
 		s.routesV1()
+	}
+	if s.deps.Agents != nil {
+		s.routesAgents()
 	}
 	s.mux.HandleFunc("GET /api/openapi.json", s.handleSpec)
 	// Дашборд (встроенный, см. web.go).

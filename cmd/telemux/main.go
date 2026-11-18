@@ -49,6 +49,14 @@ func main() {
 		os.Exit(runServe(os.Args[2:]))
 	case "fence":
 		os.Exit(runFence(os.Args[2:]))
+	case "target":
+		os.Exit(runTarget(os.Args[2:]))
+	case "agent-token":
+		os.Exit(runAgentToken(os.Args[2:]))
+	case "publish":
+		os.Exit(runPublish(os.Args[2:]))
+	case "agent":
+		os.Exit(runAgent(os.Args[2:]))
 	case "-version", "--version", "version":
 		fmt.Printf("telemux %s\n", version)
 	default:
@@ -56,6 +64,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "команды:")
 		fmt.Fprintln(os.Stderr, "  probe --api <url> [--auth h]            — проверить связь с telemt-API")
 		fmt.Fprintln(os.Stderr, "  role  --db <dsn>                        — роль ноды (master/replica) из локального PG")
+		fmt.Fprintln(os.Stderr, "  target --code c --kind exit|relay [--resources telemt.users] — машина флота")
+		fmt.Fprintln(os.Stderr, "  agent-token --target c                  — выпустить токен агента машины")
+		fmt.Fprintln(os.Stderr, "  publish                                 — опубликовать ревизию users.toml вручную")
+		fmt.Fprintln(os.Stderr, "  agent --master u[,u] --target c [--mode compare] — агент на машине")
 		fmt.Fprintln(os.Stderr, "  sync  --db <dsn> --api <url> [--apply]  — синхронизировать локальный telemt (shadow по умолч.)")
 		fmt.Fprintln(os.Stderr, "  import-toml --db <dsn> --file users.toml — импорт существующих юзеров С СЕКРЕТАМИ (обратная совместимость)")
 		fmt.Fprintln(os.Stderr, "  update [--owner o --repo r]             — обновить бинарь до последнего релиза (checksum+swap)")
@@ -130,6 +142,7 @@ func runServe(args []string) int {
 		ClusterSecret: clusterSecret,
 		// API бота (/api/v1/users, /api/v1/revisions): ревизии желаемого состояния.
 		Revisions:       st,
+		Agents:          st, // /v1/desired и /v1/observed для агентов
 		BotToken:        envOr("TELEMUX_BOT_TOKEN", ""),
 		DefaultMaxConns: defaultMaxConns,
 		PublicURL:       envOr("TELEMUX_PUBLIC_URL", "http://127.0.0.1"+*listen),

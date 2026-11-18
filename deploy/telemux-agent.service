@@ -1,0 +1,18 @@
+[Unit]
+Description=telemux agent - сверяет состояние машины с мастером
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/telemux/agent.env
+ExecStart=/usr/local/bin/telemux agent
+Restart=always
+RestartSec=5
+# Режим сравнения только читает users.toml.
+ProtectSystem=strict
+ReadOnlyPaths=/etc/telemt
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

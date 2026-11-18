@@ -75,6 +75,9 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) (store.PublishR
 		return res, false
 	}
 	s.markDirty()
+	if len(res.Changed) > 0 {
+		s.revs.bump()
+	}
 	return res, true
 }
 

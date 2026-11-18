@@ -161,11 +161,11 @@ func renderUsers(ctx context.Context, tx pgx.Tx) ([]telemtcfg.RenderUser, error)
 
 // Desired - желаемое состояние ресурса машины.
 type Desired struct {
-	Target   string
-	Resource string
-	Revision int64
-	SHA256   string
-	Content  []byte
+	Target   string `json:"-"`
+	Resource string `json:"resource"`
+	Revision int64  `json:"revision"`
+	SHA256   string `json:"sha256"`
+	Content  []byte `json:"content"` // в JSON - base64
 }
 
 // LatestDesired - последняя ревизия ресурса машины.

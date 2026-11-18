@@ -89,6 +89,44 @@ func TestContract_V1(t *testing.T) {
 	checkContract(t, router, replica, "DELETE", "/api/v1/users/alice_1", "", http.StatusConflict)
 }
 
+func TestContract_Agents(t *testing.T) {
+	_, router := loadSpec(t)
+	s, fr, _ := agentServer(false)
+	fr.rev = 2
+	check := func(method, path, token, body string, want int) {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		route, params, err := router.FindRoute(req)
+		if err != nil {
+			t.Fatalf("%s %s нет в спеке: %v", method, path, err)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("%s %s → ждали %d, получили %d: %s", method, path, want, rec.Code, rec.Body.String())
+		}
+		in := &openapi3filter.RequestValidationInput{Request: req, PathParams: params, Route: route,
+			Options: &openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc, ExcludeRequestBody: true}}
+		res := rec.Result()
+		if err := openapi3filter.ValidateResponse(context.Background(), &openapi3filter.ResponseValidationInput{
+			RequestValidationInput: in, Status: res.StatusCode, Header: res.Header,
+			Body: io.NopCloser(bytes.NewReader(rec.Body.Bytes())),
+		}); err != nil {
+			t.Fatalf("%s %s %d не соответствует спеке: %v", method, path, rec.Code, err)
+		}
+	}
+	check("GET", "/v1/desired?target=pr2&rev=1", pr2Token, "", http.StatusOK)
+	check("GET", "/v1/desired?target=pr2&rev=2&wait=10ms", pr2Token, "", http.StatusNotModified)
+	check("GET", "/v1/desired?target=ps2&rev=1", pr2Token, "", http.StatusForbidden)
+	check("GET", "/v1/desired?target=pr2&rev=1", "nope", "", http.StatusUnauthorized)
+	check("POST", "/v1/observed", pr2Token, `{"target":"pr2","resources":[{"resource":"telemt.users","revision":2,"status":"compared"}]}`, http.StatusNoContent)
+	check("POST", "/v1/observed", pr2Token, `{"target":"pr2","resources":[{"resource":"telemt.users","revision":2,"status":"bad"}]}`, http.StatusBadRequest)
+}
+
 // Спека отдаётся панели в JSON без авторизации (для страницы /api-docs).
 func TestContract_SpecServed(t *testing.T) {
 	doc, _ := loadSpec(t)

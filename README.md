@@ -195,7 +195,37 @@ API для бота (Bearer `TELEMUX_BOT_TOKEN` или сессия панели
 `targets`, у которых он отличается. Агенты на машинах забирают ревизии и отчитываются в
 `observed_state` (этап 2 плана, [docs/PLAN.md](docs/PLAN.md)).
 
+API агентов на машинах (Bearer-токен машины):
+
+| Метод | Путь | Что делает |
+|---|---|---|
+| `GET` | `/v1/desired?target=&rev=&wait=` | long-poll: бандл сразу, если есть ревизия новее `rev`, иначе ожидание до `wait` (до 60 с) и 304 |
+| `POST` | `/v1/observed` | отчёт агента: ревизия, хеш, статус (`applied`, `failed`, `pending`, `compared`) |
+
+Токен машины даёт доступ только к её бандлу; в базе хранится только хеш токена.
+
 Ошибки - `{code, message}`: 4xx - ошибка запроса, 503 - недоступна база, 500 - баг.
+
+## Агент на машине
+
+Агент сам забирает желаемое состояние у мастера и отчитывается
+([ADR 0001](docs/adr/0001-pull-reconcile.md)). Сейчас доступен режим **compare**:
+агент сравнивает `users.toml` на диске с желаемым по смыслу (набор пользователей,
+секреты, сроки, лимиты; порядок строк и формат не важны) и отправляет отчёт.
+Файл он не меняет.
+
+На мастере:
+
+```sh
+telemux target --code pr2 --kind relay --resources telemt.users   # машина флота
+telemux agent-token --target pr2 > pr2.token                        # токен (прежний перестаёт работать)
+telemux publish                                                     # опубликовать ревизию вручную
+```
+
+На машине: бинарь `telemux`, токен в `/etc/telemux/agent.token` (chmod 600),
+настройки - [deploy/agent.env.example](deploy/agent.env.example) в `/etc/telemux/agent.env`,
+юнит - [deploy/telemux-agent.service](deploy/telemux-agent.service).
+Результаты сверки видны в `observed_state` и `apply_log`.
 
 ## Команды (CLI, доступно сейчас)
 
