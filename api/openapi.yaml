@@ -1,0 +1,221 @@
+openapi: 3.0.3
+info:
+  title: telemux API
+  version: "1"
+  description: |
+    Единый источник правды для HTTP-API telemux: бэкенд проверяется по этой
+    спеке в тестах, панель генерирует из неё типы.
+
+    Ошибки - в формате `Error`. 4xx - ошибка запроса, 503 - недоступна база или
+    мастер, 500 - баг. Запись принимает только мастер: на остальных узлах -
+    409 с кодом `not_master` и заголовком `X-Telemux-Master`.
+servers:
+  - url: /
+security:
+  - botToken: []
+  - session: []
+paths:
+  /api/v1/users:
+    put:
+      summary: Полный набор пользователей от бота
+      description: |
+        Сверка: пользователи из набора создаются или обновляются, отсутствующие
+        удаляются. Затем публикуется ревизия желаемого состояния машин.
+        Защита от массового удаления: пустой набор или удаление больше 20% при
+        10+ пользователях - 409 `mass_delete_guard`, пока не передан `force=true`.
+      operationId: putUsers
+      parameters:
+        - name: force
+          in: query
+          schema: { type: boolean }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [users]
+              properties:
+                users:
+                  type: array
+                  maxItems: 50000
+                  items: { $ref: '#/components/schemas/User' }
+      responses:
+        '200':
+          description: Набор применён, ревизия опубликована
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Publish'
+                  - type: object
+                    required: [inserted, updated, deleted]
+                    properties:
+                      inserted: { type: integer }
+                      updated: { type: integer }
+                      deleted: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/users/{key}:
+    parameters:
+      - $ref: '#/components/parameters/UserKey'
+    put:
+      summary: Создать или изменить одного пользователя
+      operationId: putUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserBody' }
+      responses:
+        '200':
+          description: Пользователь изменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PointChange' }
+        '201':
+          description: Пользователь создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PointChange' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Удалить пользователя
+      operationId: deleteUser
+      responses:
+        '200':
+          description: Удалён, ревизия опубликована
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Publish' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/revisions/{rev}/status:
+    get:
+      summary: Дошла ли ревизия до машин
+      description: |
+        По каждой машине с ресурсом telemt.users: применено ли состояние не
+        старее ревизии `rev`. Бот выдаёт ссылку, когда применили нужные машины.
+      operationId: getRevisionStatus
+      parameters:
+        - name: rev
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Статус по машинам
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision, applied, total, targets]
+                properties:
+                  revision: { type: integer }
+                  applied: { type: integer, description: Сколько машин применили }
+                  total: { type: integer }
+                  targets:
+                    type: array
+                    items: { $ref: '#/components/schemas/TargetStatus' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    botToken:
+      type: http
+      scheme: bearer
+      description: Токен бота (TELEMUX_BOT_TOKEN)
+    session:
+      type: apiKey
+      in: cookie
+      name: telemux_session
+  parameters:
+    UserKey:
+      name: key
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Key' }
+  responses:
+    Error:
+      description: Ошибка
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Key:
+      type: string
+      pattern: '^[a-z0-9_]{1,64}$'
+      description: Имя пользователя в telemt; `placeholder` и суффикс `_legacy` зарезервированы
+    Secret:
+      type: string
+      pattern: '^[0-9a-f]{32}$'
+    UserBody:
+      type: object
+      required: [secret]
+      properties:
+        secret: { $ref: '#/components/schemas/Secret' }
+        expires_at: { type: string, format: date-time, nullable: true }
+        max_tcp_conns: { type: integer, minimum: 1, nullable: true }
+        previous_secret:
+          description: Старый секрет после смены ключа, действует до previous_secret_expires_at
+          allOf: [{ $ref: '#/components/schemas/Secret' }]
+        previous_secret_expires_at: { type: string, format: date-time, nullable: true }
+    User:
+      allOf:
+        - type: object
+          required: [key]
+          properties:
+            key: { $ref: '#/components/schemas/Key' }
+        - $ref: '#/components/schemas/UserBody'
+    Publish:
+      type: object
+      required: [revision, changed]
+      properties:
+        revision: { type: integer, description: "Последняя ревизия: новая или прежняя, если ничего не изменилось" }
+        changed:
+          type: array
+          description: Машины, получившие новую ревизию
+          items: { type: string }
+    PointChange:
+      allOf:
+        - $ref: '#/components/schemas/Publish'
+        - type: object
+          required: [created]
+          properties:
+            created: { type: boolean }
+    TargetStatus:
+      type: object
+      required: [code, desired_revision, observed_revision, status, seen_at, applied]
+      properties:
+        code: { type: string }
+        desired_revision: { type: integer }
+        observed_revision: { type: integer, nullable: true }
+        status:
+          type: string
+          enum: [applied, failed, pending, compared, unknown]
+        seen_at: { type: string, format: date-time, nullable: true }
+        applied: { type: boolean }
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Машинный код
+          enum: [bad_request, unauthorized, forbidden, not_found, conflict, gone, unprocessable,
+                 not_implemented, unavailable, internal, not_master, mass_delete_guard]
+        message: { type: string }
+        error: { type: string, description: Копия message для старой панели }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -113,6 +114,12 @@ func runServe(args []string) int {
 		return 2
 	}
 
+	defaultMaxConns, err := strconv.Atoi(envOr("TELEMUX_DEFAULT_MAX_CONNS", "50"))
+	if err != nil || defaultMaxConns < 1 {
+		logger.Error("TELEMUX_DEFAULT_MAX_CONNS - целое больше 0", "value", os.Getenv("TELEMUX_DEFAULT_MAX_CONNS"))
+		return 2
+	}
+
 	srv := server.New(server.Deps{
 		Store: st, Node: telemt.New(*api, *auth), Version: version,
 		Interval: *interval, SyncOpts: syncpkg.Options{Mode: mode}, Log: logger,
@@ -121,14 +128,18 @@ func runServe(args []string) int {
 		Users:         st, // store реализует user-CRUD
 		Cluster:       st, // store реализует реестр нод + join-token
 		ClusterSecret: clusterSecret,
-		PublicURL:     envOr("TELEMUX_PUBLIC_URL", "http://127.0.0.1"+*listen),
-		SelfCode:      selfCode,
-		SelfAddress:   envOr("TELEMUX_NODE_ADDRESS", ""),
-		SelfTelemtURL: *api,
-		MasterURL:     envOr("TELEMUX_MASTER_URL", ""),
-		Mtg:           mtg, // nil → mtg-ноды не синхронизируются
-		Role:          roleSrc,
-		Peers:         peerMap,
+		// API бота (/api/v1/users, /api/v1/revisions): ревизии желаемого состояния.
+		Revisions:       st,
+		BotToken:        envOr("TELEMUX_BOT_TOKEN", ""),
+		DefaultMaxConns: defaultMaxConns,
+		PublicURL:       envOr("TELEMUX_PUBLIC_URL", "http://127.0.0.1"+*listen),
+		SelfCode:        selfCode,
+		SelfAddress:     envOr("TELEMUX_NODE_ADDRESS", ""),
+		SelfTelemtURL:   *api,
+		MasterURL:       envOr("TELEMUX_MASTER_URL", ""),
+		Mtg:             mtg, // nil → mtg-ноды не синхронизируются
+		Role:            roleSrc,
+		Peers:           peerMap,
 	})
 	if err := srv.Run(ctx, *listen); err != nil {
 		logger.Error("serve", "err", err)

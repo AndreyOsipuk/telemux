@@ -15,6 +15,10 @@ type ImportRow struct {
 	Secret       string
 	ExpirationAt *time.Time
 	MaxTCPConns  *int
+
+	// Старый секрет после смены ключа и его срок (только для ReconcileUsers).
+	PreviousSecret          string
+	PreviousSecretExpiresAt *time.Time
 }
 
 // ImportUsers идемпотентно загружает юзеров (upsert по username) в ОДНОЙ транзакции.
@@ -109,13 +113,17 @@ func (s *Store) ReconcileUsers(ctx context.Context, rows []ImportRow, force bool
 		keep = append(keep, r.Username)
 		var wasInsert bool
 		err := tx.QueryRow(ctx,
-			`INSERT INTO users (username, secret, expiration_at, max_tcp_conns, enabled)
-			 VALUES ($1, $2, $3, $4, true)
+			`INSERT INTO users (username, secret, expiration_at, max_tcp_conns, enabled,
+			                    previous_secret, previous_secret_expires_at)
+			 VALUES ($1, $2, $3, $4, true, NULLIF($5, ''), $6)
 			 ON CONFLICT (username) DO UPDATE
 			   SET secret = EXCLUDED.secret, expiration_at = EXCLUDED.expiration_at,
-			       max_tcp_conns = EXCLUDED.max_tcp_conns, updated_at = now()
+			       max_tcp_conns = EXCLUDED.max_tcp_conns, enabled = true,
+			       previous_secret = EXCLUDED.previous_secret,
+			       previous_secret_expires_at = EXCLUDED.previous_secret_expires_at,
+			       updated_at = now()
 			 RETURNING (xmax = 0)`,
-			r.Username, r.Secret, r.ExpirationAt, r.MaxTCPConns).Scan(&wasInsert)
+			r.Username, r.Secret, r.ExpirationAt, r.MaxTCPConns, r.PreviousSecret, r.PreviousSecretExpiresAt).Scan(&wasInsert)
 		if err != nil {
 			return res, fmt.Errorf("reconcile upsert %q: %w", r.Username, err)
 		}

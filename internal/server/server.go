@@ -41,7 +41,12 @@ type Deps struct {
 	// Кластер (опционально; nil → одно-нодовый режим без реестра/add-node).
 	Cluster       ClusterStore
 	ClusterSecret string // Bearer для heartbeat/join-token
-	PublicURL     string // внешний URL мастера (для join-команды)
+
+	// Ревизии желаемого состояния и API для бота (опционально; nil → /api/v1/users выключен).
+	Revisions       RevisionStore
+	BotToken        string // Bearer бота для /api/v1/users и /api/v1/revisions
+	DefaultMaxConns int    // лимит подключений по умолчанию в users.toml
+	PublicURL       string // внешний URL мастера (для join-команды)
 
 	// Идентичность ноды для heartbeat (пусто → heartbeat выключен).
 	SelfCode      string
@@ -142,6 +147,10 @@ func (s *Server) routes() {
 	if s.deps.Cluster != nil {
 		s.routesCluster()
 	}
+	if s.deps.Revisions != nil && s.deps.Users != nil {
+		s.routesV1()
+	}
+	s.mux.HandleFunc("GET /api/openapi.json", s.handleSpec)
 	// Дашборд (встроенный, см. web.go).
 	s.mux.HandleFunc("GET /", s.handleIndex)
 }
