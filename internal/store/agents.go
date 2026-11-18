@@ -111,12 +111,21 @@ type ObservedResource struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// ObservedReport - отчёт агента машины.
+// ObservedCheck - результат локальной проверки машины (мост на выходе и т.п.).
+type ObservedCheck struct {
+	Name  string `json:"name"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// ObservedReport - отчёт агента машины. Resources может быть пустым: машина без
+// ресурсов (выход без telemt и mtg) отчитывается только о себе и о проверках.
 type ObservedReport struct {
 	Target       string             `json:"target"`
 	AgentVersion string             `json:"agent_version"`
 	Via          string             `json:"via,omitempty"`
 	Resources    []ObservedResource `json:"resources"`
+	Checks       []ObservedCheck    `json:"checks,omitempty"`
 }
 
 // RecordObserved сохраняет отчёт: observed_state перезаписывается, в apply_log
@@ -153,8 +162,54 @@ func (s *Store) RecordObserved(ctx context.Context, rep ObservedReport) error {
 			}
 		}
 	}
+	if err := recordAgentState(ctx, tx, rep); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit observed: %w", err)
+	}
+	return nil
+}
+
+// recordAgentState обновляет строку машины в agent_state; смену результата
+// проверки (появилась, пройдена ↔ не пройдена, другая причина) пишет в apply_log
+// как ресурс "check:<имя>".
+func recordAgentState(ctx context.Context, tx pgx.Tx, rep ObservedReport) error {
+	checks := rep.Checks
+	if checks == nil {
+		checks = []ObservedCheck{}
+	}
+	var prev []ObservedCheck
+	err := tx.QueryRow(ctx, `SELECT checks FROM agent_state WHERE target = $1 FOR UPDATE`, rep.Target).Scan(&prev)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("agent_state %s: %w", rep.Target, err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO agent_state (target, agent_version, via, checks, seen_at)
+		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, now())
+		 ON CONFLICT (target) DO UPDATE
+		   SET agent_version = EXCLUDED.agent_version, via = EXCLUDED.via,
+		       checks = EXCLUDED.checks, seen_at = EXCLUDED.seen_at`,
+		rep.Target, rep.AgentVersion, rep.Via, checks); err != nil {
+		return fmt.Errorf("agent_state %s: %w", rep.Target, err)
+	}
+	was := make(map[string]ObservedCheck, len(prev))
+	for _, c := range prev {
+		was[c.Name] = c
+	}
+	for _, c := range checks {
+		if p, ok := was[c.Name]; ok && p.OK == c.OK && p.Error == c.Error {
+			continue
+		}
+		status := "ok"
+		if !c.OK {
+			status = "failed"
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO apply_log (target, resource, status, error) VALUES ($1, $2, $3, NULLIF($4, ''))`,
+			rep.Target, "check:"+c.Name, status, c.Error); err != nil {
+			return fmt.Errorf("apply_log %s/check:%s: %w", rep.Target, c.Name, err)
+		}
 	}
 	return nil
 }

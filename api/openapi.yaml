@@ -161,6 +161,40 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /api/v1/machines:
+    get:
+      summary: Машины флота и последний отчёт их агентов
+      description: |
+        Все машины по коду, включая машины без ресурсов (выходы без telemt и mtg)
+        и машины, где агента ещё нет (`seen_at: null`). По каждой - версия агента,
+        мост, результат локальных проверок и состояние ресурсов.
+      operationId: listMachines
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Страница машин
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Machine' }
+                  paging:
+                    type: object
+                    required: [total, limit, offset]
+                    properties:
+                      total: { type: integer }
+                      limit: { type: integer }
+                      offset: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /v1/desired:
     get:
       summary: Желаемое состояние машины (long-poll агента)
@@ -310,7 +344,7 @@ components:
         via: { type: string, description: Через какой мост пришёл отчёт }
         resources:
           type: array
-          minItems: 1
+          description: Пусто у машины без ресурсов - отчёт только о самой машине
           maxItems: 50
           items:
             type: object
@@ -321,6 +355,46 @@ components:
               sha256: { type: string }
               status: { type: string, enum: [applied, failed, pending, compared] }
               error: { type: string, description: "Причина отказа или описание расхождения (в режиме сравнения)" }
+        checks:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/ObservedCheck' }
+    ObservedCheck:
+      type: object
+      description: Локальная проверка машины (например, мост на машине-выходе)
+      required: [name, ok]
+      properties:
+        name: { type: string, maxLength: 64, example: bridge }
+        ok: { type: boolean }
+        error: { type: string, maxLength: 1024 }
+    Machine:
+      type: object
+      required: [code, kind, enabled, resources, seen_at, checks, observed]
+      properties:
+        code: { type: string }
+        kind: { type: string, enum: [exit, relay, panel] }
+        relay_code: { type: string, description: "Для выхода - релей, к которому он держит туннель" }
+        enabled: { type: boolean }
+        resources:
+          type: array
+          items: { type: string }
+        agent_version: { type: string }
+        via: { type: string }
+        seen_at: { type: string, format: date-time, nullable: true, description: "Последний отчёт агента; null - агента нет" }
+        checks:
+          type: array
+          items: { $ref: '#/components/schemas/ObservedCheck' }
+        observed:
+          type: array
+          items:
+            type: object
+            required: [resource, revision, status, seen_at]
+            properties:
+              resource: { type: string }
+              revision: { type: integer }
+              status: { type: string, enum: [applied, failed, pending, compared] }
+              error: { type: string }
+              seen_at: { type: string, format: date-time }
     Error:
       type: object
       required: [code, message]

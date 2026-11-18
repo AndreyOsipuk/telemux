@@ -20,6 +20,9 @@ type fakeAgents struct {
 	rev      *fakeRevisions
 	tokens   map[string]string // токен → машина
 	observed []store.ObservedReport
+
+	machines              []store.Machine
+	lastLimit, lastOffset int
 }
 
 func (f *fakeAgents) TargetByAgentToken(_ context.Context, token string) (string, error) {

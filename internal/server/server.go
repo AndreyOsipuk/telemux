@@ -172,6 +172,7 @@ func (s *Server) routes() {
 	}
 	if s.deps.Agents != nil {
 		s.routesAgents()
+		s.routesMachines()
 	}
 	s.mux.HandleFunc("GET /api/openapi.json", s.handleSpec)
 	// Дашборд (встроенный, см. web.go).

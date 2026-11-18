@@ -20,12 +20,14 @@ type AgentStore interface {
 	MaxRevision(ctx context.Context, target string) (int64, error)
 	DesiredBundle(ctx context.Context, target string) (store.Bundle, error)
 	RecordObserved(ctx context.Context, rep store.ObservedReport) error
+	Machines(ctx context.Context, limit, offset int) ([]store.Machine, int, error)
 }
 
 const (
 	defaultDesiredWait = 55 * time.Second // меньше типичных таймаутов прокси (60 с)
 	maxDesiredWait     = 60 * time.Second
 	maxObservedItems   = 50
+	maxObservedChecks  = 20
 )
 
 // revisionWatch будит ожидающие long-poll запросы при публикации на этом узле.
@@ -148,9 +150,20 @@ func (s *Server) routesAgents() {
 			writeErr(w, http.StatusForbidden, fmt.Errorf("токен выдан машине %q", code), s.deps.Log)
 			return
 		}
-		if len(rep.Resources) == 0 || len(rep.Resources) > maxObservedItems {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("в отчёте от 1 до %d ресурсов", maxObservedItems), s.deps.Log)
+		// Пустой список ресурсов - отчёт машины без ресурсов (агент жив, проверки).
+		if len(rep.Resources) > maxObservedItems {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("в отчёте не больше %d ресурсов", maxObservedItems), s.deps.Log)
 			return
+		}
+		if len(rep.Checks) > maxObservedChecks {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("в отчёте не больше %d проверок", maxObservedChecks), s.deps.Log)
+			return
+		}
+		for _, c := range rep.Checks {
+			if c.Name == "" || len(c.Name) > 64 || len(c.Error) > 1024 {
+				writeErr(w, http.StatusBadRequest, errors.New("у проверки нужно имя до 64 символов, причина - до 1024"), s.deps.Log)
+				return
+			}
 		}
 		for _, res := range rep.Resources {
 			if res.Resource == "" || res.Revision < 0 {

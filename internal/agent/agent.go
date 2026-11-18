@@ -49,7 +49,8 @@ type Config struct {
 	Applier      *Applier      // для ModeApply и telemt.users; UsersFile берётся из конфига агента
 	MtgApplier   *MtgApplier   // для ModeApply и mtg.config; MtgFile берётся из конфига агента
 	Wait         time.Duration // сколько мастер держит long-poll; по умолчанию 55 с
-	RecheckEvery time.Duration // как часто перепроверять диск без новой ревизии; по умолчанию 5 мин
+	RecheckEvery time.Duration // как часто перепроверять диск и отчитываться без новой ревизии; по умолчанию 5 мин
+	Checks       []Check       // локальные проверки машины для отчёта (мост и т.п.)
 	Log          *slog.Logger
 }
 
@@ -107,8 +108,6 @@ func New(cfg Config) (*Agent, error) {
 		return nil, errors.New("нужен токен машины")
 	case cfg.Target == "":
 		return nil, errors.New("нужен код машины")
-	case cfg.UsersFile == "" && cfg.MtgFile == "":
-		return nil, errors.New("нужен путь к users.toml или к config.toml mtg-multi")
 	case cfg.Mode != ModeCompare && cfg.Mode != ModeApply:
 		return nil, fmt.Errorf("режим %q не поддержан: %q или %q", cfg.Mode, ModeCompare, ModeApply)
 	case cfg.Mode == ModeApply && cfg.UsersFile != "" && cfg.Applier == nil:
@@ -265,12 +264,15 @@ func (a *Agent) checkAndReport(ctx context.Context, m master) error {
 			items = append(items, d)
 		}
 	}
-	due := len(items) > 0 && (a.force || time.Since(a.lastCheck) >= a.cfg.RecheckEvery)
+	// Отчёт о машине уходит и без ресурсов (выход без telemt и mtg): мастер
+	// видит, что агент жив, и результат локальных проверок.
+	due := (a.force && len(items) > 0) || a.lastCheck.IsZero() || time.Since(a.lastCheck) >= a.cfg.RecheckEvery
 	a.mu.Unlock()
 	if !due {
 		return nil
 	}
-	rep := store.ObservedReport{Target: a.cfg.Target, AgentVersion: a.cfg.Version, Via: a.cfg.Via}
+	rep := store.ObservedReport{Target: a.cfg.Target, AgentVersion: a.cfg.Version, Via: a.cfg.Via,
+		Checks: runChecks(ctx, a.cfg.Checks)}
 	for _, d := range items {
 		var res store.ObservedResource
 		if a.cfg.Mode == ModeApply {

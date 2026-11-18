@@ -132,6 +132,7 @@ func runAgent(args []string) int {
 	stateURL := fs.String("state-url", envOr("TELEMUX_AGENT_STATE_URL", agent.DefaultStateURL), "API telemt: принят ли конфиг")
 	unit := fs.String("telemt-unit", envOr("TELEMUX_AGENT_TELEMT_UNIT", "telemt"), "юнит systemd telemt (SIGHUP)")
 	via := fs.String("via", envOr("TELEMUX_AGENT_VIA", ""), "через какой мост ходит агент (для отчёта)")
+	checks := fs.String("checks", envOr("TELEMUX_AGENT_CHECKS", ""), "локальные проверки для отчёта: имя=http://адрес[,...], например bridge=http://127.0.0.1:18480/healthz")
 	wait := fs.Duration("wait", 55*time.Second, "long-poll")
 	recheck := fs.Duration("recheck", 5*time.Minute, "перепроверка диска без новой ревизии")
 	if err := fs.Parse(args); err != nil {
@@ -143,6 +144,11 @@ func runAgent(args []string) int {
 		return 2
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	checkList, err := agent.ParseChecks(*checks)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 	if *usersFile == "none" {
 		*usersFile = ""
 	}
@@ -163,7 +169,7 @@ func runAgent(args []string) int {
 		Applier: applier, MtgApplier: mtgApplier, MtgFile: *mtgFile, MasterPin: *masterPin,
 		MasterURLs: splitList(*masters), Token: strings.TrimSpace(string(raw)), Target: *target,
 		Version: version, Via: *via, UsersFile: *usersFile, Mode: *mode,
-		Wait: *wait, RecheckEvery: *recheck, Log: logger,
+		Wait: *wait, RecheckEvery: *recheck, Checks: checkList, Log: logger,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -225,4 +231,65 @@ func runTLSCert(args []string) int {
 	}
 	fmt.Println(fp)
 	return 0
+}
+
+// runMachines: telemux machines - машины флота и последний отчёт их агентов.
+func runMachines(args []string) int {
+	fs := flag.NewFlagSet("machines", flag.ContinueOnError)
+	dsn := fs.String("db", envOr("DATABASE_URL", ""), "DSN PG")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, *dsn)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "PG:", err)
+		return 1
+	}
+	defer st.Close()
+	const page = 100
+	for offset := 0; ; offset += page {
+		list, total, err := st.Machines(ctx, page, offset)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		for _, m := range list {
+			fmt.Println(formatMachine(m, time.Now()))
+		}
+		if offset+len(list) >= total || len(list) == 0 {
+			fmt.Printf("всего машин: %d\n", total)
+			return 0
+		}
+	}
+}
+
+// formatMachine - строка сводки: код, вид, когда отчитывался агент, проверки, ресурсы.
+func formatMachine(m store.Machine, now time.Time) string {
+	seen := "агента нет"
+	if m.SeenAt != nil {
+		seen = fmt.Sprintf("агент %s назад", now.Sub(*m.SeenAt).Truncate(time.Second))
+	}
+	parts := []string{fmt.Sprintf("%-6s %-5s", m.Code, m.Kind), seen}
+	if !m.Enabled {
+		parts = append(parts, "выключена")
+	}
+	for _, c := range m.Checks {
+		if c.OK {
+			parts = append(parts, c.Name+" ok")
+		} else {
+			parts = append(parts, fmt.Sprintf("%s НЕ ok (%s)", c.Name, c.Error))
+		}
+	}
+	for _, o := range m.Observed {
+		s := fmt.Sprintf("%s r%d %s", o.Resource, o.Revision, o.Status)
+		if o.Error != "" {
+			s += " (" + o.Error + ")"
+		}
+		parts = append(parts, s)
+	}
+	if len(m.Resources) == 0 {
+		parts = append(parts, "без ресурсов")
+	}
+	return strings.Join(parts, " | ")
 }
