@@ -7,7 +7,7 @@
 //
 // Ключевое отличие секрета: telemt-секрет = 16-байтный ключ (hex). mtg-секрет =
 // "ee" + тот же ключ + hex(hostname). Значит общий ключ юзера оборачивается в
-// per-node mtg-секрет с доменом конкретной ноды (static-<code>.proxy-osv.site).
+// per-node mtg-секрет с доменом конкретной ноды (static-<code>.example.com).
 // Один ключ → разные ссылки на разные страны.
 //
 // Эта часть — ЧИСТАЯ (без сети/SSH/времени-now передаётся аргументом), полностью
@@ -28,7 +28,7 @@ import (
 type NodeCfg struct {
 	BindTo         string // "0.0.0.0:8767" — слушатель наружу
 	APIBindTo      string // "127.0.0.1:8081" — /stats (loopback)
-	FrontingDomain string // "static-de.proxy-osv.site" — host в секрете + domain-fronting
+	FrontingDomain string // "static-de.example.com" — host в секрете + domain-fronting
 	PreferIP       string // "only-ipv4" (на нодах с мёртвым IPv6) | "prefer-ipv6"
 	MaxConns       int    // throttle max-connections; 0 = без throttle
 }

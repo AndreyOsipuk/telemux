@@ -13,7 +13,7 @@ ALTER TABLE nodes ADD COLUMN IF NOT EXISTS ssh_port INTEGER;
 -- Параметры mtg-multi инстанса (заполнены, если backend='mtg-multi').
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_bind_to         TEXT;  -- 0.0.0.0:8767
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_api_bind_to     TEXT;  -- 127.0.0.1:8081 (/stats)
-ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_fronting_domain TEXT;  -- static-<code>.proxy-osv.site
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_fronting_domain TEXT;  -- static-<code>.example.com
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_prefer_ip       TEXT;  -- only-ipv4
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_max_conns       INTEGER; -- throttle; NULL/0 = off
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS mtg_config_path     TEXT;  -- /etc/mtg-multi/config.toml

@@ -14,11 +14,11 @@ const key32 = "a14d1a98c73415c674f76ecca9f62da9" // 32 hex = 16 байт
 func ptr(s string) *string { return &s }
 
 func TestSecretFor(t *testing.T) {
-	got, err := SecretFor(key32, "static-de.proxy-osv.site")
+	got, err := SecretFor(key32, "static-de.example.com")
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
-	wantHost := hex.EncodeToString([]byte("static-de.proxy-osv.site"))
+	wantHost := hex.EncodeToString([]byte("static-de.example.com"))
 	want := "ee" + key32 + wantHost
 	if got != want {
 		t.Fatalf("secret\n got=%s\nwant=%s", got, want)
@@ -39,8 +39,8 @@ func TestSecretFor_BadKey(t *testing.T) {
 
 func TestSecretFor_PerNodeDomain(t *testing.T) {
 	// Один ключ → разные секреты на разные ноды (домен в секрете).
-	de, _ := SecretFor(key32, "static-de.proxy-osv.site")
-	nl, _ := SecretFor(key32, "static-nl.proxy-osv.site")
+	de, _ := SecretFor(key32, "static-de.example.com")
+	nl, _ := SecretFor(key32, "static-nl.example.com")
 	if de == nl {
 		t.Error("секреты для разных доменов должны отличаться")
 	}
@@ -53,7 +53,7 @@ func baseCfg() NodeCfg {
 	return NodeCfg{
 		BindTo:         "0.0.0.0:8767",
 		APIBindTo:      "127.0.0.1:8081",
-		FrontingDomain: "static-de.proxy-osv.site",
+		FrontingDomain: "static-de.example.com",
 		PreferIP:       "only-ipv4",
 		MaxConns:       2000,
 	}

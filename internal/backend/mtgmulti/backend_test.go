@@ -37,12 +37,12 @@ func (m *mockDelivery) WriteAndReload(_ context.Context, _ backend.Node, cfg str
 func testNode() backend.Node {
 	return backend.Node{
 		Code:    "de",
-		Address: "179.61.145.196",
+		Address: "203.0.113.10",
 		Backend: "mtg-multi",
 		Mtg: &backend.MtgNodeCfg{
 			BindTo:         "0.0.0.0:8767",
 			APIBindTo:      "127.0.0.1:8081",
-			FrontingDomain: "static-de.proxy-osv.site",
+			FrontingDomain: "static-de.example.com",
 			PreferIP:       "only-ipv4",
 			MaxConns:       2000,
 		},

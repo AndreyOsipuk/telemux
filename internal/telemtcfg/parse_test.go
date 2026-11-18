@@ -5,21 +5,21 @@ import "testing"
 func TestParseUsersToml_RealShape(t *testing.T) {
 	in := `# telemt include
 [access.users]
-garagefri_3073 = "ca7315aabbccddeeff00112233445566"
+alice_1 = "ca7315aabbccddeeff00112233445566"
 alice_42 = "0011223344556677889900aabbccddee"
 
 [access.user_expirations]
-garagefri_3073 = "2027-06-13T16:14:08Z"
+alice_1 = "2027-06-13T16:14:08Z"
 
 [access.user_max_tcp_conns]
-garagefri_3073 = 25
+alice_1 = 25
 `
 	got := ParseUsersToml(in)
 	if len(got) != 2 {
 		t.Fatalf("ждали 2 юзера, получили %d", len(got))
 	}
 	// порядок = порядок в [access.users]
-	if got[0].Username != "garagefri_3073" || got[1].Username != "alice_42" {
+	if got[0].Username != "alice_1" || got[1].Username != "alice_42" {
 		t.Fatalf("порядок/имена не те: %+v", got)
 	}
 	g := got[0]

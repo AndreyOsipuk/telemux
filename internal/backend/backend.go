@@ -19,7 +19,7 @@ import (
 type MtgNodeCfg struct {
 	BindTo         string // "0.0.0.0:8767"
 	APIBindTo      string // "127.0.0.1:8081"
-	FrontingDomain string // "static-de.proxy-osv.site"
+	FrontingDomain string // "static-de.example.com"
 	PreferIP       string // "only-ipv4"
 	MaxConns       int    // throttle; 0 = off
 	ConfigPath     string // "/etc/mtg-multi/config.toml"
