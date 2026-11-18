@@ -16,6 +16,7 @@ import (
 
 	"github.com/AndreyOsipuk/telemux/internal/store"
 	"github.com/AndreyOsipuk/telemux/internal/telemtcfg"
+	"github.com/AndreyOsipuk/telemux/internal/tlspin"
 )
 
 const (
@@ -326,5 +327,37 @@ func TestAgent_PerMasterProxy(t *testing.T) {
 	}
 	if _, err := New(Config{MasterURLs: []string{"http://m|::bad"}, Token: "t", Target: "pr2", UsersFile: file, Mode: ModeCompare}); err == nil {
 		t.Fatal("битый адрес прокси принят")
+	}
+}
+
+// Мастер по HTTPS: верный отпечаток - работает, чужой сертификат - запрос с
+// токеном не уходит.
+func TestAgent_PinnedMaster(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "users.toml")
+	_ = os.WriteFile(file, []byte(botFormat), 0o600)
+	m := &fakeMaster{bundle: store.Bundle{Target: "pr2", Revision: 2, Resources: []store.Desired{
+		{Resource: store.ResourceTelemtUsers, Revision: 2, SHA256: "x", Content: desiredTwo()},
+	}}}
+	srv := httptest.NewTLSServer(m.handler(t, "tok", "pr2"))
+	defer srv.Close()
+	pin := tlspin.Fingerprint(srv.Certificate().Raw)
+
+	a, err := New(Config{MasterURLs: []string{srv.URL}, MasterPin: pin, Token: "tok", Target: "pr2",
+		UsersFile: file, Mode: ModeCompare, Wait: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev, err := a.RunOnce(context.Background()); err != nil || rev != 2 {
+		t.Fatalf("с верным отпечатком ждали ревизию 2: %d, %v", rev, err)
+	}
+	before := m.requests
+	bad, _ := New(Config{MasterURLs: []string{srv.URL}, MasterPin: strings.Repeat("0", 64), Token: "tok", Target: "pr2",
+		UsersFile: file, Mode: ModeCompare, Wait: 50 * time.Millisecond})
+	if _, err := bad.RunOnce(context.Background()); err == nil {
+		t.Fatal("чужой сертификат принят")
+	}
+	if m.requests != before {
+		t.Fatal("при чужом сертификате запрос дошёл до сервера")
 	}
 }

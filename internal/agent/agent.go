@@ -25,6 +25,7 @@ import (
 
 	"github.com/AndreyOsipuk/telemux/internal/store"
 	"github.com/AndreyOsipuk/telemux/internal/telemtcfg"
+	"github.com/AndreyOsipuk/telemux/internal/tlspin"
 )
 
 const (
@@ -37,6 +38,7 @@ const (
 // Config - настройки агента.
 type Config struct {
 	MasterURLs   []string      // адреса мастера по приоритету; "адрес|прокси" - через свой туннель (socks5://...)
+	MasterPin    string        // sha256 сертификата мастера для https-адресов (закрепление)
 	Token        string        // токен машины
 	Target       string        // код машины
 	Version      string        // версия агента для отчёта
@@ -70,13 +72,16 @@ type master struct {
 	client *http.Client
 }
 
-func parseMaster(entry string, timeout time.Duration) (master, error) {
+func parseMaster(entry string, timeout time.Duration, pin string) (master, error) {
 	base, proxy, hasProxy := strings.Cut(entry, "|")
 	m := master{base: strings.TrimRight(strings.TrimSpace(base), "/")}
 	if u, err := url.Parse(m.base); err != nil || u.Scheme == "" || u.Host == "" {
 		return m, fmt.Errorf("адрес мастера %q: нужен вид http://host:port", base)
 	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
+	if strings.HasPrefix(m.base, "https://") && pin != "" {
+		tr.TLSClientConfig = tlspin.Config(pin)
+	}
 	if hasProxy {
 		pu, err := url.Parse(strings.TrimSpace(proxy))
 		if err != nil || pu.Scheme == "" || pu.Host == "" {
@@ -128,7 +133,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 	a := &Agent{cfg: cfg, desired: map[string]*store.Desired{}, failed: map[string]failedRev{}}
 	for _, e := range cfg.MasterURLs {
-		m, err := parseMaster(e, cfg.Wait+15*time.Second)
+		m, err := parseMaster(e, cfg.Wait+15*time.Second, cfg.MasterPin)
 		if err != nil {
 			return nil, err
 		}

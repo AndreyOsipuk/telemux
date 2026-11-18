@@ -11,7 +11,6 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/AndreyOsipuk/telemux/internal/tlspin"
 )
 
 const (
@@ -151,22 +152,7 @@ func NewAPI(base, token string, tlsConf *tls.Config) *API {
 }
 
 // PinnedTLS - проверка сертификата панели по sha256 отпечатку (самоподписанный по IP).
-func PinnedTLS(sha256Hex string) *tls.Config {
-	want := strings.ToLower(strings.ReplaceAll(sha256Hex, ":", ""))
-	return &tls.Config{
-		InsecureSkipVerify: true, //nolint:gosec // проверка - по отпечатку ниже
-		VerifyConnection: func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 {
-				return errors.New("панель не предъявила сертификат")
-			}
-			sum := sha256.Sum256(cs.PeerCertificates[0].Raw)
-			if hex.EncodeToString(sum[:]) != want {
-				return errors.New("отпечаток сертификата панели не совпал")
-			}
-			return nil
-		},
-	}
-}
+func PinnedTLS(sha256Hex string) *tls.Config { return tlspin.Config(sha256Hex) }
 
 type envelope struct {
 	Success bool            `json:"success"`

@@ -23,11 +23,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/AndreyOsipuk/telemux/internal/tlspin"
 )
 
 // Config - настройки моста.
 type Config struct {
 	MasterURLs []string      // адреса мастера по приоритету
+	MasterPin  string        // sha256 сертификата мастера для https-адресов (закрепление)
 	IdleWait   time.Duration // пауза перед 304 из кэша (чтобы не гонять агента по кругу); по умолчанию 5 с
 	Log        *slog.Logger
 }
@@ -64,9 +67,13 @@ func New(cfg Config) (*Bridge, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	if cfg.MasterPin != "" {
+		tr.TLSClientConfig = tlspin.Config(cfg.MasterPin)
+	}
 	return &Bridge{
 		cfg:     cfg,
-		client:  &http.Client{Timeout: 90 * time.Second}, // long-poll мастера - до 60 с
+		client:  &http.Client{Timeout: 90 * time.Second, Transport: tr}, // long-poll мастера - до 60 с
 		cache:   map[string]cacheEntry{},
 		pending: map[string]pendingReport{},
 	}, nil

@@ -61,6 +61,8 @@ func main() {
 		os.Exit(runAgent(os.Args[2:]))
 	case "bridge":
 		os.Exit(runBridge(os.Args[2:]))
+	case "tls-cert":
+		os.Exit(runTLSCert(os.Args[2:]))
 	case "-version", "--version", "version":
 		fmt.Printf("telemux %s\n", version)
 	default:
@@ -73,6 +75,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  publish                                 — опубликовать ревизию users.toml вручную")
 		fmt.Fprintln(os.Stderr, "  agent --master u[,u] --target c [--mode compare|apply] — агент на машине")
 		fmt.Fprintln(os.Stderr, "  bridge --master u[,u] [--listen 127.0.0.1:18480] — мост для агента релея")
+		fmt.Fprintln(os.Stderr, "  tls-cert [--cert f --key f]             — сертификат мастера для API агентов, печатает отпечаток")
 		fmt.Fprintln(os.Stderr, "  sync  --db <dsn> --api <url> [--apply]  — синхронизировать локальный telemt (shadow по умолч.)")
 		fmt.Fprintln(os.Stderr, "  import-toml --db <dsn> --file users.toml — импорт существующих юзеров С СЕКРЕТАМИ (обратная совместимость)")
 		fmt.Fprintln(os.Stderr, "  update [--owner o --repo r]             — обновить бинарь до последнего релиза (checksum+swap)")

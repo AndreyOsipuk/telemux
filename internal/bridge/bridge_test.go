@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/AndreyOsipuk/telemux/internal/store"
+	"github.com/AndreyOsipuk/telemux/internal/tlspin"
 )
 
 // fakeMaster - мастер для тестов моста.
@@ -232,5 +233,25 @@ func TestBridge_ObservedUnauthorizedPassesThrough(t *testing.T) {
 func TestNew_RequiresMasters(t *testing.T) {
 	if _, err := New(Config{}); err == nil {
 		t.Fatal("мост без адресов мастера принят")
+	}
+}
+
+// Мост ходит к мастеру по HTTPS с закреплённым сертификатом.
+func TestBridge_PinnedMaster(t *testing.T) {
+	m := &fakeMaster{rev: 3, token: "relay-tok"}
+	srv := httptest.NewTLSServer(m.server(t).Config.Handler)
+	defer srv.Close()
+	b, err := New(Config{MasterURLs: []string{srv.URL}, MasterPin: tlspin.Fingerprint(srv.Certificate().Raw),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := get(b, "relay-tok", "0"); rec.Code != http.StatusOK {
+		t.Fatalf("с верным отпечатком ждали 200, получили %d", rec.Code)
+	}
+	bad, _ := New(Config{MasterURLs: []string{srv.URL}, MasterPin: strings.Repeat("0", 64),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if rec := get(bad, "relay-tok", "0"); rec.Code == http.StatusOK {
+		t.Fatal("мост принял чужой сертификат мастера")
 	}
 }

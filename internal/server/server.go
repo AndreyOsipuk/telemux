@@ -53,7 +53,14 @@ type Deps struct {
 	DesiredPollInterval time.Duration
 
 	// Синхронизатор входов мастер-панели 3x-ui (mtg через панель); nil → выключен.
-	Panel     *PanelDeps
+	Panel *PanelDeps
+
+	// Внешний TLS-слушатель для агентов и мостов машин-выходов (только /v1/ и /healthz).
+	// Пусто → выключен. Сертификат самоподписанный, клиенты закрепляют его отпечаток.
+	TLSListen   string
+	TLSCertFile string
+	TLSKeyFile  string
+
 	PublicURL string // внешний URL мастера (для join-команды)
 
 	// Идентичность ноды для heartbeat (пусто → heartbeat выключен).
@@ -220,6 +227,21 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 		defer cancel()
 		_ = srv.Shutdown(sh)
 	}()
+	if s.deps.TLSListen != "" {
+		tlsSrv := &http.Server{Addr: s.deps.TLSListen, Handler: s.AgentHandler(), ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			<-ctx.Done()
+			sh, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tlsSrv.Shutdown(sh)
+		}()
+		go func() {
+			s.deps.Log.Info("API агентов по TLS", "addr", s.deps.TLSListen)
+			if err := tlsSrv.ListenAndServeTLS(s.deps.TLSCertFile, s.deps.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+				s.deps.Log.Error("TLS-слушатель агентов", "err", err)
+			}
+		}()
+	}
 	s.deps.Log.Info("telemux serve", "addr", addr, "interval", s.deps.Interval.String(), "mode", s.deps.SyncOpts.Mode)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err

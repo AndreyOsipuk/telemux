@@ -174,3 +174,15 @@ func (s *Server) routesAgents() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 }
+
+// AgentHandler - обработчик для внешнего TLS-слушателя: только ручки агентов и
+// /healthz. Панель, API бота и документация наружу не отдаются.
+func (s *Server) AgentHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/v1/") {
+			s.mux.ServeHTTP(w, r)
+			return
+		}
+		writeErr(w, http.StatusNotFound, errors.New("на этом адресе только API агентов"), s.deps.Log)
+	})
+}

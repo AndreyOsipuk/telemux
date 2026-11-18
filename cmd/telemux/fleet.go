@@ -17,6 +17,7 @@ import (
 	"github.com/AndreyOsipuk/telemux/internal/agent"
 	"github.com/AndreyOsipuk/telemux/internal/bridge"
 	"github.com/AndreyOsipuk/telemux/internal/store"
+	"github.com/AndreyOsipuk/telemux/internal/tlspin"
 )
 
 // runTarget: telemux target --code pr2 --kind relay --resources telemt.users [--relay pr2] [--disabled]
@@ -118,6 +119,7 @@ func runPublish(args []string) int {
 func runAgent(args []string) int {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	masters := fs.String("master", envOr("TELEMUX_AGENT_MASTERS", ""), "адреса мастера через запятую по приоритету")
+	masterPin := fs.String("master-pin", envOr("TELEMUX_AGENT_MASTER_PIN", ""), "sha256 сертификата мастера для https-адресов")
 	tokenFile := fs.String("token-file", envOr("TELEMUX_AGENT_TOKEN_FILE", "/etc/telemux/agent.token"), "файл с токеном машины")
 	target := fs.String("target", envOr("TELEMUX_AGENT_TARGET", ""), "код этой машины")
 	usersFile := fs.String("users-file", envOr("TELEMUX_AGENT_USERS_FILE", "/etc/telemt/users.toml"), "users.toml на машине; none - telemt на машине нет")
@@ -158,7 +160,7 @@ func runAgent(args []string) int {
 		}
 	}
 	a, err := agent.New(agent.Config{
-		Applier: applier, MtgApplier: mtgApplier, MtgFile: *mtgFile,
+		Applier: applier, MtgApplier: mtgApplier, MtgFile: *mtgFile, MasterPin: *masterPin,
 		MasterURLs: splitList(*masters), Token: strings.TrimSpace(string(raw)), Target: *target,
 		Version: version, Via: *via, UsersFile: *usersFile, Mode: *mode,
 		Wait: *wait, RecheckEvery: *recheck, Log: logger,
@@ -180,11 +182,12 @@ func runBridge(args []string) int {
 	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
 	listen := fs.String("listen", envOr("TELEMUX_BRIDGE_LISTEN", "127.0.0.1:18480"), "адрес моста (loopback, куда приходит туннель)")
 	masters := fs.String("master", envOr("TELEMUX_BRIDGE_MASTERS", ""), "адреса мастера через запятую по приоритету")
+	masterPin := fs.String("master-pin", envOr("TELEMUX_BRIDGE_MASTER_PIN", ""), "sha256 сертификата мастера для https-адресов")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	b, err := bridge.New(bridge.Config{MasterURLs: splitList(*masters), Log: logger})
+	b, err := bridge.New(bridge.Config{MasterURLs: splitList(*masters), MasterPin: *masterPin, Log: logger})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -195,5 +198,31 @@ func runBridge(args []string) int {
 		logger.Error("мост", "err", err)
 		return 1
 	}
+	return 0
+}
+
+// runTLSCert: выпустить самоподписанный сертификат мастера и вывести отпечаток
+// для закрепления у агентов и мостов.
+func runTLSCert(args []string) int {
+	fs := flag.NewFlagSet("tls-cert", flag.ContinueOnError)
+	cert := fs.String("cert", "/etc/telemux/tls/cert.pem", "куда положить сертификат")
+	key := fs.String("key", "/etc/telemux/tls/key.pem", "куда положить ключ (0600)")
+	cn := fs.String("cn", "telemux-master", "CommonName")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if _, err := os.Stat(*cert); err == nil {
+		fmt.Fprintf(os.Stderr, "%s уже есть - не перезаписываю (отпечаток сменился бы у всех агентов)\n", *cert)
+		if fp, err := tlspin.FingerprintFile(*cert); err == nil {
+			fmt.Println(fp)
+		}
+		return 1
+	}
+	fp, err := tlspin.Generate(*cert, *key, *cn)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println(fp)
 	return 0
 }
