@@ -235,6 +235,23 @@ telemux publish                                                     # опубл
 юнит - [deploy/telemux-agent.service](deploy/telemux-agent.service).
 Результаты сверки видны в `observed_state` и `apply_log`.
 
+### mtg-multi
+
+Агент ведёт и `config.toml` mtg-multi (ресурс `mtg.config`, текст готовит бот):
+`TELEMUX_AGENT_MTG_FILE=/etc/mtg-multi/config.toml`. Изменились только `[secrets]` -
+SIGHUP, иначе рестарт юнита; применено, когда `secrets_sha256` в `/stats` mtg совпал с
+желаемым набором; иначе прежний конфиг возвращается. На машине только с mtg -
+`TELEMUX_AGENT_USERS_FILE=none`.
+
+mtg внутри мастер-панели 3x-ui ведёт сам мастер telemux (машина вида `panel`):
+
+```sh
+telemux target --code xui-ps7 --kind panel --resources xui.clients \
+  --settings inbound_id=7,node_id=3,port=8767,node_code=ps7
+```
+
+и переменные `TELEMUX_XUI_URL`, `TELEMUX_XUI_TOKEN`, `TELEMUX_XUI_CERT_SHA256` у `serve`.
+
 ## Мост на машине-выходе
 
 Релей ходит к мастеру только через туннель своей пары ([ADR 0001](docs/adr/0001-pull-reconcile.md)).
@@ -246,7 +263,8 @@ telemux publish                                                     # опубл
   токену, который мастер уже принимал; отозванный мастером токен кэш теряет.
 - Отчёт релея при недоступном мастере мост принимает (`202`) и досылает раз в 30 с.
 - У каждого релея два моста (выход telemt-сервера и выход mtg-сервера): агент
-  релея перечисляет оба в `TELEMUX_AGENT_MASTERS`.
+  релея перечисляет оба в `TELEMUX_AGENT_MASTERS`, каждый через свой туннель -
+  запись `адрес|socks5://127.0.0.1:<порт входа туннеля>`.
 
 Мост слушает только loopback (`127.0.0.1:18480` по умолчанию). Туннель настраивается
 вручную при подключении пары: на релее - локальный вход, который маршрутизация

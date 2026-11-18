@@ -14,11 +14,12 @@ import (
 
 // fakeRevisions - in-memory ревизии поверх fakeUsers.
 type fakeRevisions struct {
-	mu        sync.Mutex
-	users     *fakeUsers
-	rev       int64
-	published int
-	status    map[int64][]store.TargetStatus
+	mu          sync.Mutex
+	users       *fakeUsers
+	rev         int64
+	published   int
+	status      map[int64][]store.TargetStatus
+	lastContent string
 }
 
 func (f *fakeRevisions) UpsertUser(_ context.Context, r store.ImportRow) (bool, error) {
@@ -241,5 +242,57 @@ func TestV1_RevisionStatus(t *testing.T) {
 	}
 	if rec := do(s, "GET", "/api/v1/revisions/7/status", "", ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("без токена → ждали 401, получили %d", rec.Code)
+	}
+}
+
+func (f *fakeRevisions) PublishResource(_ context.Context, target, resource string, content []byte) (store.PublishResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case target == "nobody":
+		return store.PublishResult{}, store.ErrUnknownTarget
+	case target == "ps2":
+		return store.PublishResult{}, store.ErrResourceNotAssigned
+	}
+	f.rev++
+	f.published++
+	f.lastContent = string(content)
+	return store.PublishResult{Revision: f.rev, Changed: []string{target}}, nil
+}
+
+// Бот публикует готовый конфиг mtg машины.
+func TestV1_PutTargetResource(t *testing.T) {
+	s, fr := v1Server(false, 0)
+	cfg := "[secrets]\n\"alice_1\" = \"ee11\"\n"
+	rec := do(s, "PUT", "/api/v1/targets/pr2/resources/mtg.config", botToken, cfg)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ждали 200, получили %d: %s", rec.Code, rec.Body.String())
+	}
+	if fr.lastContent != cfg || fr.published != 1 {
+		t.Fatalf("содержимое не дошло: %q", fr.lastContent)
+	}
+	cases := []struct {
+		path   string
+		status int
+	}{
+		{"/api/v1/targets/pr2/resources/telemt.users", http.StatusBadRequest}, // telemt.users собирает сам telemux
+		{"/api/v1/targets/pr2/resources/unknown.thing", http.StatusBadRequest},
+		{"/api/v1/targets/ps2/resources/mtg.config", http.StatusBadRequest},  // ресурс не назначен машине
+		{"/api/v1/targets/nobody/resources/mtg.config", http.StatusNotFound}, // нет машины
+	}
+	for _, c := range cases {
+		if rec := do(s, "PUT", c.path, botToken, cfg); rec.Code != c.status {
+			t.Fatalf("%s → ждали %d, получили %d", c.path, c.status, rec.Code)
+		}
+	}
+	if rec := do(s, "PUT", "/api/v1/targets/pr2/resources/mtg.config", botToken, ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("пустой конфиг → ждали 400, получили %d", rec.Code)
+	}
+	if rec := do(s, "PUT", "/api/v1/targets/pr2/resources/mtg.config", "", cfg); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("без токена → ждали 401, получили %d", rec.Code)
+	}
+	replica, _ := v1Server(true, 0)
+	if rec := do(replica, "PUT", "/api/v1/targets/pr2/resources/mtg.config", botToken, cfg); rec.Code != http.StatusConflict {
+		t.Fatalf("на реплике → ждали 409, получили %d", rec.Code)
 	}
 }

@@ -27,11 +27,12 @@ var (
 
 // Target - машина флота.
 type Target struct {
-	Code      string   `json:"code"`
-	Kind      string   `json:"kind"` // exit | relay
-	RelayCode string   `json:"relay_code,omitempty"`
-	Resources []string `json:"resources"`
-	Enabled   bool     `json:"enabled"`
+	Code      string            `json:"code"`
+	Kind      string            `json:"kind"` // exit | relay | panel
+	RelayCode string            `json:"relay_code,omitempty"`
+	Resources []string          `json:"resources"`
+	Enabled   bool              `json:"enabled"`
+	Settings  map[string]string `json:"settings,omitempty"` // для panel: inbound_id, node_id, port, node_code
 }
 
 // UpsertTarget добавляет машину или обновляет её описание.
@@ -39,17 +40,20 @@ func (s *Store) UpsertTarget(ctx context.Context, t Target) error {
 	if t.Resources == nil {
 		t.Resources = []string{}
 	}
+	if t.Settings == nil {
+		t.Settings = map[string]string{}
+	}
 	var relay *string
 	if t.RelayCode != "" {
 		relay = &t.RelayCode
 	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO targets (code, kind, relay_code, resources, enabled)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO targets (code, kind, relay_code, resources, enabled, settings)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (code) DO UPDATE
-		   SET kind = EXCLUDED.kind, relay_code = EXCLUDED.relay_code,
-		       resources = EXCLUDED.resources, enabled = EXCLUDED.enabled, updated_at = now()`,
-		t.Code, t.Kind, relay, t.Resources, t.Enabled)
+		   SET kind = EXCLUDED.kind, relay_code = EXCLUDED.relay_code, resources = EXCLUDED.resources,
+		       enabled = EXCLUDED.enabled, settings = EXCLUDED.settings, updated_at = now()`,
+		t.Code, t.Kind, relay, t.Resources, t.Enabled, t.Settings)
 	if err != nil {
 		return fmt.Errorf("upsert target %q: %w", t.Code, err)
 	}
@@ -251,4 +255,109 @@ func (s *Store) UpsertUser(ctx context.Context, r ImportRow) (bool, error) {
 		return false, fmt.Errorf("upsert user %q: %w", r.Username, err)
 	}
 	return inserted, nil
+}
+
+const (
+	// ResourceMtgConfig - config.toml mtg-multi машины; текст готовит бот.
+	ResourceMtgConfig = "mtg.config"
+	// ResourceXuiClients - желаемые клиенты MTProto-входа мастер-панели 3x-ui (JSON).
+	ResourceXuiClients = "xui.clients"
+)
+
+// PublishableResources - ресурсы, которые публикует внешний источник готовыми.
+// telemt.users сюда не входит: его собирает сам telemux.
+var PublishableResources = map[string]bool{ResourceMtgConfig: true, ResourceXuiClients: true}
+
+// PanelItem - работа синхронизатора панели по одному входу.
+type PanelItem struct {
+	Code             string
+	Settings         map[string]string
+	Desired          Desired
+	ObservedRevision *int64
+	ObservedStatus   string
+	SeenAt           *time.Time
+}
+
+// PanelWork - входы панели с желаемыми клиентами и последним отчётом (одним запросом).
+func (s *Store) PanelWork(ctx context.Context) ([]PanelItem, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT t.code, t.settings, d.revision, d.sha256, d.content, o.revision, COALESCE(o.status, ''), o.seen_at
+		   FROM targets t
+		   JOIN LATERAL (
+		     SELECT revision, sha256, content FROM desired_config
+		      WHERE target = t.code AND resource = $1 ORDER BY revision DESC LIMIT 1) d ON true
+		   LEFT JOIN observed_state o ON o.target = t.code AND o.resource = $1
+		  WHERE t.kind = 'panel' AND t.enabled AND $1 = ANY(t.resources)
+		  ORDER BY t.code`, ResourceXuiClients)
+	if err != nil {
+		return nil, fmt.Errorf("panel work: %w", err)
+	}
+	defer rows.Close()
+	var out []PanelItem
+	for rows.Next() {
+		it := PanelItem{Desired: Desired{Resource: ResourceXuiClients}}
+		if err := rows.Scan(&it.Code, &it.Settings, &it.Desired.Revision, &it.Desired.SHA256, &it.Desired.Content,
+			&it.ObservedRevision, &it.ObservedStatus, &it.SeenAt); err != nil {
+			return nil, fmt.Errorf("scan panel work: %w", err)
+		}
+		it.Desired.Target = it.Code
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// ErrResourceNotAssigned - ресурс не назначен машине (targets.resources).
+var ErrResourceNotAssigned = errors.New("ресурс не назначен машине")
+
+// PublishResource публикует готовое содержимое ресурса одной машины: новая
+// ревизия только если хеш отличается от последнего. Только на primary.
+func (s *Store) PublishResource(ctx context.Context, target, resource string, content []byte) (PublishResult, error) {
+	res := PublishResult{Changed: []string{}}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return res, fmt.Errorf("begin publish resource: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, publishLockKey); err != nil {
+		return res, fmt.Errorf("publish lock: %w", err)
+	}
+	var assigned bool
+	err = tx.QueryRow(ctx,
+		`SELECT $2 = ANY(resources) FROM targets WHERE code = $1 AND enabled`, target, resource).Scan(&assigned)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return res, ErrUnknownTarget
+	}
+	if err != nil {
+		return res, fmt.Errorf("target %q: %w", target, err)
+	}
+	if !assigned {
+		return res, ErrResourceNotAssigned
+	}
+	sha := telemtcfg.SHA256(content)
+	var lastSHA string
+	var lastRev int64
+	err = tx.QueryRow(ctx,
+		`SELECT sha256, revision FROM desired_config WHERE target = $1 AND resource = $2
+		  ORDER BY revision DESC LIMIT 1`, target, resource).Scan(&lastSHA, &lastRev)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return res, fmt.Errorf("last desired: %w", err)
+	}
+	if err == nil && lastSHA == sha {
+		res.Revision = lastRev
+		return res, nil
+	}
+	var rev int64
+	if err := tx.QueryRow(ctx, `SELECT nextval('config_revision_seq')`).Scan(&rev); err != nil {
+		return res, fmt.Errorf("next revision: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO desired_config (target, resource, revision, sha256, content) VALUES ($1, $2, $3, $4, $5)`,
+		target, resource, rev, sha, content); err != nil {
+		return res, fmt.Errorf("insert desired: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return res, fmt.Errorf("commit publish resource: %w", err)
+	}
+	res.Revision, res.Changed = rev, []string{target}
+	return res, nil
 }

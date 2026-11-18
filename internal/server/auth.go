@@ -70,6 +70,7 @@ func (a *auth) isPublic(path string) bool {
 		path == "/api/v1/users",                  // Bearer бота или сессия - проверяет обработчик
 		strings.HasPrefix(path, "/api/v1/users/"),
 		strings.HasPrefix(path, "/api/v1/revisions/"),
+		strings.HasPrefix(path, "/api/v1/targets/"),
 		strings.HasPrefix(path, "/join/"): // одноразовый token
 		return true
 	case !strings.HasPrefix(path, "/api/"): // статика SPA (/, /assets/*)

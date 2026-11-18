@@ -100,6 +100,35 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /api/v1/targets/{code}/resources/{resource}:
+    put:
+      summary: Готовый ресурс одной машины от бота
+      description: |
+        Бот публикует ресурс, который собирает сам: `mtg.config` - config.toml
+        mtg-multi машины (текст), `xui.clients` - JSON-массив клиентов MTProto-входа
+        мастер-панели 3x-ui (машина вида panel). Новая ревизия создаётся только при изменении
+        содержимого. `telemt.users` сюда не публикуется: его собирает telemux.
+      operationId: putTargetResource
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+        - { name: resource, in: path, required: true, schema: { type: string, enum: [mtg.config, xui.clients] } }
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: { type: string, maxLength: 4194304 }
+      responses:
+        '200':
+          description: Опубликовано (или не изменилось)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Publish' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /api/v1/revisions/{rev}/status:
     get:
       summary: Дошла ли ревизия до машин

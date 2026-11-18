@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/AndreyOsipuk/telemux/internal/store"
 	"github.com/AndreyOsipuk/telemux/internal/telemtcfg"
+	"github.com/AndreyOsipuk/telemux/internal/xui"
 )
 
 // RevisionStore - ревизии желаемого состояния (реализует store.Store).
@@ -20,6 +23,7 @@ type RevisionStore interface {
 	UpsertUser(ctx context.Context, r store.ImportRow) (bool, error)
 	PublishTelemtUsers(ctx context.Context, defaultMaxConns int) (store.PublishResult, error)
 	RevisionStatus(ctx context.Context, rev int64) ([]store.TargetStatus, error)
+	PublishResource(ctx context.Context, target, resource string, content []byte) (store.PublishResult, error)
 }
 
 // Предел тела PUT /api/v1/users: MaxImportBatch пользователей с запасом.
@@ -185,6 +189,46 @@ func (s *Server) routesV1() {
 		pub, ok := s.publish(w, r)
 		if !ok {
 			return
+		}
+		writeJSON(w, map[string]any{"revision": pub.Revision, "changed": pub.Changed})
+	})
+
+	// Готовый ресурс одной машины от бота (config.toml mtg-multi): тело - текст файла.
+	s.mux.HandleFunc("PUT /api/v1/targets/{code}/resources/{resource}", func(w http.ResponseWriter, r *http.Request) {
+		if !s.requireBotOrSession(w, r) || !s.requireMaster(w, r) {
+			return
+		}
+		resource := r.PathValue("resource")
+		if !store.PublishableResources[resource] {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("ресурс %q не публикуется извне (допустимы: %s, %s)", resource, store.ResourceMtgConfig, store.ResourceXuiClients), s.deps.Log)
+			return
+		}
+		content, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
+		if err != nil || len(bytes.TrimSpace(content)) == 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("нужно непустое содержимое ресурса, не больше 4 МБ"), s.deps.Log)
+			return
+		}
+		if resource == store.ResourceXuiClients {
+			var clients []xui.Client
+			if err := json.Unmarshal(content, &clients); err != nil {
+				writeErr(w, http.StatusBadRequest, fmt.Errorf("xui.clients - JSON-массив клиентов: %w", err), s.deps.Log)
+				return
+			}
+		}
+		pub, err := s.deps.Revisions.PublishResource(r.Context(), r.PathValue("code"), resource, content)
+		switch {
+		case errors.Is(err, store.ErrUnknownTarget):
+			writeErr(w, http.StatusNotFound, fmt.Errorf("нет машины %q", r.PathValue("code")), s.deps.Log)
+			return
+		case errors.Is(err, store.ErrResourceNotAssigned):
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("ресурс %q не назначен машине %q", resource, r.PathValue("code")), s.deps.Log)
+			return
+		case err != nil:
+			s.writeStoreErr(w, err)
+			return
+		}
+		if len(pub.Changed) > 0 {
+			s.revs.bump()
 		}
 		writeJSON(w, map[string]any{"revision": pub.Revision, "changed": pub.Changed})
 	})

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/telemt"
 	"github.com/AndreyOsipuk/telemux/internal/telemtcfg"
+	"github.com/AndreyOsipuk/telemux/internal/xui"
 )
 
 var version = "dev"
@@ -135,7 +137,22 @@ func runServe(args []string) int {
 		return 2
 	}
 
+	// Синхронизатор входов мастер-панели 3x-ui (mtg через панель): включается адресом панели.
+	var panel *server.PanelDeps
+	if xuiURL := envOr("TELEMUX_XUI_URL", ""); xuiURL != "" {
+		var tlsConf *tls.Config
+		if pin := envOr("TELEMUX_XUI_CERT_SHA256", ""); pin != "" {
+			tlsConf = xui.PinnedTLS(pin)
+		} else {
+			logger.Warn("TELEMUX_XUI_CERT_SHA256 не задан - сертификат панели проверяется обычной цепочкой")
+		}
+		panel = &server.PanelDeps{Store: st, API: xui.NewAPI(xuiURL, envOr("TELEMUX_XUI_TOKEN", ""), tlsConf),
+			AllowMassRemove: envOr("TELEMUX_XUI_ALLOW_MASS_REMOVE", "") == "1"}
+		logger.Info("синхронизатор панели 3x-ui включён")
+	}
+
 	srv := server.New(server.Deps{
+		Panel: panel,
 		Store: st, Node: telemt.New(*api, *auth), Version: version,
 		Interval: *interval, SyncOpts: syncpkg.Options{Mode: mode}, Log: logger,
 		AdminUser:     envOr("TELEMUX_ADMIN_USER", "admin"),

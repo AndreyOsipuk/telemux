@@ -312,3 +312,66 @@ func TestIntegration_UpsertUser(t *testing.T) {
 		t.Fatalf("секрет не обновлён: %s", secret)
 	}
 }
+
+// Ресурс, который готовит бот (конфиг mtg машины): новая ревизия только при
+// изменении содержимого; машина без этого ресурса или неизвестная - ошибка.
+func TestIntegration_PublishResource(t *testing.T) {
+	st := setupAll(t)
+	defer st.Close()
+	ctx := context.Background()
+	seedTargets(t, st,
+		Target{Code: "pr2", Kind: "relay", Resources: []string{ResourceTelemtUsers, ResourceMtgConfig}, Enabled: true},
+		Target{Code: "ps2", Kind: "exit", Resources: []string{ResourceTelemtUsers}, Enabled: true},
+	)
+	cfg := []byte("[secrets]\n\"alice_1\" = \"ee11\"\n")
+	r1, err := st.PublishResource(ctx, "pr2", ResourceMtgConfig, cfg)
+	if err != nil || r1.Revision == 0 || len(r1.Changed) != 1 {
+		t.Fatalf("первая публикация: %+v, %v", r1, err)
+	}
+	r2, err := st.PublishResource(ctx, "pr2", ResourceMtgConfig, cfg)
+	if err != nil || r2.Revision != r1.Revision || len(r2.Changed) != 0 {
+		t.Fatalf("то же содержимое не должно давать новую ревизию: %+v, %v", r2, err)
+	}
+	r3, err := st.PublishResource(ctx, "pr2", ResourceMtgConfig, append(cfg, '\n'))
+	if err != nil || r3.Revision <= r1.Revision {
+		t.Fatalf("изменение должно дать новую ревизию: %+v, %v", r3, err)
+	}
+	if _, err := st.PublishResource(ctx, "ps2", ResourceMtgConfig, cfg); err != ErrResourceNotAssigned {
+		t.Fatalf("машина без ресурса: ждали ErrResourceNotAssigned, получили %v", err)
+	}
+	if _, err := st.PublishResource(ctx, "nobody", ResourceMtgConfig, cfg); err != ErrUnknownTarget {
+		t.Fatalf("неизвестная машина: ждали ErrUnknownTarget, получили %v", err)
+	}
+	b, _ := st.DesiredBundle(ctx, "pr2")
+	if len(b.Resources) != 1 || b.Resources[0].Resource != ResourceMtgConfig || b.Revision != r3.Revision {
+		t.Fatalf("в бандле pr2 ждали mtg.config ревизии %d, получили %+v", r3.Revision, b)
+	}
+}
+
+// Вход мастер-панели как машина вида panel: настройки входа, желаемые клиенты и
+// отчёт синхронизатора попадают в выборку работы.
+func TestIntegration_PanelWork(t *testing.T) {
+	st := setupAll(t)
+	defer st.Close()
+	ctx := context.Background()
+	seedTargets(t, st, Target{Code: "xui-ps7", Kind: "panel", Resources: []string{ResourceXuiClients}, Enabled: true,
+		Settings: map[string]string{"inbound_id": "7", "node_id": "3", "port": "8767", "node_code": "ps7"}})
+	if _, err := st.PublishResource(ctx, "xui-ps7", ResourceXuiClients, []byte(`[{"email":"a_1_ps7","secret":"aa","subId":"mtpx-x","enable":true}]`)); err != nil {
+		t.Fatal(err)
+	}
+	work, err := st.PanelWork(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work) != 1 || work[0].Code != "xui-ps7" || work[0].Settings["inbound_id"] != "7" || work[0].Desired.Revision == 0 || work[0].ObservedRevision != nil {
+		t.Fatalf("неверная выборка: %+v", work)
+	}
+	if err := st.RecordObserved(ctx, ObservedReport{Target: "xui-ps7", Resources: []ObservedResource{
+		{Resource: ResourceXuiClients, Revision: work[0].Desired.Revision, SHA256: "d", Status: "applied"}}}); err != nil {
+		t.Fatal(err)
+	}
+	work, _ = st.PanelWork(ctx)
+	if work[0].ObservedRevision == nil || *work[0].ObservedRevision != work[0].Desired.Revision || work[0].ObservedStatus != "applied" || work[0].SeenAt == nil {
+		t.Fatalf("отчёт не попал в выборку: %+v", work[0])
+	}
+}

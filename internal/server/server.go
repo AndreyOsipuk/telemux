@@ -51,7 +51,10 @@ type Deps struct {
 	Agents AgentStore
 	// Как часто long-poll перепроверяет базу (публикации с других узлов). По умолчанию 1 с.
 	DesiredPollInterval time.Duration
-	PublicURL           string // внешний URL мастера (для join-команды)
+
+	// Синхронизатор входов мастер-панели 3x-ui (mtg через панель); nil → выключен.
+	Panel     *PanelDeps
+	PublicURL string // внешний URL мастера (для join-команды)
 
 	// Идентичность ноды для heartbeat (пусто → heartbeat выключен).
 	SelfCode      string
@@ -207,6 +210,9 @@ func (s *Server) runSync(ctx context.Context) syncStatus {
 // Run запускает HTTP-сервер + фоновый sync-loop; блокирует до отмены ctx.
 func (s *Server) Run(ctx context.Context, addr string) error {
 	go s.syncLoop(ctx)
+	if s.deps.Panel != nil {
+		go s.panelLoop(ctx)
+	}
 	srv := &http.Server{Addr: addr, Handler: s.Handler()}
 	go func() {
 		<-ctx.Done()

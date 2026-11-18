@@ -24,16 +24,26 @@ func runTarget(args []string) int {
 	fs := flag.NewFlagSet("target", flag.ContinueOnError)
 	dsn := fs.String("db", envOr("DATABASE_URL", ""), "DSN primary PG")
 	code := fs.String("code", "", "код машины (ps1..ps8, pr1..pr4)")
-	kind := fs.String("kind", "", "exit | relay")
+	kind := fs.String("kind", "", "exit | relay | panel")
+	settings := fs.String("settings", "", "настройки через запятую key=value (для panel: inbound_id, node_id, port, node_code)")
 	relay := fs.String("relay", "", "для выхода: релей, к которому он держит туннель")
 	resources := fs.String("resources", "", "ресурсы через запятую, например telemt.users")
 	disabled := fs.Bool("disabled", false, "машина выключена (ревизий не получает)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *code == "" || (*kind != "exit" && *kind != "relay") {
-		fmt.Fprintln(os.Stderr, "нужны --code и --kind exit|relay")
+	if *code == "" || (*kind != "exit" && *kind != "relay" && *kind != "panel") {
+		fmt.Fprintln(os.Stderr, "нужны --code и --kind exit|relay|panel")
 		return 2
+	}
+	kv := map[string]string{}
+	for _, pair := range splitList(*settings) {
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok || k == "" {
+			fmt.Fprintf(os.Stderr, "настройка %q - нужен вид key=value\n", pair)
+			return 2
+		}
+		kv[k] = v
 	}
 	ctx := context.Background()
 	st, err := store.Open(ctx, *dsn)
@@ -42,7 +52,7 @@ func runTarget(args []string) int {
 		return 1
 	}
 	defer st.Close()
-	t := store.Target{Code: *code, Kind: *kind, RelayCode: *relay, Resources: splitList(*resources), Enabled: !*disabled}
+	t := store.Target{Code: *code, Kind: *kind, RelayCode: *relay, Resources: splitList(*resources), Enabled: !*disabled, Settings: kv}
 	if err := st.UpsertTarget(ctx, t); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -110,7 +120,11 @@ func runAgent(args []string) int {
 	masters := fs.String("master", envOr("TELEMUX_AGENT_MASTERS", ""), "адреса мастера через запятую по приоритету")
 	tokenFile := fs.String("token-file", envOr("TELEMUX_AGENT_TOKEN_FILE", "/etc/telemux/agent.token"), "файл с токеном машины")
 	target := fs.String("target", envOr("TELEMUX_AGENT_TARGET", ""), "код этой машины")
-	usersFile := fs.String("users-file", envOr("TELEMUX_AGENT_USERS_FILE", "/etc/telemt/users.toml"), "users.toml на машине")
+	usersFile := fs.String("users-file", envOr("TELEMUX_AGENT_USERS_FILE", "/etc/telemt/users.toml"), "users.toml на машине; none - telemt на машине нет")
+	mtgFile := fs.String("mtg-file", envOr("TELEMUX_AGENT_MTG_FILE", "none"), "config.toml mtg-multi; none - mtg не ведётся")
+	mtgStats := fs.String("mtg-stats-url", envOr("TELEMUX_AGENT_MTG_STATS_URL", "http://127.0.0.1:8081/stats"), "/stats mtg-multi (secrets_sha256)")
+	mtgUnit := fs.String("mtg-unit", envOr("TELEMUX_AGENT_MTG_UNIT", "mtg-multi"), "юнит systemd mtg-multi")
+	mtgHot := fs.Bool("mtg-hot-reload", envOr("TELEMUX_AGENT_MTG_HOT_RELOAD", "1") == "1", "SIGHUP, если изменились только секреты")
 	mode := fs.String("mode", envOr("TELEMUX_AGENT_MODE", agent.ModeCompare), "режим: compare (только сравнить) или apply (применять)")
 	configFile := fs.String("config-file", envOr("TELEMUX_AGENT_CONFIG_FILE", "/etc/telemt/telemt.toml"), "telemt.toml (WEB-профили) для режима apply")
 	stateURL := fs.String("state-url", envOr("TELEMUX_AGENT_STATE_URL", agent.DefaultStateURL), "API telemt: принят ли конфиг")
@@ -127,12 +141,24 @@ func runAgent(args []string) int {
 		return 2
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if *usersFile == "none" {
+		*usersFile = ""
+	}
+	if *mtgFile == "none" {
+		*mtgFile = ""
+	}
 	var applier *agent.Applier
+	var mtgApplier *agent.MtgApplier
 	if *mode == agent.ModeApply {
-		applier = &agent.Applier{ConfigFile: *configFile, StateURL: *stateURL, Reloader: agent.SystemdReloader{Unit: *unit}}
+		if *usersFile != "" {
+			applier = &agent.Applier{ConfigFile: *configFile, StateURL: *stateURL, Reloader: agent.SystemdReloader{Unit: *unit}}
+		}
+		if *mtgFile != "" {
+			mtgApplier = &agent.MtgApplier{StatsURL: *mtgStats, Service: agent.SystemdMtg{Unit: *mtgUnit}, HotReload: *mtgHot}
+		}
 	}
 	a, err := agent.New(agent.Config{
-		Applier:    applier,
+		Applier: applier, MtgApplier: mtgApplier, MtgFile: *mtgFile,
 		MasterURLs: splitList(*masters), Token: strings.TrimSpace(string(raw)), Target: *target,
 		Version: version, Via: *via, UsersFile: *usersFile, Mode: *mode,
 		Wait: *wait, RecheckEvery: *recheck, Log: logger,

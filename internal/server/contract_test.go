@@ -83,6 +83,34 @@ func TestContract_V1(t *testing.T) {
 	checkContract(t, router, s, "GET", "/api/v1/revisions/1/status", "", http.StatusOK)
 	checkContract(t, router, s, "GET", "/api/v1/revisions/999/status", "", http.StatusNotFound)
 
+	// Ресурс машины - текстом, а не JSON.
+	putText := func(path, body string, want int) {
+		t.Helper()
+		req := httptest.NewRequest("PUT", path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+botToken)
+		req.Header.Set("Content-Type", "text/plain")
+		route, params, err := router.FindRoute(req)
+		if err != nil {
+			t.Fatalf("PUT %s нет в спеке: %v", path, err)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("PUT %s → ждали %d, получили %d: %s", path, want, rec.Code, rec.Body.String())
+		}
+		in := &openapi3filter.RequestValidationInput{Request: req, PathParams: params, Route: route,
+			Options: &openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc, ExcludeRequestBody: true}}
+		res := rec.Result()
+		if err := openapi3filter.ValidateResponse(context.Background(), &openapi3filter.ResponseValidationInput{
+			RequestValidationInput: in, Status: res.StatusCode, Header: res.Header,
+			Body: io.NopCloser(bytes.NewReader(rec.Body.Bytes())),
+		}); err != nil {
+			t.Fatalf("PUT %s %d не соответствует спеке: %v", path, rec.Code, err)
+		}
+	}
+	putText("/api/v1/targets/pr2/resources/mtg.config", "[secrets]\n", http.StatusOK)
+	putText("/api/v1/targets/nobody/resources/mtg.config", "[secrets]\n", http.StatusNotFound)
+
 	guarded, _ := v1Server(false, 20)
 	checkContract(t, router, guarded, "PUT", "/api/v1/users", usersBody("alice_1"), http.StatusConflict)
 	replica, _ := v1Server(true, 0)

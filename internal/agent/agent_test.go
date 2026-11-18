@@ -294,3 +294,37 @@ func TestAgent_AcceptsQueuedReport(t *testing.T) {
 		t.Fatalf("202 от моста должен считаться успехом: %v", err)
 	}
 }
+
+// У каждого адреса мастера свой прокси (свой туннель): запись "адрес|прокси".
+func TestAgent_PerMasterProxy(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "users.toml")
+	_ = os.WriteFile(file, []byte(botFormat), 0o600)
+	m := &fakeMaster{bundle: store.Bundle{Target: "pr2", Revision: 2, Resources: []store.Desired{
+		{Resource: store.ResourceTelemtUsers, Revision: 2, SHA256: "x", Content: desiredTwo()},
+	}}}
+	master := m.handler(t, "tok", "pr2")
+	var viaProxy int
+	// HTTP-прокси: получает абсолютный URL и отдаёт ответ мастера.
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		viaProxy++
+		master.ServeHTTP(w, r)
+	}))
+	defer proxy.Close()
+	a, err := New(Config{
+		MasterURLs: []string{"http://master.invalid:18480|" + proxy.URL}, Token: "tok", Target: "pr2",
+		UsersFile: file, Mode: ModeCompare, Wait: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev, err := a.RunOnce(context.Background()); err != nil || rev != 2 {
+		t.Fatalf("через прокси ждали ревизию 2: %d, %v", rev, err)
+	}
+	if viaProxy < 2 {
+		t.Fatalf("запросы за бандлом и отчёт должны идти через прокси этого адреса, было %d", viaProxy)
+	}
+	if _, err := New(Config{MasterURLs: []string{"http://m|::bad"}, Token: "t", Target: "pr2", UsersFile: file, Mode: ModeCompare}); err == nil {
+		t.Fatal("битый адрес прокси принят")
+	}
+}
