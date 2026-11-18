@@ -41,11 +41,14 @@ func (s *Server) requireMaster(w http.ResponseWriter, r *http.Request) bool {
 func (s *Server) routesUsers() {
 	// Список с пагинацией: {data, paging:{total,limit,offset}}.
 	s.mux.HandleFunc("GET /api/users", func(w http.ResponseWriter, r *http.Request) {
-		limit := atoiDefault(r.URL.Query().Get("limit"), 20)
-		offset := atoiDefault(r.URL.Query().Get("offset"), 0)
+		limit, offset, err := parsePaging(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err, s.deps.Log)
+			return
+		}
 		users, total, err := s.deps.Users.ListUsersPage(r.Context(), limit, offset)
 		if err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+			s.writeStoreErr(w, err)
 			return
 		}
 		writeJSON(w, map[string]any{
@@ -75,12 +78,11 @@ func (s *Server) routesUsers() {
 				writeErr(w, http.StatusConflict, err, s.deps.Log)
 				return
 			}
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+			s.writeStoreErr(w, err)
 			return
 		}
 		s.markDirty() // немедленная синхра на ноды
-		w.WriteHeader(http.StatusCreated)
-		writeJSON(w, u)
+		writeJSONStatus(w, http.StatusCreated, u)
 	})
 
 	// Удалить юзера (master-only).
@@ -90,7 +92,7 @@ func (s *Server) routesUsers() {
 		}
 		ok, err := s.deps.Users.DeleteUser(r.Context(), r.PathValue("username"))
 		if err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+			s.writeStoreErr(w, err)
 			return
 		}
 		if !ok {
@@ -115,7 +117,7 @@ func (s *Server) routesUsers() {
 		}
 		ok, err := s.deps.Users.SetExpiration(r.Context(), r.PathValue("username"), body.ExpirationAt)
 		if err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+			s.writeStoreErr(w, err)
 			return
 		}
 		if !ok {
@@ -138,7 +140,7 @@ func (s *Server) routesUsers() {
 			}
 			ok, err := s.deps.Users.SetEnabled(r.Context(), r.PathValue("username"), enabled)
 			if err != nil {
-				writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+				s.writeStoreErr(w, err)
 				return
 			}
 			if !ok {
@@ -151,12 +153,29 @@ func (s *Server) routesUsers() {
 	}
 }
 
-func atoiDefault(s string, def int) int {
-	if s == "" {
-		return def
+// Пагинация списков: limit 1..100 (по умолчанию 20, больше 100 - зажимается
+// до 100), offset >= 0. Мусор и отрицательные значения - ошибка клиента.
+const (
+	defaultPageLimit = 20
+	maxPageLimit     = 100
+)
+
+func parsePaging(r *http.Request) (limit, offset int, err error) {
+	limit, offset = defaultPageLimit, 0
+	q := r.URL.Query()
+	if v := q.Get("limit"); v != "" {
+		n, convErr := strconv.Atoi(v)
+		if convErr != nil || n < 1 {
+			return 0, 0, fmt.Errorf("limit - целое от 1 до %d", maxPageLimit)
+		}
+		limit = min(n, maxPageLimit)
 	}
-	if n, err := strconv.Atoi(s); err == nil {
-		return n
+	if v := q.Get("offset"); v != "" {
+		n, convErr := strconv.Atoi(v)
+		if convErr != nil || n < 0 {
+			return 0, 0, fmt.Errorf("offset - целое не меньше 0")
+		}
+		offset = n
 	}
-	return def
+	return limit, offset, nil
 }

@@ -18,7 +18,7 @@ import (
 
 // Store — то, что демон ждёт от локального PG.
 type Store interface {
-	role.RecoveryChecker                                              // IsInRecovery
+	role.RecoveryChecker // IsInRecovery
 	ListDesired(ctx context.Context) ([]telemtsync.DesiredUser, error)
 }
 
@@ -220,11 +220,4 @@ func (s *Server) syncLoop(ctx context.Context) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, code int, err error, log *slog.Logger) {
-	log.Error("http", "code", code, "err", err) // реальную ошибку — в лог (не глотаем)
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -35,8 +36,12 @@ func (s *Server) clusterAuthed(r *http.Request) bool {
 	if s.deps.ClusterSecret == "" {
 		return false
 	}
-	h := r.Header.Get("Authorization")
-	return strings.TrimPrefix(h, "Bearer ") == s.deps.ClusterSecret
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return false
+	}
+	// Сравнение за постоянное время: по времени ответа секрет не подобрать.
+	return subtle.ConstantTimeCompare([]byte(token), []byte(s.deps.ClusterSecret)) == 1
 }
 
 // reportHeartbeat регистрирует присутствие ноды в реестре кластера:
@@ -92,7 +97,7 @@ func (s *Server) routesCluster() {
 	s.mux.HandleFunc("GET /api/nodes", func(w http.ResponseWriter, r *http.Request) {
 		nodes, err := s.deps.Cluster.ListNodes(r.Context())
 		if err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+			s.writeStoreErr(w, err)
 			return
 		}
 		writeJSON(w, map[string]any{"nodes": nodes})
@@ -113,7 +118,7 @@ func (s *Server) routesCluster() {
 			return
 		}
 		if err := s.deps.Cluster.UpsertNode(r.Context(), n); err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+			s.writeStoreErr(w, err)
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true})
@@ -156,7 +161,7 @@ func (s *Server) routesCluster() {
 		}
 		res, err := s.deps.Users.ReconcileUsers(r.Context(), rows, body.Force)
 		if err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+			s.writeStoreErr(w, err)
 			return
 		}
 		if res.Aborted {
@@ -186,7 +191,7 @@ func (s *Server) routesCluster() {
 			return
 		}
 		if err := s.deps.Cluster.CreateJoinToken(r.Context(), tok, time.Hour); err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+			s.writeStoreErr(w, err)
 			return
 		}
 		base := s.deps.PublicURL
@@ -202,7 +207,7 @@ func (s *Server) routesCluster() {
 		tok := r.PathValue("token")
 		ok, err := s.deps.Cluster.ConsumeJoinToken(r.Context(), tok)
 		if err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
+			s.writeStoreErr(w, err)
 			return
 		}
 		if !ok {
