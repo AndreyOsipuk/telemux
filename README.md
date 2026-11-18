@@ -136,4 +136,4 @@ TELEMUX_TEST_DSN=postgres://user:pass@127.0.0.1:5432/telemux \
 
 ## Лицензия
 
-TBD.
+[GPL-3.0](LICENSE). Часть кода веб-панели основана на [3x-ui](https://github.com/MHSanaei/3x-ui) (GPL-3.0); у заимствованных файлов сохраняется указание на источник.
