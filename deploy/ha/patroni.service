@@ -1,0 +1,22 @@
+# Patroni в systemd-режиме (если пакет дистрибутива не ставит свой юнит).
+# PostgreSQL как отдельная служба при этом ОТКЛЮЧАЕТСЯ: им управляет Patroni.
+#   systemctl disable --now postgresql
+[Unit]
+Description=Patroni - управление PostgreSQL для telemux
+After=network-online.target etcd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/usr/bin/patroni /etc/patroni/patroni.yml
+ExecReload=/bin/kill -HUP $MAINPID
+# Не убивать postgres вместе с Patroni: Patroni сам корректно остановит его.
+KillMode=process
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

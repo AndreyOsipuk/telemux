@@ -10,10 +10,13 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/AndreyOsipuk/telemux/internal/backend/mtgmulti"
+	"github.com/AndreyOsipuk/telemux/internal/patroni"
+	"github.com/AndreyOsipuk/telemux/internal/peers"
 	"github.com/AndreyOsipuk/telemux/internal/role"
 	"github.com/AndreyOsipuk/telemux/internal/selfupdate"
 	"github.com/AndreyOsipuk/telemux/internal/server"
@@ -43,6 +46,8 @@ func main() {
 		os.Exit(runUpdate(os.Args[2:]))
 	case "serve":
 		os.Exit(runServe(os.Args[2:]))
+	case "fence":
+		os.Exit(runFence(os.Args[2:]))
 	case "-version", "--version", "version":
 		fmt.Printf("telemux %s\n", version)
 	default:
@@ -54,6 +59,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  import-toml --db <dsn> --file users.toml — импорт существующих юзеров С СЕКРЕТАМИ (обратная совместимость)")
 		fmt.Fprintln(os.Stderr, "  update [--owner o --repo r]             — обновить бинарь до последнего релиза (checksum+swap)")
 		fmt.Fprintln(os.Stderr, "  serve --db <dsn> --api <url> [--apply --listen :8080]  — демон: HTTP API + дашборд + автосинхра")
+		fmt.Fprintln(os.Stderr, "  fence --db <dsn> [--roles bot] on|off|status - ручное управление PG-fence (аварийно)")
 	}
 }
 
@@ -94,6 +100,19 @@ func runServe(args []string) int {
 		logger.Info("mtg-multi backend включён", "ssh_key", key)
 	}
 
+	selfCode := envOr("TELEMUX_NODE_CODE", "")
+	clusterSecret := envOr("TELEMUX_CLUSTER_SECRET", "")
+	peerMap, err := peers.Parse(envOr("TELEMUX_PEERS", ""))
+	if err != nil {
+		logger.Error("TELEMUX_PEERS", "err", err)
+		return 2
+	}
+	roleSrc, err := startRoleMonitor(ctx, logger, st, selfCode, clusterSecret, peerMap)
+	if err != nil {
+		logger.Error("фейловер", "err", err)
+		return 2
+	}
+
 	srv := server.New(server.Deps{
 		Store: st, Node: telemt.New(*api, *auth), Version: version,
 		Interval: *interval, SyncOpts: syncpkg.Options{Mode: mode}, Log: logger,
@@ -101,19 +120,146 @@ func runServe(args []string) int {
 		AdminPassword: envOr("TELEMUX_ADMIN_PASSWORD", ""),
 		Users:         st, // store реализует user-CRUD
 		Cluster:       st, // store реализует реестр нод + join-token
-		ClusterSecret: envOr("TELEMUX_CLUSTER_SECRET", ""),
+		ClusterSecret: clusterSecret,
 		PublicURL:     envOr("TELEMUX_PUBLIC_URL", "http://127.0.0.1"+*listen),
-		SelfCode:      envOr("TELEMUX_NODE_CODE", ""),
+		SelfCode:      selfCode,
 		SelfAddress:   envOr("TELEMUX_NODE_ADDRESS", ""),
 		SelfTelemtURL: *api,
 		MasterURL:     envOr("TELEMUX_MASTER_URL", ""),
 		Mtg:           mtg, // nil → mtg-ноды не синхронизируются
+		Role:          roleSrc,
+		Peers:         peerMap,
 	})
 	if err := srv.Run(ctx, *listen); err != nil {
 		logger.Error("serve", "err", err)
 		return 1
 	}
 	return 0
+}
+
+// startRoleMonitor включает автомат роли (ADR 0002), если задан кластер голосующих
+// машин или Patroni. Иначе nil - роль узла = роль локального PG, как раньше.
+func startRoleMonitor(ctx context.Context, logger *slog.Logger, st *store.Store,
+	selfCode, clusterSecret string, peerMap map[string]string) (server.RoleSource, error) {
+	patroniURL := envOr("TELEMUX_PATRONI_URL", "")
+	if len(peerMap) == 0 && patroniURL == "" {
+		return nil, nil
+	}
+	if selfCode == "" {
+		return nil, fmt.Errorf("TELEMUX_NODE_CODE обязателен при TELEMUX_PEERS/TELEMUX_PATRONI_URL")
+	}
+	if _, self := peerMap[selfCode]; self {
+		return nil, fmt.Errorf("TELEMUX_PEERS не должен содержать себя (%s)", selfCode)
+	}
+	fenceAfter, err := durEnv("TELEMUX_FENCE_AFTER", 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	hold, err := durEnv("TELEMUX_MASTER_HOLD", 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	interval, err := durEnv("TELEMUX_ROLE_INTERVAL", 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := role.Config{
+		Self: selfCode, Peers: peers.Codes(peerMap), RequirePatroni: patroniURL != "",
+		FenceAfter: fenceAfter, MasterHold: hold,
+	}
+	probes := role.Probes{PG: st, Standbys: st}
+	if len(peerMap) > 0 {
+		if clusterSecret == "" {
+			return nil, fmt.Errorf("TELEMUX_CLUSTER_SECRET обязателен при TELEMUX_PEERS (пинг соседей)")
+		}
+		probes.Peers = &peers.Prober{Peers: peerMap, Secret: clusterSecret}
+	}
+	if patroniURL != "" {
+		pc := patroni.New(patroniURL, nil)
+		probes.Patroni = pc
+		// Проверка инварианта fencing: telemux должен прекратить запись раньше,
+		// чем реплика вправе промоутиться. Не фатально - Patroni мог ещё не подняться.
+		if dc, err := pc.Config(ctx); err != nil {
+			logger.Warn("Patroni: не удалось прочитать /config для проверки таймаутов", "err", err)
+		} else {
+			for _, v := range dc.CheckTimings(fenceAfter + 2*interval) {
+				logger.Warn("НАРУШЕН ИНВАРИАНТ FENCING", "detail", v)
+			}
+		}
+	}
+	if roles := splitList(envOr("TELEMUX_PG_FENCE_ROLES", "")); len(roles) > 0 {
+		probes.Fence = store.Fencer{Store: st, Roles: roles}
+		logger.Info("PG-fence включён", "roles", roles)
+	}
+
+	mon := role.NewMonitor(cfg, probes, interval, logger)
+	mon.Tick(ctx) // первое решение до старта HTTP
+	go mon.Run(ctx)
+	logger.Info("автомат роли запущен", "self", selfCode, "peers", cfg.Peers, "quorum", cfg.Quorum(),
+		"patroni", patroniURL != "", "fence_after", fenceAfter, "master_hold", hold)
+	return mon, nil
+}
+
+// runFence - ручное управление PG-fence (аварийный выход, если telemux лежит в fenced).
+func runFence(args []string) int {
+	fs := flag.NewFlagSet("fence", flag.ContinueOnError)
+	dsn := fs.String("db", envOr("DATABASE_URL", ""), "DSN локального PG")
+	roles := fs.String("roles", envOr("TELEMUX_PG_FENCE_ROLES", ""), "роли приложений, чьи сессии рвать при on")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	action := fs.Arg(0)
+	if action != "on" && action != "off" && action != "status" {
+		fmt.Fprintln(os.Stderr, "использование: telemux fence --db <dsn> [--roles bot] on|off|status")
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	st, err := store.Open(ctx, *dsn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "PG: %v\n", err)
+		return 1
+	}
+	defer st.Close()
+	if action != "status" {
+		if err := (store.Fencer{Store: st, Roles: splitList(*roles)}).SetWriteFence(ctx, action == "on"); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 1
+		}
+	}
+	on, err := st.WriteFenceStatus(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	fmt.Printf("PG-fence: %v\n", map[bool]string{true: "ВКЛЮЧЁН (default_transaction_read_only=on)", false: "выключен"}[on])
+	if action == "off" {
+		fmt.Println("внимание: если telemux запущен и узел не мастер, он включит fence снова")
+	}
+	return 0
+}
+
+func durEnv(key string, def time.Duration) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s=%q: нужна положительная длительность (10s, 1m)", key, v)
+	}
+	return d, nil
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envOr(key, def string) string {

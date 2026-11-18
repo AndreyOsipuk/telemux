@@ -18,9 +18,69 @@ telemt хранит список пользователей на каждой н
 
 - **Источник истины:** PostgreSQL. Запись только на primary (master telemux).
 - **Роль ноды = роль её PG** (`pg_is_in_recovery`): primary → master, replica → slave.
-  Авто-failover — через [Patroni](https://patroni.readthedocs.io) (etcd-кворум). Split-brain невозможен.
+  Авто-failover - через [Patroni](https://patroni.readthedocs.io) (etcd-кворум) плюс второй,
+  независимый контур fencing в telemux (см. «Автоматическая смена мастера» ниже).
 - **Данные на ноды** — PG streaming replication. **Управление** (add-node, статус) — gRPC+mTLS.
 - Каждая нода синхронит **свой** telemt из **своей** локальной PG. Наружу API telemt и PG не светятся.
+
+## Автоматическая смена мастера
+
+Решение и разбор вариантов: [docs/adr/0002-master-failover.md](docs/adr/0002-master-failover.md).
+Кратко: три машины управления, на каждой etcd + Patroni + PostgreSQL + telemux.
+
+- **Patroni** решает, где PostgreSQL primary: выборы через кворум etcd, демоут изолированного
+  primary до истечения ключа лидера, `pg_rewind` старого primary, синхронная репликация
+  `synchronous_mode: quorum` (коммит подтверждён минимум на двух машинах).
+- **telemux** решает, кто принимает запись приложений. Узел - мастер, только если одновременно:
+  1. локальный PG - primary;
+  2. локальный Patroni считает себя лидером (если задан `TELEMUX_PATRONI_URL`);
+  3. telemux видит большинство голосующих машин (себя и хотя бы одного соседа из двух) по HTTP
+     или по живой streaming-реплике в `pg_stat_replication`;
+  4. условия держатся `TELEMUX_MASTER_HOLD` подряд (мастер теряется сразу, получается медленно).
+
+  Без кворума дольше `TELEMUX_FENCE_AFTER` primary становится **fenced**: `/api/leader` отдаёт 503
+  (supervisor бота останавливает бота), запись через API - `409 not_master`, а при включённом
+  PG-fence PostgreSQL уходит в `default_transaction_read_only` и сессии бота рвутся. Это
+  происходит раньше, чем Patroni вправе промоутить реплику (`fence_after + 2*interval < ttl`;
+  telemux проверяет инвариант при старте и пишет предупреждение).
+
+Роли, которые видит telemux: `master`, `replica`, `fenced`, `unknown` (локальный PG недоступен).
+
+### Клиенты
+
+| Клиент | Как находит мастера |
+|---|---|
+| Бот (PG) | libpq multi-host: `postgres://bot@ps1,ps2,ps3/telemux?target_session_attrs=read-write` |
+| Бот (лидер процесса) | supervisor опрашивает `GET http://127.0.0.1:8080/api/leader`: 200 - запускать, иначе останавливать |
+| Вебхуки платёжек | reverse-proxy на каждой машине, upstream из трёх ботов, переход к следующему на 503 |
+| Агенты, мосты, heartbeat | список всех машин; не-мастер отвечает `409 {"error":"not_master","master_url":...}` и `X-Telemux-Master` |
+
+### Эндпоинты
+
+| Метод и путь | Авторизация | Ответ |
+|---|---|---|
+| `GET /api/leader` | нет (держать за фаерволом) | 200 `{"master":true}` / 503 `{"error":"not_master","master_code","master_url","reason"}` |
+| `GET /api/role` | сессия панели | `{"role","is_master","reason","quorum","seen","since","master","master_url"}` |
+| `GET /api/cluster/peer` | Bearer cluster-secret | `{"code","role"}` - пинг соседа, канал кворума |
+| Любая запись (`/api/users*`, `/api/cluster/users-sync`, `heartbeat`, `join-token`) на не-мастере | как у ручки | 409 `not_master` с подсказкой мастера |
+
+### Развёртывание
+
+Шаблоны: [deploy/etcd/etcd.env.example](deploy/etcd/etcd.env.example),
+[deploy/patroni/patroni.yml.example](deploy/patroni/patroni.yml.example), переменные telemux -
+в [deploy/telemux.env.example](deploy/telemux.env.example). systemd-режим - пакеты etcd/Patroni и
+[deploy/ha/patroni.service](deploy/ha/patroni.service) (служба `postgresql` отключается, PG
+запускает Patroni); docker-режим - [deploy/ha/docker-compose.yml](deploy/ha/docker-compose.yml)
+на каждой машине (`network_mode: host`). План перевода живого кластера без простоя - в ADR 0002. Права роли telemux в PG: `pg_monitor`;
+для PG-fence ещё `pg_signal_backend` и `GRANT ALTER SYSTEM ON PARAMETER
+default_transaction_read_only` (PG 15+) или суперпользователь.
+
+Аварийно (telemux не может подняться, а PG остался read-only):
+
+```sh
+telemux fence --db "$DATABASE_URL" status
+telemux fence --db "$DATABASE_URL" off
+```
 
 ## Требования
 
@@ -101,6 +161,14 @@ volumes: { pgdata: {} }
 | Authorization для API telemt | `--auth` / `TELEMT_API_AUTH` | пусто (без авторизации) |
 | Логин панели | `TELEMUX_ADMIN_USER` | `admin` |
 | Пароль панели | `TELEMUX_ADMIN_PASSWORD` | пусто = auth выключен |
+| Код этой машины | `TELEMUX_NODE_CODE` | - (обязателен в кластере) |
+| Секрет межузловых запросов | `TELEMUX_CLUSTER_SECRET` | - (обязателен при `TELEMUX_PEERS`) |
+| Соседние голосующие машины | `TELEMUX_PEERS` (`ps2=https://...,ps3=https://...`) | пусто = одиночный режим |
+| REST локального Patroni | `TELEMUX_PATRONI_URL` | пусто = не проверять |
+| Порог потери кворума до fenced | `TELEMUX_FENCE_AFTER` | `10s` |
+| Выдержка до получения мастера | `TELEMUX_MASTER_HOLD` | `5s` |
+| Период проверки роли | `TELEMUX_ROLE_INTERVAL` | `2s` |
+| Роли приложений для PG-fence | `TELEMUX_PG_FENCE_ROLES` | пусто = PG-fence выключен |
 
 PostgreSQL держать на loopback (`listen_addresses='127.0.0.1'`) + фаервол; наружу не открывать.
 Реплики стримят с primary по TLS + `pg_hba` allowlist.
@@ -110,6 +178,7 @@ PostgreSQL держать на loopback (`listen_addresses='127.0.0.1'`) + фа�
 ```sh
 telemux probe --api http://127.0.0.1:9091        # проверить связь с telemt-API ноды
 telemux role  --db "$DATABASE_URL"               # роль ноды: master/replica (из pg_is_in_recovery)
+telemux fence --db "$DATABASE_URL" status        # PG-fence: включён ли read-only (аварийно: off)
 telemux sync  --db "$DATABASE_URL" --api http://127.0.0.1:9091          # shadow: показать diff
 telemux sync  --db "$DATABASE_URL" --api http://127.0.0.1:9091 --apply  # применить
 ```
@@ -130,7 +199,8 @@ TELEMUX_TEST_DSN=postgres://user:pass@127.0.0.1:5432/telemux \
 
 - [x] Ядро: diff-движок, api-client (`/v1/users` + мутации с `If-Match`), role-detector, sync-loop.
 - [ ] Авто-обновление (goreleaser-релизы + `telemux update`: скачать → checksum → swap → restart → авто-откат).
-- [ ] Patroni/etcd + install-скрипт + add-node через join-token.
+- [x] Автоматическая смена мастера: Patroni/etcd + кворумный fencing в telemux, `/api/leader`, PG-fence.
+- [ ] install-скрипт для etcd/Patroni + add-node через join-token.
 - [ ] gRPC контрол-плейн + rolling-update кластера.
 - [ ] Веб-морда (React SPA, вшита в бинарь) + Telegram-бот.
 

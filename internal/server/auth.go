@@ -64,8 +64,9 @@ func (a *auth) isPublic(path string) bool {
 	switch {
 	case path == "/healthz",
 		path == "/api/login", path == "/api/me",
+		path == "/api/leader",                    // supervisor бота / reverse-proxy вебхуков
 		strings.HasPrefix(path, "/api/cluster/"), // Bearer cluster-secret
-		strings.HasPrefix(path, "/join/"):         // одноразовый token
+		strings.HasPrefix(path, "/join/"):        // одноразовый token
 		return true
 	case !strings.HasPrefix(path, "/api/"): // статика SPA (/, /assets/*)
 		return true

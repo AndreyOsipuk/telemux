@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AndreyOsipuk/telemux/internal/role"
 	"github.com/AndreyOsipuk/telemux/internal/store"
 )
 
@@ -43,34 +42,36 @@ func (s *Server) clusterAuthed(r *http.Request) bool {
 // reportHeartbeat регистрирует присутствие ноды в реестре кластера:
 //
 //	master  → пишет свою строку напрямую в локальный (primary) PG;
-//	replica → POST на master/api/cluster/heartbeat (Bearer cluster-secret).
+//	иначе   → POST на <мастер>/api/cluster/heartbeat (Bearer cluster-secret);
+//	          адрес мастера - по подсказке соседей, запасной - MasterURL.
 //
 // No-op, если не задан SelfCode (одно-нодовый/ненастроенный режим).
 func (s *Server) reportHeartbeat(ctx context.Context) {
 	if s.deps.SelfCode == "" || s.deps.Cluster == nil {
 		return
 	}
-	rl, err := role.Detect(ctx, s.deps.Store)
+	st, err := s.currentRole(ctx)
 	if err != nil {
 		s.deps.Log.Error("heartbeat: роль", "err", err)
 		return
 	}
 	node := store.Node{
 		Code: s.deps.SelfCode, Address: s.deps.SelfAddress,
-		TelemtAPIURL: s.deps.SelfTelemtURL, Role: string(rl),
+		TelemtAPIURL: s.deps.SelfTelemtURL, Role: string(st.Role),
 	}
-	if rl.IsMaster() {
+	if st.IsMaster() {
 		if err := s.deps.Cluster.UpsertNode(ctx, node); err != nil {
 			s.deps.Log.Error("heartbeat: upsert self", "err", err)
 		}
 		return
 	}
-	// replica → мастеру
-	if s.deps.MasterURL == "" {
+	// не мастер → текущему мастеру (по подсказке соседей), иначе на запасной MasterURL
+	target := s.masterURL(st.Master)
+	if target == "" {
 		return
 	}
 	body, _ := json.Marshal(node)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.deps.MasterURL+"/api/cluster/heartbeat", strings.NewReader(string(body)))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, target+"/api/cluster/heartbeat", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
 	if s.deps.ClusterSecret != "" {
 		req.Header.Set("Authorization", "Bearer "+s.deps.ClusterSecret)
@@ -106,6 +107,9 @@ func (s *Server) routesCluster() {
 		var n store.Node
 		if err := json.NewDecoder(r.Body).Decode(&n); err != nil || n.Code == "" {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("нужен JSON с непустым code"), s.deps.Log)
+			return
+		}
+		if !s.requireMaster(w, r) {
 			return
 		}
 		if err := s.deps.Cluster.UpsertNode(r.Context(), n); err != nil {
@@ -171,6 +175,9 @@ func (s *Server) routesCluster() {
 	s.mux.HandleFunc("POST /api/cluster/join-token", func(w http.ResponseWriter, r *http.Request) {
 		if !s.clusterAuthed(r) {
 			writeErr(w, http.StatusUnauthorized, fmt.Errorf("неверный cluster-secret"), s.deps.Log)
+			return
+		}
+		if !s.requireMaster(w, r) {
 			return
 		}
 		tok, err := newToken()

@@ -1,0 +1,103 @@
+# Patroni для машины управления telemux (по одному на каждую из трёх машин).
+# См. docs/adr/0002-master-failover.md. Значения в <...> заменить.
+# name должен совпадать с TELEMUX_NODE_CODE этой машины: по нему telemux
+# сопоставляет streaming-реплики (application_name) с соседями.
+
+scope: telemux
+name: <ps1>
+
+restapi:
+  # Только loopback + адрес для соседей Patroni; наружу не открывать.
+  listen: 0.0.0.0:8008
+  connect_address: <адрес-этой-машины>:8008
+  authentication:
+    username: patroni
+    password: <секрет-restapi>
+
+etcd3:
+  hosts:
+    - <адрес-ps1>:2379
+    - <адрес-ps2>:2379
+    - <адрес-ps3>:2379
+  protocol: https
+  cacert: /etc/etcd/pki/ca.crt
+  cert: /etc/etcd/pki/client.crt
+  key: /etc/etcd/pki/client.key
+
+bootstrap:
+  dcs:
+    # Инвариант fencing Patroni: loop_wait + 2*retry_timeout <= ttl.
+    # Инвариант telemux: TELEMUX_FENCE_AFTER + 2*TELEMUX_ROLE_INTERVAL < ttl
+    # (10s + 4s < 30s) - telemux прекращает запись приложений раньше, чем
+    # реплика вправе промоутиться. telemux проверяет оба при старте.
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    # Реплика, отставшая больше чем на 1 МБ WAL, не промоутится.
+    maximum_lag_on_failover: 1048576
+    # Сбой etcd при живой сети: лидер остаётся, пока по REST видит ВСЕХ участников.
+    failsafe_mode: true
+    # Коммит подтверждается, когда его получила любая из реплик: ANY 1 (ps2, ps3).
+    # Подтверждённая оплата есть минимум на двух машинах.
+    synchronous_mode: quorum
+    synchronous_node_count: 1
+    # false: если живых реплик нет, лидер с кворумом etcd переходит на асинхронную
+    # запись, а не встаёт. Изолированный лидер кворума etcd не имеет и демоутится.
+    synchronous_mode_strict: false
+    check_timeline: true
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        wal_log_hints: "on"          # нужно для pg_rewind
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_keep_size: 1GB
+        wal_sender_timeout: 15s      # мёртвый walsender уходит быстрее fence_after
+        wal_receiver_status_interval: 5s  # свежий reply_time для канала кворума telemux
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: <адрес-этой-машины>:5432
+  data_dir: /var/lib/postgresql/16/main
+  bin_dir: /usr/lib/postgresql/16/bin
+  # Старый primary, который не удалось перемотать pg_rewind, пересобирается с нуля.
+  remove_data_directory_on_rewind_failure: true
+  remove_data_directory_on_diverged_timelines: true
+  authentication:
+    superuser:
+      username: postgres
+      password: <секрет>
+    replication:
+      username: replicator
+      password: <секрет>
+    rewind:
+      username: rewinder
+      password: <секрет>
+  pg_hba:
+    - local all all peer
+    - host all all 127.0.0.1/32 scram-sha-256
+    - hostssl replication replicator <адрес-ps1>/32 scram-sha-256
+    - hostssl replication replicator <адрес-ps2>/32 scram-sha-256
+    - hostssl replication replicator <адрес-ps3>/32 scram-sha-256
+    - hostssl all rewinder <адрес-ps1>/32 scram-sha-256
+    - hostssl all rewinder <адрес-ps2>/32 scram-sha-256
+    - hostssl all rewinder <адрес-ps3>/32 scram-sha-256
+    # Бот подключается multi-host DSN с target_session_attrs=read-write.
+    - hostssl telemux bot <адрес-ps1>/32 scram-sha-256
+    - hostssl telemux bot <адрес-ps2>/32 scram-sha-256
+    - hostssl telemux bot <адрес-ps3>/32 scram-sha-256
+
+# Демоут гарантирован даже при зависшем Patroni: softdog перезагрузит машину,
+# если Patroni лидера не продлил watchdog. Нужен модуль softdog и доступ к /dev/watchdog.
+watchdog:
+  mode: required
+  device: /dev/watchdog
+  safety_margin: 5
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false

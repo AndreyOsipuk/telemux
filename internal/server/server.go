@@ -49,6 +49,11 @@ type Deps struct {
 	SelfTelemtURL string
 	MasterURL     string // куда replica шлёт heartbeat
 
+	// Фейловер (опционально, см. docs/adr/0002-master-failover.md).
+	// Role nil → роль = роль локального PG (одиночный режим).
+	Role  RoleSource
+	Peers map[string]string // соседние голосующие машины: code → URL telemux
+
 	// mtg-multi backend (опционально; nil → mtg-ноды не синхронизируются).
 	// Тот же sync-loop, что и telemt, но отдельным проходом по mtg-нодам.
 	Mtg *MtgDeps
@@ -120,14 +125,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"version": s.deps.Version})
 	})
-	s.mux.HandleFunc("GET /api/role", func(w http.ResponseWriter, r *http.Request) {
-		rl, err := role.Detect(r.Context(), s.deps.Store)
-		if err != nil {
-			writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
-			return
-		}
-		writeJSON(w, map[string]any{"role": string(rl), "is_master": rl.IsMaster()})
-	})
+	s.routesFailover() // /api/role, /api/leader, пинг соседей
 	s.mux.HandleFunc("GET /api/sync/status", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()
 		st := s.lastSync

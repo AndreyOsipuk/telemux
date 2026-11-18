@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/AndreyOsipuk/telemux/internal/role"
 	"github.com/AndreyOsipuk/telemux/internal/store"
 )
 
@@ -23,16 +22,17 @@ type UserAdmin interface {
 	ReconcileUsers(ctx context.Context, rows []store.ImportRow, force bool) (store.ReconcileResult, error)
 }
 
-// requireMaster: write-операции разрешены только когда локальный PG = primary.
-// На реплике PG read-only → пишем понятный 409, а не глухой 500 из БД.
+// requireMaster: write-операции разрешены только мастеру (PG primary + кворум +
+// Patroni-лидер, см. ADR 0002). На не-мастере - 409 not_master с подсказкой
+// мастера, а не глухой 500 из read-only БД.
 func (s *Server) requireMaster(w http.ResponseWriter, r *http.Request) bool {
-	rl, err := role.Detect(r.Context(), s.deps.Store)
+	st, err := s.currentRole(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusServiceUnavailable, err, s.deps.Log)
 		return false
 	}
-	if !rl.IsMaster() {
-		writeErr(w, http.StatusConflict, fmt.Errorf("эта нода — replica; запись идёт на master"), s.deps.Log)
+	if !st.IsMaster() {
+		s.writeNotMaster(w, st)
 		return false
 	}
 	return true
