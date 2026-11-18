@@ -1,0 +1,30 @@
+/* Источник: форк 3x-ui, frontend/src/pages/nodes/NodeList.css (GPL-3.0), фрагменты. */
+
+.name-cell {
+  display: flex;
+  flex-direction: column;
+}
+
+.name-cell .name {
+  font-weight: 500;
+}
+
+.name-cell .remark {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.address-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.address-hidden {
+  filter: blur(5px);
+  transition: filter 0.2s ease;
+}
+
+.address-visible {
+  filter: none;
+}

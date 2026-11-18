@@ -1,0 +1,44 @@
+# Веб-панель telemux
+
+React 19 + TypeScript, antd 6, @tanstack/react-query, react-router, i18next (ru/en), Vite.
+Основа - панель форка 3x-ui (GPL-3.0); в заимствованных файлах первой строкой указан источник.
+
+Собранная панель (`dist/`) **коммитится** и вшивается в Go-бинарь через `embed`
+(см. [../web.go](../web.go)), поэтому для сборки демона Node не нужен.
+
+## Команды
+
+```sh
+cd internal/server/web
+npm ci            # зависимости (Node 24+)
+npm run dev       # dev-сервер Vite, /api проксируется на http://localhost:8080
+npm test          # vitest + React Testing Library
+npm run typecheck # tsc --noEmit
+npm run build     # tsc + сборка в dist/ - её и коммитим вместе с исходниками
+npm run gen:api   # типы из ../../../api/openapi.yaml -> src/api/generated/openapi.ts (коммитится)
+```
+
+Адрес демона для dev-сервера меняется переменной `TELEMUX_DEV_BACKEND`.
+
+## Устройство
+
+| Каталог | Что там |
+|---|---|
+| `src/api/http.ts` | `request()`: ошибки API -> `ApiError {status, code, message, masterUrl}`; 401 -> событие «нужен вход» |
+| `src/api/errors.ts` | понятный текст ошибки: 409 `not_master` -> «эта машина не мастер» с адресом мастера, сеть, 503, 5xx |
+| `src/api/client.ts` | ручки, которыми пользуется панель; `USES_MOCKS` - экраны на заглушках |
+| `src/api/types.ts` | типы: из спеки (`generated/openapi.ts`) и временные для ручек, которых в спеке ещё нет |
+| `src/api/mocks.ts` | демо-данные «Пар» и «Дрейфа», пока на мастере нет ручек |
+| `src/auth/AuthGate.tsx` | вход по сессии (`/api/me`, `/api/login`, `/api/logout`) |
+| `src/layouts/` | оболочка страниц и сайдбар |
+| `src/pages/*` | экраны, грузятся лениво |
+| `src/i18n/` | словари ru/en; тест `i18n-keys` проверяет, что ключи совпадают |
+| `src/test/` | тесты |
+
+Раздача статики (`../web.go`): `assets/*` с хешем в имени кэшируются навсегда, `index.html` -
+`no-cache`; неизвестный путь вне `/api/` отдаёт `index.html` (клиентский роутинг), а
+несуществующий `assets/*` - 404. Вкладка, открытая до обновления бинаря, на такой 404
+перезагружается один раз (`src/chunkRecovery.ts`).
+
+Генератор (`openapi-typescript`) запускается через `npx` с закреплёнными версиями: ему нужен
+TypeScript 5 с JS-API, а сам проект проверяется TypeScript 7.

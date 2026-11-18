@@ -10,6 +10,7 @@
 
 # Фронт (SPA): node_modules не коммитим; dist КОММИТИМ (вшивается в бинарь через embed)
 internal/server/web/node_modules/
+internal/server/web/.vitest/
 
 # IDE
 .idea/

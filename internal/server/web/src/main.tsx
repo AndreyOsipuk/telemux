@@ -1,10 +1,21 @@
-import React from 'react';
+import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { App } from './App';
-import './index.css';
+import 'antd/dist/reset.css';
+import '@/styles/page-shell.css';
 
-createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+import App from './App';
+import { initI18n } from './i18n';
+import { makeQueryClient } from './api/queries';
+import { installChunkRecovery } from './chunkRecovery';
+
+installChunkRecovery();
+initI18n();
+
+const root = document.getElementById('root');
+if (root) {
+  createRoot(root).render(
+    <StrictMode>
+      <App queryClient={makeQueryClient()} />
+    </StrictMode>,
+  );
+}

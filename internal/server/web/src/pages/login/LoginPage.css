@@ -1,0 +1,26 @@
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: #e6e8ec;
+}
+
+.login-page.is-dark {
+  background: #1a1b1f;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+}
+
+.login-title {
+  margin-bottom: 4px !important;
+  text-align: center;
+}
+
+.login-subtitle {
+  text-align: center;
+}

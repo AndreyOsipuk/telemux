@@ -1,0 +1,64 @@
+/* Источник: форк 3x-ui, frontend/src/styles/page-shell.css (GPL-3.0). Сведено к одному
+   классу оболочки .panel-shell вместо отдельного на каждую страницу. */
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.panel-shell {
+  --bg-page: #e6e8ec;
+  --bg-card: #ffffff;
+  min-height: 100vh;
+  background: var(--bg-page);
+}
+
+.panel-shell.is-dark {
+  --bg-page: #1a1b1f;
+  --bg-card: #23252b;
+}
+
+.panel-shell .ant-layout,
+.panel-shell .ant-layout-content,
+.panel-shell .content-shell {
+  background: transparent;
+}
+
+.panel-shell .content-area {
+  padding: 24px;
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .panel-shell .content-area {
+    padding: 56px 8px 8px;
+  }
+}
+
+.page-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 60vh;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.page-header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
