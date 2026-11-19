@@ -1,0 +1,8 @@
+/* Плитки «Обзора» - одной высоты в ряду, как карточки дашборда 3x-ui. */
+.overview-tile {
+  height: 100%;
+}
+
+.overview-tile .ant-statistic-content {
+  font-size: 22px;
+}

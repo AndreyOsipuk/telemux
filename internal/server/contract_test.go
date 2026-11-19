@@ -357,3 +357,37 @@ func TestContract_Certs(t *testing.T) {
 	checkContract(t, router, s, "GET", "/api/v1/certs?offset=2", "", http.StatusOK)
 	checkContract(t, router, s, "GET", "/api/v1/certs?limit=0", "", http.StatusBadRequest)
 }
+
+// Обзор, подключения по пользователям, поиск по пользователю и сертификаты машины
+// совпадают со спекой.
+func TestContract_Overview(t *testing.T) {
+	_, router := loadSpec(t)
+	fresh := time.Now().UTC()
+	fc := newFakeCerts()
+	fc.counts = store.CertCounts{Total: 2, Expiring: 1}
+	fc.list = []store.CertInfo{{Machine: "pr2", Domain: "web.example.com", Assigned: true}}
+	s, fa := overviewServer(fc)
+	fa.totals = store.FleetTotals{Machines: 2, AgentsOnline: 1, AgentsSilent: 1, ConnectionsTotal: 5, UsersOnline: 2}
+	fa.machines = []store.Machine{
+		{Code: "pr2", Kind: "relay", Enabled: true, Resources: []string{}, Checks: []store.ObservedCheck{}, Observed: []store.MachineResource{},
+			SeenAt: &fresh, RuntimeSeenAt: &fresh, TelemtVersion: "3.5.17", TelemtAPIOK: ptrBool(true), MtgAPIOK: ptrBool(false),
+			Host: &store.RuntimeHost{CPUPct: 10, MemPct: 20, DiskPct: 30, Load1: 0.5, UptimeS: 60}, Connections: 5, UsersOnline: 2},
+		{Code: "ps2", Kind: "exit", Enabled: true, Resources: []string{}, Checks: []store.ObservedCheck{}, Observed: []store.MachineResource{}},
+	}
+	relay := store.PairMachine{Machine: fa.machines[0], Status: store.StatusOK, Desired: []store.DesiredRevision{}}
+	fa.pairs = []store.Pair{{Relay: &relay, Exits: []store.PairMachine{}}}
+	fa.conns = []store.ConnRow{{Machine: "pr2", Product: "telemt", Key: "a_1", Connections: 5, ActiveIPs: []string{}, SeenAt: fresh}}
+
+	checkContract(t, router, s, "GET", "/api/v1/overview", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/machines", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/pairs", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/connections/by-user?user=a_1&user=b_2", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/connections/by-user?user=", "", http.StatusBadRequest)
+	checkContract(t, router, s, "GET", "/api/v1/connections?user=a_&min_connections=1", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/certs?machine=pr2", "", http.StatusOK)
+
+	// Без сертификатов на мастере - certs: null.
+	plain, fa2 := overviewServer(nil)
+	fa2.machines = []store.Machine{}
+	checkContract(t, router, plain, "GET", "/api/v1/overview", "", http.StatusOK)
+}

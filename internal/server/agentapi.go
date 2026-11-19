@@ -28,6 +28,9 @@ type AgentStore interface {
 	Connections(ctx context.Context, f store.ConnFilter, limit, offset int) ([]store.ConnRow, int, error)
 	ConnectionsSummary(ctx context.Context, limit, offset int) ([]store.ConnSummary, int, error)
 	LogErrors(ctx context.Context, since time.Time, machine string, limit, offset int) ([]store.LogErrorSum, int, error)
+	// Подключения по пользователям (сумма по машинам) и итоги флота для обзора (overview.go).
+	ConnectionsByUser(ctx context.Context, keys []string) ([]store.UserConns, error)
+	FleetTotals(ctx context.Context, freshSince, silentBefore time.Time) (store.FleetTotals, error)
 	// PruneLogErrors удаляет счётчики журнала с концом периода раньше before.
 	PruneLogErrors(ctx context.Context, before time.Time) (int64, error)
 

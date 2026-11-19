@@ -1,18 +1,20 @@
 // Пользователи: серверная пагинация {data, paging}, создание, вкл/выкл, продление,
 // удаление. Запись - только на мастере (кнопки выключены на реплике, 409 - понятным текстом).
+// У каждого пользователя - онлайн ли он и сколько у него подключений по всем машинам:
+// один запрос /api/v1/connections/by-user на всю страницу, обновление раз в 15 секунд.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { App, Button, Card, Form, Input, Popconfirm, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd';
+import { App, Badge, Button, Card, Form, Input, Popconfirm, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { DeleteOutlined, FieldTimeOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
 import { api } from '@/api/client';
 import { describeError } from '@/api/errors';
-import { qk, useIsMaster, useUsers } from '@/api/queries';
-import type { User } from '@/api/types';
+import { qk, useConnectionsByUser, useIsMaster, useUsers } from '@/api/queries';
+import type { User, UserConnections } from '@/api/types';
 import ErrorAlert from '@/components/ErrorAlert';
 import { formatDate } from '@/utils/format';
 
@@ -34,6 +36,13 @@ export default function UsersPage() {
   const [newName, setNewName] = useState('');
 
   const users = useUsers(pageSize, (page - 1) * pageSize);
+  const usernames = useMemo(() => (users.data?.data ?? []).map((u) => u.username), [users.data]);
+  const conns = useConnectionsByUser(usernames);
+  const connsByUser = useMemo(() => {
+    const out = new Map<string, UserConnections>();
+    for (const c of conns.data?.data ?? []) out.set(c.key, c);
+    return out;
+  }, [conns.data]);
 
   // Удалили последнего на последней странице - переходим на новую последнюю,
   // иначе запрос с offset за пределами total покажет пустую таблицу.
@@ -77,6 +86,42 @@ export default function UsersPage() {
       title: t('users.username'),
       dataIndex: 'username',
       render: (v: string) => <Typography.Text strong>{v}</Typography.Text>,
+    },
+    {
+      title: t('users.online'),
+      key: 'online',
+      align: 'center',
+      width: 110,
+      render: (_v, u) => {
+        const c = connsByUser.get(u.username);
+        if (!c) return <Typography.Text type="secondary">-</Typography.Text>;
+        return c.online ? (
+          <Badge status="success" text={t('status.online')} />
+        ) : (
+          <Typography.Text type="secondary">{t('users.offline')}</Typography.Text>
+        );
+      },
+    },
+    {
+      title: (
+        <Tooltip title={t('users.activeHint')}>
+          <span>{t('users.active')}</span>
+        </Tooltip>
+      ),
+      key: 'active',
+      align: 'center',
+      width: 130,
+      render: (_v, u) => {
+        const c = connsByUser.get(u.username);
+        if (!c) return <Typography.Text type="secondary">-</Typography.Text>;
+        return (
+          <Tooltip title={c.connections > 0 ? t('users.onMachines', { n: c.machines }) : undefined}>
+            <span className="mono" data-testid={`active-${u.username}`}>
+              {c.connections}
+            </span>
+          </Tooltip>
+        );
+      },
     },
     {
       title: t('users.expiration'),
@@ -150,6 +195,7 @@ export default function UsersPage() {
         </Button>
       </div>
       {users.isError && <ErrorAlert error={users.error} onRetry={() => users.refetch()} />}
+      {conns.isError && <ErrorAlert title={t('users.connsFailed')} error={conns.error} onRetry={() => conns.refetch()} />}
       <Card>
         <Form
           layout="inline"
@@ -179,7 +225,7 @@ export default function UsersPage() {
           columns={columns}
           dataSource={users.data?.data ?? []}
           loading={users.isPending}
-          scroll={{ x: 640 }}
+          scroll={{ x: 900 }}
           pagination={{
             current: page,
             pageSize,

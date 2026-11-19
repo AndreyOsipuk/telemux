@@ -464,3 +464,117 @@ func TestIntegration_CheckRuntimeSchema(t *testing.T) {
 		t.Fatalf("ждали понятную ошибку про миграцию 0007, получили %v", err)
 	}
 }
+
+// Поиск по префиксу пользователя: %, _ ищутся как есть, а не как шаблон LIKE.
+func TestIntegration_Connections_UserPrefix(t *testing.T) {
+	st := setupAll(t)
+	defer st.Close()
+	ctx := context.Background()
+	seedTargets(t, st, telemtTarget("pr1", "relay"))
+	if err := st.RecordRuntime(ctx, telemtRep("pr1",
+		RuntimeUser{Key: "andrey_1", Connections: 1}, RuntimeUser{Key: "anna_2", Connections: 2},
+		RuntimeUser{Key: "andXrey", Connections: 1}, RuntimeUser{Key: "bob_andrey", Connections: 1})); err != nil {
+		t.Fatal(err)
+	}
+	rows, total, err := st.Connections(ctx, ConnFilter{User: "andrey"}, 100, 0)
+	if err != nil || total != 1 || rows[0].Key != "andrey_1" {
+		t.Fatalf("префикс andrey: total=%d %+v %v", total, rows, err)
+	}
+	if _, total, _ := st.Connections(ctx, ConnFilter{User: "an"}, 100, 0); total != 3 {
+		t.Fatalf("префикс an: ждали 3, получили %d", total)
+	}
+	if _, total, _ := st.Connections(ctx, ConnFilter{User: "and_"}, 100, 0); total != 0 {
+		t.Fatalf("_ - обычный символ, а не шаблон: получили %d", total)
+	}
+	if _, total, _ := st.Connections(ctx, ConnFilter{User: "%"}, 100, 0); total != 0 {
+		t.Fatalf("%% - обычный символ, а не шаблон: получили %d", total)
+	}
+	if rows, total, _ := st.Connections(ctx, ConnFilter{User: "an", MinConnections: 2}, 100, 0); total != 1 || rows[0].Key != "anna_2" {
+		t.Fatalf("префикс + min_connections: %d %+v", total, rows)
+	}
+}
+
+// Сумма по пользователю - по всем машинам и продуктам одним запросом; неизвестный
+// пользователь - нули; порядок ответа - как в запросе.
+func TestIntegration_ConnectionsByUser(t *testing.T) {
+	st := setupAll(t)
+	defer st.Close()
+	ctx := context.Background()
+	seedTargets(t, st, telemtTarget("pr1", "relay"), telemtTarget("ps5", "exit"), telemtTarget("ps6", "exit"))
+	if err := st.RecordRuntime(ctx, telemtRep("pr1", RuntimeUser{Key: "a_1", Connections: 3}, RuntimeUser{Key: "b_2", Connections: 0, ActiveIPs: []string{"9.9.9.9"}})); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordRuntime(ctx, RuntimeReport{Target: "ps5", Mtg: &RuntimeMtg{APIOK: true,
+		Users: []RuntimeUser{{Key: "a_1", Connections: 2}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordRuntime(ctx, telemtRep("ps6", RuntimeUser{Key: "a_1", Connections: 0, ActiveIPs: []string{"8.8.8.8"}})); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.ConnectionsByUser(ctx, []string{"zz_9", "a_1", "b_2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Key != "zz_9" || got[0].Connections != 0 || got[0].Online || got[0].SeenAt != nil {
+		t.Fatalf("неизвестный пользователь: %+v", got)
+	}
+	if got[1].Key != "a_1" || got[1].Connections != 5 || got[1].Machines != 2 || !got[1].Online || got[1].SeenAt == nil {
+		t.Fatalf("a_1: %+v", got[1])
+	}
+	if got[2].Key != "b_2" || got[2].Connections != 0 || got[2].Machines != 0 || got[2].Online || got[2].SeenAt == nil {
+		t.Fatalf("b_2: %+v", got[2])
+	}
+	if empty, err := st.ConnectionsByUser(ctx, nil); err != nil || len(empty) != 0 {
+		t.Fatalf("пустой запрос: %+v %v", empty, err)
+	}
+}
+
+// Итоги флота и runtime-поля машин: нагрузка, api_ok продуктов, подключения и
+// пользователи онлайн по машине; молчащие - только включённые.
+func TestIntegration_FleetTotalsAndMachineRuntime(t *testing.T) {
+	st := setupAll(t)
+	defer st.Close()
+	ctx := context.Background()
+	seedTargets(t, st, telemtTarget("pr1", "relay"), telemtTarget("ps5", "exit"),
+		Target{Code: "ps6", Kind: "exit", Enabled: true}, Target{Code: "ps7", Kind: "exit", Enabled: false})
+	rep := telemtRep("pr1", RuntimeUser{Key: "a_1", Connections: 3}, RuntimeUser{Key: "b_2", Connections: 0, ActiveIPs: []string{"1.1.1.1"}})
+	rep.Mtg = &RuntimeMtg{Version: "m", APIOK: false, Error: "refused"}
+	if err := st.RecordRuntime(ctx, rep); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordRuntime(ctx, telemtRep("ps5", RuntimeUser{Key: "a_1", Connections: 2}, RuntimeUser{Key: "c_3", Connections: 1})); err != nil {
+		t.Fatal(err)
+	}
+	// ps5 молчит 20 минут.
+	if _, err := st.pool.Exec(ctx, `UPDATE agent_runtime SET seen_at = now() - interval '20 minutes' WHERE target = 'ps5'`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	tot, err := st.FleetTotals(ctx, now.Add(-3*time.Minute), now.Add(-SilentAfter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Машины: 4; онлайн - pr1; молчат - ps5 (20 минут) и ps6 (отчёта нет), ps7 выключена.
+	// Подключения 3+2+1, уникальные пользователи с подключениями: a_1, c_3.
+	if tot != (FleetTotals{Machines: 4, AgentsOnline: 1, AgentsSilent: 2, ConnectionsTotal: 6, UsersOnline: 2}) {
+		t.Fatalf("итоги: %+v", tot)
+	}
+	list, _, err := st.Machines(ctx, MachineFilter{}, 100, 0)
+	if err != nil || len(list) != 4 {
+		t.Fatalf("машины: %+v %v", list, err)
+	}
+	pr1 := list[0]
+	if pr1.Code != "pr1" || pr1.Host == nil || pr1.Host.CPUPct != 12.5 || pr1.TelemtAPIOK == nil || !*pr1.TelemtAPIOK ||
+		pr1.MtgAPIOK == nil || *pr1.MtgAPIOK || pr1.Connections != 3 || pr1.UsersOnline != 1 {
+		t.Fatalf("pr1: %+v", pr1)
+	}
+	ps6 := list[2]
+	if ps6.Code != "ps6" || ps6.Host != nil || ps6.TelemtAPIOK != nil || ps6.MtgAPIOK != nil || ps6.Connections != 0 || ps6.UsersOnline != 0 {
+		t.Fatalf("ps6 без отчёта: %+v", ps6)
+	}
+	// Пары идут тем же путём выборки: runtime-поля есть и там.
+	pairs, _, err := st.Pairs(ctx, 100, 0)
+	if err != nil || len(pairs) == 0 || pairs[0].Relay == nil || pairs[0].Relay.Connections != 3 {
+		t.Fatalf("пары: %+v %v", pairs, err)
+	}
+}

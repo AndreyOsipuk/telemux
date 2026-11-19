@@ -69,6 +69,8 @@ func main() {
 		os.Exit(runTLSCert(os.Args[2:]))
 	case "machines":
 		os.Exit(runMachines(os.Args[2:]))
+	case "servers":
+		os.Exit(runServers(os.Args[2:]))
 	case "desired":
 		os.Exit(runDesired(os.Args[2:]))
 	case "telemt-local":
@@ -87,6 +89,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  bridge --master u[,u] [--listen 127.0.0.1:18480] — мост для агента релея")
 		fmt.Fprintln(os.Stderr, "  tls-cert [--cert f --key f]             — сертификат мастера для API агентов, печатает отпечаток")
 		fmt.Fprintln(os.Stderr, "  machines                                — машины флота и последний отчёт агентов")
+		fmt.Fprintln(os.Stderr, "  servers import <file.json>              - импорт серверов (массив ServerWrite, до 100)")
 		fmt.Fprintln(os.Stderr, "  desired --target c [--resource r]       — последняя ревизия ресурса машины (по умолчанию telemt.config)")
 		fmt.Fprintln(os.Stderr, "  telemt-local --base f [--current f]     — машинная часть telemt.toml: чем машина отличается от telemt.config")
 		fmt.Fprintln(os.Stderr, "  sync  --db <dsn> --api <url> [--apply]  — синхронизировать локальный telemt (shadow по умолч.)")
@@ -195,6 +198,13 @@ func runServe(args []string) int {
 	} else {
 		certs = st
 	}
+	// Справочник серверов (ADR 0005): ручки - только если применена миграция 0010.
+	var servers server.ServerStore
+	if err := st.CheckServersSchema(ctx); err != nil {
+		logger.Warn("серверы: /api/v1/servers выключен", "err", err)
+	} else {
+		servers = st
+	}
 	var acmeDeps *server.ACMEDeps
 	if acmeSet != nil {
 		iss, err := acme.NewLego(acme.Config{Email: acmeSet.Email, Directory: acmeSet.Directory,
@@ -228,6 +238,7 @@ func runServe(args []string) int {
 		Firewall:       agentjoin.IPTables{},
 		Panel:          panel,
 		Certs:          certs,
+		Servers:        servers,
 		ACME:           acmeDeps,
 		TLSListen:      envOr("TELEMUX_TLS_LISTEN", ""),
 		TLSCertFile:    envOr("TELEMUX_TLS_CERT", "/etc/telemux/tls/cert.pem"),

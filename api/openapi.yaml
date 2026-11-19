@@ -343,6 +343,8 @@ paths:
       description: |
         Строка на машину, продукт и пользователя. Порядок: machine, product, key.
         В снимок попадают только пользователи с подключениями или адресами.
+        Фильтры: `machine`, `product`, `min_connections`, `user` - префикс ключа
+        пользователя (символы `%` и `_` ищутся как есть).
       operationId: listConnections
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -350,6 +352,7 @@ paths:
         - { name: machine, in: query, schema: { type: string } }
         - { name: product, in: query, schema: { $ref: '#/components/schemas/Product' } }
         - { name: min_connections, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: user, in: query, description: "Префикс ключа пользователя (без шаблонов)", schema: { type: string, maxLength: 128 } }
       responses:
         '200':
           description: Страница подключений
@@ -393,6 +396,63 @@ paths:
                     items: { $ref: '#/components/schemas/ConnectionSummary' }
                   paging: { $ref: '#/components/schemas/Paging' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/connections/by-user:
+    get:
+      summary: Подключения пользователей по всем машинам
+      description: |
+        Для каждого `user` (параметр повторяется, от 1 до 100 штук) - сумма подключений
+        по последним снимкам всех машин и число машин, где у пользователя есть подключения.
+        Ответ - в порядке запроса, дубли схлопываются; пользователь без строк - нули и
+        `seen_at: null`. Один запрос к базе на весь список.
+      operationId: getConnectionsByUser
+      parameters:
+        - name: user
+          in: query
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 100
+            items: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: Суммы по пользователям
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/UserConnections' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/overview:
+    get:
+      summary: Обзор флота для главной страницы панели
+      description: |
+        Итоги одним запросом: машины (всего, с агентом онлайн - runtime-отчёт свежее порога,
+        молчащие - включённые машины без runtime-отчёта дольше 10 минут), подключения и
+        уникальные пользователи онлайн по всем машинам, пары с релеем (все включённые машины
+        в статусе ok или нет), сертификаты (истекают раньше чем через `cert_warn_days` дней,
+        ещё не выпущены; `certs: null` - сертификаты на мастере выключены).
+        `data` - машины по коду с runtime-полями, не больше 500 (`truncated: true` - флот
+        больше; итоги при этом по всем машинам). Пагинации нет: флот небольшой.
+      operationId: getOverview
+      responses:
+        '200':
+          description: Обзор
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Overview' }
         '401': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
@@ -499,11 +559,13 @@ paths:
         машины и домену. Состояние выпуска на мастере: срок сертификата, когда он выпущен,
         последняя попытка и её ошибка. Домен без сертификата - `not_after: null`.
         `assigned` - машине назначен ресурс `tls.web` (сертификаты до неё доходят).
-        Сами сертификаты и ключи эта ручка не отдаёт никогда.
+        Сами сертификаты и ключи эта ручка не отдаёт никогда. `machine` - только домены
+        этой машины (`paging.total` - с фильтром).
       operationId: listCerts
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
+        - { name: machine, in: query, schema: { type: string } }
       responses:
         '200':
           description: Страница сертификатов
@@ -519,6 +581,173 @@ paths:
                   paging: { $ref: '#/components/schemas/Paging' }
         '400': { $ref: '#/components/responses/Error' }
         '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/servers:
+    get:
+      summary: Серверы с точками входа и живыми цифрами
+      description: |
+        Справочник серверов (ADR 0005): «Сервер N» - движок, релей и машина за рубежом,
+        лимиты, настройки движка и точки входа (одна точка входа = одна ссылка). Пока
+        справочное описание: на машины и бота не влияет. По номеру; фильтры `engine`,
+        `state`; `paging.total` - с фильтром. `live` - живые цифры машин сервера по
+        последнему runtime-отчёту агента (продукт = движок сервера).
+      operationId: listServers
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - { name: engine, in: query, schema: { $ref: '#/components/schemas/ServerEngine' } }
+        - { name: state, in: query, schema: { $ref: '#/components/schemas/ServerState' } }
+      responses:
+        '200':
+          description: Страница серверов
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Server' }
+                  paging: { $ref: '#/components/schemas/Paging' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Создать сервер
+      description: |
+        Только мастер. Номер занят - 409. Ошибки ввода - 400 с кодом: `unknown_machine`
+        (нет машины или не того вида: `relay_code` - релей, `node_code` - выход),
+        `unknown_setting`, `bad_setting` (настройки по каталогу полей), `bad_endpoint`
+        (точка входа: вид, хост, порт, `tls_domain` для ee, повтор), `bad_request` (остальное).
+      operationId: createServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServerWrite' }
+      responses:
+        '201':
+          description: Сервер создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+    put:
+      summary: Импорт серверов
+      description: |
+        До 100 серверов (больше - 400 `batch_too_large`), upsert по номеру, одна транзакция:
+        любая плохая запись - ничего не меняется. Движок существующего сервера не меняется
+        (400 `engine_immutable`). Тот же формат читает `telemux servers import <file.json>`.
+      operationId: importServers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              maxItems: 100
+              items: { $ref: '#/components/schemas/ServerWrite' }
+      responses:
+        '200':
+          description: Импорт применён
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [inserted, updated]
+                properties:
+                  inserted: { type: integer }
+                  updated: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/servers/fields:
+    get:
+      summary: Каталог полей настроек движка
+      description: |
+        Допустимые ключи `settings` сервера: тип, пределы, значение по умолчанию (пусто -
+        по умолчанию движка или бота), группа и способ применения: `instant` - бот и ссылки,
+        `reload` - перечитывание без рестарта, `restart` - рестарт сервиса (подключения рвутся),
+        `firewall` - правила iptables. `danger` - смена меняет ссылки пользователей; панель
+        спрашивает подтверждение. Каталог небольшой и постоянный, без пагинации.
+      operationId: listServerFields
+      parameters:
+        - { name: engine, in: query, schema: { $ref: '#/components/schemas/ServerEngine' } }
+      responses:
+        '200':
+          description: Поля каталога
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ServerField' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+  /api/v1/servers/{no}:
+    parameters:
+      - { name: no, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 99 } }
+    get:
+      summary: Сервер
+      operationId: getServer
+      responses:
+        '200':
+          description: Сервер
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+    put:
+      summary: Заменить сервер целиком вместе с точками входа
+      description: |
+        Одна транзакция. `no` в теле можно не указывать; если указан - должен совпадать с
+        путём. Смена движка - 400 `engine_immutable`. Ошибки ввода - как у создания.
+      operationId: replaceServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServerWrite' }
+      responses:
+        '200':
+          description: Сервер заменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Удалить выключенный сервер
+      description: Только `state=disabled`, иначе 409. Точки входа удаляются вместе с сервером.
+      operationId: deleteServer
+      responses:
+        '204':
+          description: Удалён
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
   /api/v1/targets/{code}/apply-log:
@@ -766,7 +995,8 @@ components:
         error: { type: string, maxLength: 1024 }
     Machine:
       type: object
-      required: [code, kind, enabled, resources, seen_at, checks, observed]
+      required: [code, kind, enabled, resources, seen_at, checks, observed, runtime_seen_at, host,
+                 telemt_api_ok, mtg_api_ok, connections, users_online]
       properties:
         code: { type: string }
         kind: { type: string, enum: [exit, relay, panel] }
@@ -800,6 +1030,22 @@ components:
         telemt_version: { type: string, description: Версия telemt из последнего runtime-отчёта }
         mtg_version: { type: string, description: Версия mtg-multi из последнего runtime-отчёта }
         runtime_seen_at: { type: string, format: date-time, nullable: true, description: "Последний runtime-отчёт; null - не было" }
+        host:
+          allOf: [{ $ref: '#/components/schemas/RuntimeHost' }]
+          nullable: true
+          description: Нагрузка машины из последнего runtime-отчёта; null - отчёта нет
+        telemt_api_ok: { type: boolean, nullable: true, description: "API telemt ответил в последнем отчёте; null - telemt нет или отчёта не было" }
+        mtg_api_ok: { type: boolean, nullable: true, description: "API mtg ответил в последнем отчёте; null - mtg нет или отчёта не было" }
+        connections: { type: integer, minimum: 0, description: "Подключений по строкам /api/v1/connections этой машины" }
+        users_online: { type: integer, minimum: 0, description: "Пользователей с подключениями на этой машине" }
+        runtime_status:
+          type: string
+          enum: [online, stale, degraded, offline]
+          description: |
+            Сводный runtime-статус (в /api/v1/machines, /api/v1/pairs, /api/v1/overview):
+            offline - runtime-отчёта нет или агент молчит дольше 10 минут; stale - отчёт старше
+            порога свежести (по умолчанию 180 с); degraded - агент жив, но API telemt или mtg
+            не ответил; иначе online.
     NewTarget:
       type: object
       required: [code, kind, resources]
@@ -973,6 +1219,55 @@ components:
         stale: { type: boolean }
         api_ok: { type: boolean, description: "API продукта ответил в последнем снимке; false - причина в error" }
         error: { type: string, description: "Ошибка продукта из последнего снимка; нет поля - ошибок не было" }
+    UserConnections:
+      type: object
+      required: [key, connections, machines, online, seen_at]
+      properties:
+        key: { type: string }
+        connections: { type: integer, minimum: 0, description: Сумма подключений по всем машинам }
+        machines: { type: integer, minimum: 0, description: "Машин, где у пользователя есть подключения" }
+        online: { type: boolean, description: "connections > 0" }
+        seen_at: { type: string, format: date-time, nullable: true, description: "Самый свежий снимок с этим пользователем; null - строк нет" }
+    Overview:
+      type: object
+      required: [machines, connections, pairs, certs, cert_warn_days, stale_after_seconds, silent_after_seconds, data, truncated]
+      properties:
+        machines:
+          type: object
+          required: [total, online, silent]
+          properties:
+            total: { type: integer }
+            online: { type: integer, description: "Runtime-отчёт свежее порога (агент жив)" }
+            silent: { type: integer, description: "Включённые машины без runtime-отчёта дольше 10 минут или вовсе без него" }
+        connections:
+          type: object
+          required: [total, users_online]
+          properties:
+            total: { type: integer, description: Подключений по всем машинам }
+            users_online: { type: integer, description: Уникальных пользователей с подключениями }
+        pairs:
+          type: object
+          required: [total, ok, problem]
+          properties:
+            total: { type: integer, description: "Пар с релеем (псевдо-пара «без релея» не считается)" }
+            ok: { type: integer }
+            problem: { type: integer, description: "Хоть одна включённая машина пары не в статусе ok" }
+        certs:
+          type: object
+          nullable: true
+          required: [total, expiring, missing]
+          properties:
+            total: { type: integer }
+            expiring: { type: integer, description: "Сертификат кончается раньше чем через cert_warn_days дней (или уже истёк)" }
+            missing: { type: integer, description: Сертификата ещё нет }
+        cert_warn_days: { type: integer, example: 14 }
+        stale_after_seconds: { type: integer, description: Порог свежести runtime-отчёта }
+        silent_after_seconds: { type: integer, description: "Порог «агент молчит» (offline)" }
+        data:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/Machine' }
+        truncated: { type: boolean, description: "Машин больше 500, в data - первые 500 по коду" }
     LogErrorSum:
       type: object
       required: [machine, key, kind, count]
@@ -1048,6 +1343,147 @@ components:
         revision: { type: integer, nullable: true }
         status: { type: string }
         error: { type: string }
+    ServerEngine:
+      type: string
+      enum: [telemt, mtg]
+    ServerState:
+      type: string
+      enum: [active, maintenance, test, disabled]
+      description: |
+        `maintenance` - клиент видит «на профилактике» без ссылки; `test` - скрыт от
+        клиентов; `disabled` - выключен везде
+    EndpointProtocol:
+      type: string
+      enum: [ee, dd, web]
+    Endpoint:
+      type: object
+      required: [id, protocol, host, port, tls_domain, via_relay, label, sort_order, enabled, note]
+      properties:
+        id: { type: integer }
+        protocol: { $ref: '#/components/schemas/EndpointProtocol' }
+        host: { type: string, description: "Домен или IP в ссылке" }
+        port: { type: integer, minimum: 1, maximum: 65535, description: "Для web не используется" }
+        tls_domain: { type: string, description: "Домен в ee-секрете" }
+        via_relay: { type: boolean }
+        label: { type: string, description: "Подпись кнопки; пусто - по виду" }
+        sort_order: { type: integer }
+        enabled: { type: boolean }
+        note: { type: string }
+    EndpointWrite:
+      type: object
+      required: [protocol, host]
+      properties:
+        protocol: { $ref: '#/components/schemas/EndpointProtocol' }
+        host: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535, default: 443 }
+        tls_domain: { type: string, description: "Обязателен для ee" }
+        via_relay: { type: boolean, default: true }
+        label: { type: string, maxLength: 64 }
+        sort_order: { type: integer, minimum: 0, default: 100 }
+        enabled: { type: boolean, default: true }
+        note: { type: string, maxLength: 1000 }
+    ServerLiveMachine:
+      type: object
+      required: [code, seen_at, stale, api_ok, connections, users_online]
+      properties:
+        code: { type: string }
+        seen_at: { type: string, format: date-time, nullable: true, description: "Последний runtime-отчёт; null - агента нет" }
+        stale: { type: boolean, description: "Отчёт устарел или его нет" }
+        api_ok: { type: boolean, description: "API движка на машине ответил" }
+        connections: { type: integer }
+        users_online: { type: integer }
+    ServerLive:
+      type: object
+      required: [relay, node]
+      properties:
+        relay:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/ServerLiveMachine' }]
+        node:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/ServerLiveMachine' }]
+    ServerWrite:
+      type: object
+      required: [name, engine]
+      properties:
+        no: { type: integer, minimum: 1, maximum: 99, description: "Обязателен при создании и импорте" }
+        name: { type: string, minLength: 1, maxLength: 64, description: "Страна для клиента" }
+        emoji: { type: string, maxLength: 16 }
+        country: { type: string, pattern: '^([a-z]{2})?$' }
+        engine: { $ref: '#/components/schemas/ServerEngine' }
+        relay_code: { type: string, nullable: true, description: "Релей в РФ (машина вида relay)" }
+        node_code: { type: string, nullable: true, description: "Машина за рубежом (вида exit)" }
+        state: { $ref: '#/components/schemas/ServerState' }
+        relay_only: { type: boolean, description: "Прямые ссылки скрыты" }
+        node_retired: { type: boolean, description: "Машины за рубежом нет, релей и ссылки остаются" }
+        tls_domain: { type: string, description: "Основной домен маскировки (ee)" }
+        extra_tls_domains:
+          type: array
+          maxItems: 200
+          items: { type: string }
+        user_max_tcp_conns: { type: integer, minimum: 1, nullable: true, description: "null - общий по умолчанию" }
+        user_max_unique_ips: { type: integer, minimum: 1, nullable: true, description: "null - без лимита" }
+        settings:
+          type: object
+          additionalProperties: { type: string }
+          description: Настройки движка по каталогу полей (GET /api/v1/servers/fields)
+        note: { type: string, maxLength: 1000 }
+        endpoints:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/EndpointWrite' }
+    Server:
+      type: object
+      required: [no, name, emoji, country, engine, relay_code, node_code, state, relay_only, node_retired,
+                 tls_domain, extra_tls_domains, user_max_tcp_conns, user_max_unique_ips, settings, note,
+                 endpoints, created_at, updated_at]
+      properties:
+        no: { type: integer }
+        name: { type: string }
+        emoji: { type: string }
+        country: { type: string }
+        engine: { $ref: '#/components/schemas/ServerEngine' }
+        relay_code: { type: string, nullable: true }
+        node_code: { type: string, nullable: true }
+        state: { $ref: '#/components/schemas/ServerState' }
+        relay_only: { type: boolean }
+        node_retired: { type: boolean }
+        tls_domain: { type: string }
+        extra_tls_domains:
+          type: array
+          items: { type: string }
+        user_max_tcp_conns: { type: integer, nullable: true }
+        user_max_unique_ips: { type: integer, nullable: true }
+        settings:
+          type: object
+          additionalProperties: { type: string }
+        note: { type: string }
+        endpoints:
+          type: array
+          items: { $ref: '#/components/schemas/Endpoint' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        live: { $ref: '#/components/schemas/ServerLive' }
+    ServerField:
+      type: object
+      required: [key, engine, group, type, default, apply, danger, title_ru, title_en, hint_ru, hint_en]
+      properties:
+        key: { type: string }
+        engine: { $ref: '#/components/schemas/ServerEngine' }
+        group: { type: string }
+        type: { type: string, enum: [int, bool, string, enum, hostport, host, duration] }
+        default: { type: string, description: "Пусто - значение движка или бота по умолчанию" }
+        min: { type: integer }
+        max: { type: integer }
+        enum:
+          type: array
+          items: { type: string }
+        apply: { type: string, enum: [instant, reload, restart, firewall] }
+        danger: { type: boolean }
+        title_ru: { type: string }
+        title_en: { type: string }
+        hint_ru: { type: string }
+        hint_en: { type: string }
     Error:
       type: object
       required: [code, message]
@@ -1057,6 +1493,7 @@ components:
           description: Машинный код
           enum: [bad_request, unauthorized, forbidden, not_found, conflict, gone, unprocessable,
                  not_implemented, unavailable, internal, not_master, mass_delete_guard,
-                 payload_too_large]
+                 payload_too_large, unknown_machine, engine_immutable, unknown_setting,
+                 bad_setting, bad_endpoint, batch_too_large]
         message: { type: string }
         error: { type: string, description: Копия message для старой панели }

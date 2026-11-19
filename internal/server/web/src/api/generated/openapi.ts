@@ -272,6 +272,8 @@ export interface paths {
          * Подключения пользователей по последним снимкам машин
          * @description Строка на машину, продукт и пользователя. Порядок: machine, product, key.
          *     В снимок попадают только пользователи с подключениями или адресами.
+         *     Фильтры: `machine`, `product`, `min_connections`, `user` - префикс ключа
+         *     пользователя (символы `%` и `_` ищутся как есть).
          */
         get: operations["listConnections"];
         put?: never;
@@ -297,6 +299,55 @@ export interface paths {
          *     снимку (или 0). Клиенту в этом случае стоит взять подключения другим путём.
          */
         get: operations["getConnectionsSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections/by-user": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Подключения пользователей по всем машинам
+         * @description Для каждого `user` (параметр повторяется, от 1 до 100 штук) - сумма подключений
+         *     по последним снимкам всех машин и число машин, где у пользователя есть подключения.
+         *     Ответ - в порядке запроса, дубли схлопываются; пользователь без строк - нули и
+         *     `seen_at: null`. Один запрос к базе на весь список.
+         */
+        get: operations["getConnectionsByUser"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Обзор флота для главной страницы панели
+         * @description Итоги одним запросом: машины (всего, с агентом онлайн - runtime-отчёт свежее порога,
+         *     молчащие - включённые машины без runtime-отчёта дольше 10 минут), подключения и
+         *     уникальные пользователи онлайн по всем машинам, пары с релеем (все включённые машины
+         *     в статусе ok или нет), сертификаты (истекают раньше чем через `cert_warn_days` дней,
+         *     ещё не выпущены; `certs: null` - сертификаты на мастере выключены).
+         *     `data` - машины по коду с runtime-полями, не больше 500 (`truncated: true` - флот
+         *     больше; итоги при этом по всем машинам). Пагинации нет: флот небольшой.
+         */
+        get: operations["getOverview"];
         put?: never;
         post?: never;
         delete?: never;
@@ -391,12 +442,102 @@ export interface paths {
          *     машины и домену. Состояние выпуска на мастере: срок сертификата, когда он выпущен,
          *     последняя попытка и её ошибка. Домен без сертификата - `not_after: null`.
          *     `assigned` - машине назначен ресурс `tls.web` (сертификаты до неё доходят).
-         *     Сами сертификаты и ключи эта ручка не отдаёт никогда.
+         *     Сами сертификаты и ключи эта ручка не отдаёт никогда. `machine` - только домены
+         *     этой машины (`paging.total` - с фильтром).
          */
         get: operations["listCerts"];
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Серверы с точками входа и живыми цифрами
+         * @description Справочник серверов (ADR 0005): «Сервер N» - движок, релей и машина за рубежом,
+         *     лимиты, настройки движка и точки входа (одна точка входа = одна ссылка). Пока
+         *     справочное описание: на машины и бота не влияет. По номеру; фильтры `engine`,
+         *     `state`; `paging.total` - с фильтром. `live` - живые цифры машин сервера по
+         *     последнему runtime-отчёту агента (продукт = движок сервера).
+         */
+        get: operations["listServers"];
+        /**
+         * Импорт серверов
+         * @description До 100 серверов (больше - 400 `batch_too_large`), upsert по номеру, одна транзакция:
+         *     любая плохая запись - ничего не меняется. Движок существующего сервера не меняется
+         *     (400 `engine_immutable`). Тот же формат читает `telemux servers import <file.json>`.
+         */
+        put: operations["importServers"];
+        /**
+         * Создать сервер
+         * @description Только мастер. Номер занят - 409. Ошибки ввода - 400 с кодом: `unknown_machine`
+         *     (нет машины или не того вида: `relay_code` - релей, `node_code` - выход),
+         *     `unknown_setting`, `bad_setting` (настройки по каталогу полей), `bad_endpoint`
+         *     (точка входа: вид, хост, порт, `tls_domain` для ee, повтор), `bad_request` (остальное).
+         */
+        post: operations["createServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/fields": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Каталог полей настроек движка
+         * @description Допустимые ключи `settings` сервера: тип, пределы, значение по умолчанию (пусто -
+         *     по умолчанию движка или бота), группа и способ применения: `instant` - бот и ссылки,
+         *     `reload` - перечитывание без рестарта, `restart` - рестарт сервиса (подключения рвутся),
+         *     `firewall` - правила iptables. `danger` - смена меняет ссылки пользователей; панель
+         *     спрашивает подтверждение. Каталог небольшой и постоянный, без пагинации.
+         */
+        get: operations["listServerFields"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{no}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                no: number;
+            };
+            cookie?: never;
+        };
+        /** Сервер */
+        get: operations["getServer"];
+        /**
+         * Заменить сервер целиком вместе с точками входа
+         * @description Одна транзакция. `no` в теле можно не указывать; если указан - должен совпадать с
+         *     путём. Смена движка - 400 `engine_immutable`. Ошибки ввода - как у создания.
+         */
+        put: operations["replaceServer"];
+        post?: never;
+        /**
+         * Удалить выключенный сервер
+         * @description Только `state=disabled`, иначе 409. Точки входа удаляются вместе с сервером.
+         */
+        delete: operations["deleteServer"];
         options?: never;
         head?: never;
         patch?: never;
@@ -609,7 +750,25 @@ export interface components {
              * Format: date-time
              * @description Последний runtime-отчёт; null - не было
              */
-            runtime_seen_at?: string | null;
+            runtime_seen_at: string | null;
+            /** @description Нагрузка машины из последнего runtime-отчёта; null - отчёта нет */
+            host: components["schemas"]["RuntimeHost"] | null;
+            /** @description API telemt ответил в последнем отчёте; null - telemt нет или отчёта не было */
+            telemt_api_ok: boolean | null;
+            /** @description API mtg ответил в последнем отчёте; null - mtg нет или отчёта не было */
+            mtg_api_ok: boolean | null;
+            /** @description Подключений по строкам /api/v1/connections этой машины */
+            connections: number;
+            /** @description Пользователей с подключениями на этой машине */
+            users_online: number;
+            /**
+             * @description Сводный runtime-статус (в /api/v1/machines, /api/v1/pairs, /api/v1/overview):
+             *     offline - runtime-отчёта нет или агент молчит дольше 10 минут; stale - отчёт старше
+             *     порога свежести (по умолчанию 180 с); degraded - агент жив, но API telemt или mtg
+             *     не ответил; иначе online.
+             * @enum {string}
+             */
+            runtime_status?: "online" | "stale" | "degraded" | "offline";
         };
         NewTarget: {
             code: string;
@@ -773,6 +932,58 @@ export interface components {
             /** @description Ошибка продукта из последнего снимка; нет поля - ошибок не было */
             error?: string;
         };
+        UserConnections: {
+            key: string;
+            /** @description Сумма подключений по всем машинам */
+            connections: number;
+            /** @description Машин, где у пользователя есть подключения */
+            machines: number;
+            /** @description connections > 0 */
+            online: boolean;
+            /**
+             * Format: date-time
+             * @description Самый свежий снимок с этим пользователем; null - строк нет
+             */
+            seen_at: string | null;
+        };
+        Overview: {
+            machines: {
+                total: number;
+                /** @description Runtime-отчёт свежее порога (агент жив) */
+                online: number;
+                /** @description Включённые машины без runtime-отчёта дольше 10 минут или вовсе без него */
+                silent: number;
+            };
+            connections: {
+                /** @description Подключений по всем машинам */
+                total: number;
+                /** @description Уникальных пользователей с подключениями */
+                users_online: number;
+            };
+            pairs: {
+                /** @description Пар с релеем (псевдо-пара «без релея» не считается) */
+                total: number;
+                ok: number;
+                /** @description Хоть одна включённая машина пары не в статусе ok */
+                problem: number;
+            };
+            certs: {
+                total: number;
+                /** @description Сертификат кончается раньше чем через cert_warn_days дней (или уже истёк) */
+                expiring: number;
+                /** @description Сертификата ещё нет */
+                missing: number;
+            } | null;
+            /** @example 14 */
+            cert_warn_days: number;
+            /** @description Порог свежести runtime-отчёта */
+            stale_after_seconds: number;
+            /** @description Порог «агент молчит» (offline) */
+            silent_after_seconds: number;
+            data: components["schemas"]["Machine"][];
+            /** @description Машин больше 500, в data - первые 500 по коду */
+            truncated: boolean;
+        };
         LogErrorSum: {
             machine: string;
             key: string;
@@ -846,12 +1057,148 @@ export interface components {
             status: string;
             error?: string;
         };
+        /** @enum {string} */
+        ServerEngine: "telemt" | "mtg";
+        /**
+         * @description `maintenance` - клиент видит «на профилактике» без ссылки; `test` - скрыт от
+         *     клиентов; `disabled` - выключен везде
+         * @enum {string}
+         */
+        ServerState: "active" | "maintenance" | "test" | "disabled";
+        /** @enum {string} */
+        EndpointProtocol: "ee" | "dd" | "web";
+        Endpoint: {
+            id: number;
+            protocol: components["schemas"]["EndpointProtocol"];
+            /** @description Домен или IP в ссылке */
+            host: string;
+            /** @description Для web не используется */
+            port: number;
+            /** @description Домен в ee-секрете */
+            tls_domain: string;
+            via_relay: boolean;
+            /** @description Подпись кнопки; пусто - по виду */
+            label: string;
+            sort_order: number;
+            enabled: boolean;
+            note: string;
+        };
+        EndpointWrite: {
+            protocol: components["schemas"]["EndpointProtocol"];
+            host: string;
+            /** @default 443 */
+            port: number;
+            /** @description Обязателен для ee */
+            tls_domain?: string;
+            /** @default true */
+            via_relay: boolean;
+            label?: string;
+            /** @default 100 */
+            sort_order: number;
+            /** @default true */
+            enabled: boolean;
+            note?: string;
+        };
+        ServerLiveMachine: {
+            code: string;
+            /**
+             * Format: date-time
+             * @description Последний runtime-отчёт; null - агента нет
+             */
+            seen_at: string | null;
+            /** @description Отчёт устарел или его нет */
+            stale: boolean;
+            /** @description API движка на машине ответил */
+            api_ok: boolean;
+            connections: number;
+            users_online: number;
+        };
+        ServerLive: {
+            relay: components["schemas"]["ServerLiveMachine"] | null;
+            node: components["schemas"]["ServerLiveMachine"] | null;
+        };
+        ServerWrite: {
+            /** @description Обязателен при создании и импорте */
+            no?: number;
+            /** @description Страна для клиента */
+            name: string;
+            emoji?: string;
+            country?: string;
+            engine: components["schemas"]["ServerEngine"];
+            /** @description Релей в РФ (машина вида relay) */
+            relay_code?: string | null;
+            /** @description Машина за рубежом (вида exit) */
+            node_code?: string | null;
+            state?: components["schemas"]["ServerState"];
+            /** @description Прямые ссылки скрыты */
+            relay_only?: boolean;
+            /** @description Машины за рубежом нет, релей и ссылки остаются */
+            node_retired?: boolean;
+            /** @description Основной домен маскировки (ee) */
+            tls_domain?: string;
+            extra_tls_domains?: string[];
+            /** @description null - общий по умолчанию */
+            user_max_tcp_conns?: number | null;
+            /** @description null - без лимита */
+            user_max_unique_ips?: number | null;
+            /** @description Настройки движка по каталогу полей (GET /api/v1/servers/fields) */
+            settings?: {
+                [key: string]: string;
+            };
+            note?: string;
+            endpoints?: components["schemas"]["EndpointWrite"][];
+        };
+        Server: {
+            no: number;
+            name: string;
+            emoji: string;
+            country: string;
+            engine: components["schemas"]["ServerEngine"];
+            relay_code: string | null;
+            node_code: string | null;
+            state: components["schemas"]["ServerState"];
+            relay_only: boolean;
+            node_retired: boolean;
+            tls_domain: string;
+            extra_tls_domains: string[];
+            user_max_tcp_conns: number | null;
+            user_max_unique_ips: number | null;
+            settings: {
+                [key: string]: string;
+            };
+            note: string;
+            endpoints: components["schemas"]["Endpoint"][];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            live?: components["schemas"]["ServerLive"];
+        };
+        ServerField: {
+            key: string;
+            engine: components["schemas"]["ServerEngine"];
+            group: string;
+            /** @enum {string} */
+            type: "int" | "bool" | "string" | "enum" | "hostport" | "host" | "duration";
+            /** @description Пусто - значение движка или бота по умолчанию */
+            default: string;
+            min?: number;
+            max?: number;
+            enum?: string[];
+            /** @enum {string} */
+            apply: "instant" | "reload" | "restart" | "firewall";
+            danger: boolean;
+            title_ru: string;
+            title_en: string;
+            hint_ru: string;
+            hint_en: string;
+        };
         Error: {
             /**
              * @description Машинный код
              * @enum {string}
              */
-            code: "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "gone" | "unprocessable" | "not_implemented" | "unavailable" | "internal" | "not_master" | "mass_delete_guard" | "payload_too_large";
+            code: "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "gone" | "unprocessable" | "not_implemented" | "unavailable" | "internal" | "not_master" | "mass_delete_guard" | "payload_too_large" | "unknown_machine" | "engine_immutable" | "unknown_setting" | "bad_setting" | "bad_endpoint" | "batch_too_large";
             message: string;
             /** @description Копия message для старой панели */
             error?: string;
@@ -1253,6 +1600,8 @@ export interface operations {
                 machine?: string;
                 product?: components["schemas"]["Product"];
                 min_connections?: number;
+                /** @description Префикс ключа пользователя (без шаблонов) */
+                user?: string;
             };
             header?: never;
             path?: never;
@@ -1303,6 +1652,57 @@ export interface operations {
                 };
             };
             400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    getConnectionsByUser: {
+        parameters: {
+            query: {
+                user: string[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Суммы по пользователям */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["UserConnections"][];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    getOverview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Обзор */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Overview"];
+                };
+            };
             401: components["responses"]["Error"];
             500: components["responses"]["Error"];
             503: components["responses"]["Error"];
@@ -1408,6 +1808,7 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["Limit"];
                 offset?: components["parameters"]["Offset"];
+                machine?: string;
             };
             header?: never;
             path?: never;
@@ -1429,6 +1830,211 @@ export interface operations {
             };
             400: components["responses"]["Error"];
             401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listServers: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                offset?: components["parameters"]["Offset"];
+                engine?: components["schemas"]["ServerEngine"];
+                state?: components["schemas"]["ServerState"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница серверов */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Server"][];
+                        paging: components["schemas"]["Paging"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    importServers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServerWrite"][];
+            };
+        };
+        responses: {
+            /** @description Импорт применён */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        inserted: number;
+                        updated: number;
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    createServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServerWrite"];
+            };
+        };
+        responses: {
+            /** @description Сервер создан */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Server"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listServerFields: {
+        parameters: {
+            query?: {
+                engine?: components["schemas"]["ServerEngine"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Поля каталога */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ServerField"][];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+        };
+    };
+    getServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                no: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Сервер */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Server"];
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    replaceServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                no: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServerWrite"];
+            };
+        };
+        responses: {
+            /** @description Сервер заменён */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Server"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    deleteServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                no: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Удалён */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
             500: components["responses"]["Error"];
             503: components["responses"]["Error"];
         };

@@ -4,22 +4,42 @@
 import { request } from './http';
 import type {
   ApplyLogEntry,
+  CertInfo,
   ClusterNode,
+  ConnFilter,
+  Connection,
+  ConnectionSummary,
+  LogErrorSum,
+  MachineRuntime,
+  Overview,
+  UserConnections,
   DriftResponse,
   JoinCommand,
   Machine,
+  MachineKind,
   Me,
   NewTarget,
   NewUser,
   Page,
   Pair,
   Role,
+  Server,
+  ServerField,
+  ServerFilter,
+  ServerInput,
   SyncStatus,
   User,
 } from './types';
 
 const enc = encodeURIComponent;
 const paging = (limit: number, offset: number) => `limit=${limit}&offset=${offset}`;
+
+// Строка запроса из пар имя-значение; пустые значения пропускаются.
+function query(params: [string, string | number | undefined][]): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of params) if (v !== undefined && v !== '') q.append(k, String(v));
+  return q.toString();
+}
 
 export const api = {
   me: () => request<Me>('/api/me'),
@@ -55,6 +75,8 @@ export const api = {
   // ---- флот (/api/v1, постранично, limit до 100) ----
   machines: (limit: number, offset: number) =>
     request<Page<Machine>>(`/api/v1/machines?${paging(limit, offset)}`),
+  machinesByKind: (kind: MachineKind, limit: number, offset: number) =>
+    request<Page<Machine>>(`/api/v1/machines?kind=${kind}&${paging(limit, offset)}`),
   pairs: (limit: number, offset: number) => request<Page<Pair>>(`/api/v1/pairs?${paging(limit, offset)}`),
   drift: (thresholdSeconds: number, limit: number, offset: number) =>
     request<DriftResponse>(`/api/v1/drift?threshold=${thresholdSeconds}&${paging(limit, offset)}`),
@@ -64,4 +86,59 @@ export const api = {
   createJoin: (code: string) => request<JoinCommand>(`/api/v1/targets/${enc(code)}/join`, { method: 'POST' }),
   applyLog: (code: string, limit: number, offset: number) =>
     request<Page<ApplyLogEntry>>(`/api/v1/targets/${enc(code)}/apply-log?${paging(limit, offset)}`),
+
+  // ---- runtime-отчёты агентов ----
+  // Обзор: итоги флота и машины с runtime-полями одним запросом (до 500 машин).
+  overview: () => request<Overview>('/api/v1/overview'),
+  machineRuntime: (code: string) => request<MachineRuntime>(`/api/v1/machines/${enc(code)}/runtime`),
+  connections: (f: ConnFilter, limit: number, offset: number) =>
+    request<Page<Connection>>(
+      `/api/v1/connections?${query([
+        ['machine', f.machine],
+        ['product', f.product],
+        ['min_connections', f.minConnections],
+        ['user', f.user],
+        ['limit', limit],
+        ['offset', offset],
+      ])}`,
+    ),
+  connectionsSummary: (limit: number, offset: number) =>
+    request<Page<ConnectionSummary>>(`/api/v1/connections/summary?${paging(limit, offset)}`),
+  // Сумма подключений по всем машинам для каждого пользователя (до 100 за запрос).
+  connectionsByUser: (users: string[]) =>
+    request<{ data: UserConnections[] }>(`/api/v1/connections/by-user?${query(users.map((u) => ['user', u]))}`),
+  logErrors: (since: string, machine: string | undefined, limit: number, offset: number) =>
+    request<Page<LogErrorSum>>(
+      `/api/v1/log-errors?${query([
+        ['since', since],
+        ['machine', machine],
+        ['limit', limit],
+        ['offset', offset],
+      ])}`,
+    ),
+  certs: (machine: string | undefined, limit: number, offset: number) =>
+    request<Page<CertInfo>>(
+      `/api/v1/certs?${query([
+        ['machine', machine],
+        ['limit', limit],
+        ['offset', offset],
+      ])}`,
+    ),
+
+  // ---- серверы (ADR 0005): справочник, бот пока берёт серверы из своей базы ----
+  servers: (f: ServerFilter, limit: number, offset: number) =>
+    request<Page<Server>>(
+      `/api/v1/servers?${query([
+        ['engine', f.engine],
+        ['state', f.state],
+        ['limit', limit],
+        ['offset', offset],
+      ])}`,
+    ),
+  serverFields: () => request<{ data: ServerField[] }>('/api/v1/servers/fields'),
+  createServer: (body: ServerInput) => request<Server>('/api/v1/servers', { method: 'POST', body }),
+  // Замена целиком вместе с точками входа.
+  updateServer: (no: number, body: ServerInput) => request<Server>(`/api/v1/servers/${no}`, { method: 'PUT', body }),
+  // Только выключенный (state=disabled), иначе 409.
+  deleteServer: (no: number) => request<unknown>(`/api/v1/servers/${no}`, { method: 'DELETE' }),
 };

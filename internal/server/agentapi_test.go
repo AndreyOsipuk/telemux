@@ -39,6 +39,12 @@ type fakeAgents struct {
 	lastSince  time.Time
 	lastMach   string
 
+	totals     store.FleetTotals
+	totalsErr  error
+	lastFresh  time.Time
+	lastSilent time.Time
+	byUserKeys []string
+
 	pruned        int
 	prunedBefore  time.Time
 	lastThreshold time.Duration

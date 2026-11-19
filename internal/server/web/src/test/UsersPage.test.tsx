@@ -307,6 +307,73 @@ describe('UsersPage', () => {
   });
 });
 
+describe('UsersPage: онлайн и подключения по всем машинам', () => {
+  // usersBackend + /api/v1/connections/by-user: у user-1 5 подключений на 2 машинах.
+  function withConns(total: number, byUser?: (url: string) => { status?: number; body?: unknown }) {
+    const base = usersBackend(total, MASTER);
+    return (url: string, init?: RequestInit) => {
+      if (url.startsWith('/api/v1/connections/by-user')) {
+        if (byUser) return byUser(url);
+        const users = new URL(url, 'http://x').searchParams.getAll('user');
+        return {
+          body: {
+            data: users.map((key) =>
+              key === 'user-1'
+                ? { key, connections: 5, machines: 2, online: true, seen_at: new Date().toISOString() }
+                : { key, connections: 0, machines: 0, online: false, seen_at: null },
+            ),
+          },
+        };
+      }
+      return base(url, init);
+    };
+  }
+
+  it('онлайн и число подключений - одним запросом на страницу', async () => {
+    const fetchFn = mockFetch(withConns(3));
+
+    renderWithProviders(<UsersPage />);
+
+    expect(await screen.findByTestId('active-user-1')).toHaveTextContent('5');
+    expect(screen.getByTestId('active-user-2')).toHaveTextContent('0');
+    const row1 = screen.getByTestId('active-user-1').closest('tr') as HTMLElement;
+    expect(within(row1).getByText(ru.status.online)).toBeInTheDocument();
+    const row2 = screen.getByTestId('active-user-2').closest('tr') as HTMLElement;
+    expect(within(row2).getByText(ru.users.offline)).toBeInTheDocument();
+
+    const calls = fetchFn.mock.calls.map(([u]) => String(u)).filter((u) => u.startsWith('/api/v1/connections/by-user'));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBe('/api/v1/connections/by-user?user=user-1&user=user-2&user=user-3');
+  });
+
+  it('пустой список пользователей - запроса подключений нет', async () => {
+    const fetchFn = mockFetch(withConns(0));
+
+    renderWithProviders(<UsersPage />);
+    await waitFor(() => expect(fetchFn.mock.calls.some(([u]) => String(u).startsWith('/api/users'))).toBe(true));
+
+    expect(fetchFn.mock.calls.some(([u]) => String(u).startsWith('/api/v1/connections/by-user'))).toBe(false);
+  });
+
+  it('ошибка подключений (500) - отдельный баннер, список пользователей виден', async () => {
+    mockFetch(withConns(2, () => ({ status: 500, body: { code: 'internal', message: 'pq: boom' } })));
+
+    renderWithProviders(<UsersPage />);
+
+    expect(await screen.findByText(ru.users.connsFailed)).toBeInTheDocument();
+    expect(screen.getByText('user-1')).toBeInTheDocument();
+    expect(screen.queryByText(/pq: boom/)).not.toBeInTheDocument();
+  });
+
+  it('401 у подключений - «сессия истекла»', async () => {
+    mockFetch(withConns(2, () => ({ status: 401, body: { code: 'unauthorized', message: 'unauthorized' } })));
+
+    renderWithProviders(<UsersPage />);
+
+    expect(await screen.findByText(ru.errors.unauthorized)).toBeInTheDocument();
+  });
+});
+
 describe('renewedExpiration', () => {
   const now = new Date('2026-06-01T12:00:00Z');
   const DAY = 24 * 3600 * 1000;

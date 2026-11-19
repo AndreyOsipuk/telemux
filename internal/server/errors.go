@@ -10,6 +10,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/AndreyOsipuk/telemux/internal/servercfg"
+	"github.com/AndreyOsipuk/telemux/internal/store"
 )
 
 // Ответ с ошибкой: {code, message}. Поле error - копия message для старой
@@ -91,6 +94,11 @@ func writeErr(w http.ResponseWriter, status int, err error, log *slog.Logger) {
 // Для 4xx клиенту - обезличенный текст: в ошибке базы SQL, имена таблиц и
 // значения ключей; реальная ошибка - только в лог (Warn: это не сбой сервера).
 func (s *Server) writeStoreErr(w http.ResponseWriter, err error) {
+	if status, code, ok := storeInputErr(err); ok {
+		// Ошибка ввода, распознанная хранилищем до записи: текст - наш, без деталей базы.
+		writeErr(w, status, codedErr(code, err), s.deps.Log)
+		return
+	}
 	status := storeErrStatus(err)
 	if status >= 500 {
 		writeErr(w, status, err, s.deps.Log)
@@ -119,7 +127,39 @@ func storeClientMsg(err error) string {
 	return "данные запроса отвергнуты базой: проверьте значения"
 }
 
+// storeInputErrs - ошибки хранилища, вызванные вводом клиента: статус и машинный код.
+var storeInputErrs = []struct {
+	err    error
+	status int
+	code   string
+}{
+	{store.ErrServerNotFound, http.StatusNotFound, "not_found"},
+	{store.ErrServerExists, http.StatusConflict, "conflict"},
+	{store.ErrServerNotDisabled, http.StatusConflict, "conflict"},
+	{store.ErrEngineImmutable, http.StatusBadRequest, "engine_immutable"},
+	{store.ErrUnknownMachine, http.StatusBadRequest, "unknown_machine"},
+	{store.ErrBatchTooLarge, http.StatusBadRequest, "batch_too_large"},
+	{store.ErrBadEndpoint, http.StatusBadRequest, "bad_endpoint"},
+	{store.ErrBadServer, http.StatusBadRequest, "bad_request"},
+	{servercfg.ErrUnknownSetting, http.StatusBadRequest, "unknown_setting"},
+	{servercfg.ErrBadSetting, http.StatusBadRequest, "bad_setting"},
+	{servercfg.ErrUnknownEngine, http.StatusBadRequest, "bad_request"},
+}
+
+// storeInputErr - статус и код ошибки ввода, распознанной хранилищем; ok=false - не она.
+func storeInputErr(err error) (status int, code string, ok bool) {
+	for _, e := range storeInputErrs {
+		if errors.Is(err, e.err) {
+			return e.status, e.code, true
+		}
+	}
+	return 0, "", false
+}
+
 func storeErrStatus(err error) int {
+	if status, _, ok := storeInputErr(err); ok {
+		return status
+	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return http.StatusServiceUnavailable
 	}

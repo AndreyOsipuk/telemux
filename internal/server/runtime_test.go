@@ -55,7 +55,7 @@ func (f *fakeAgents) Connections(_ context.Context, flt store.ConnFilter, limit,
 	var all []store.ConnRow
 	for _, c := range f.conns {
 		if (flt.Machine == "" || c.Machine == flt.Machine) && (flt.Product == "" || c.Product == flt.Product) &&
-			c.Connections >= flt.MinConnections {
+			c.Connections >= flt.MinConnections && strings.HasPrefix(c.Key, flt.User) {
 			all = append(all, c)
 		}
 	}

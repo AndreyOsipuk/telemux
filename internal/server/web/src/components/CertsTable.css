@@ -1,0 +1,4 @@
+/* Сертификат истекает меньше чем через 14 дней или уже истёк. */
+.cert-row-warn > td {
+  background: var(--ant-color-error-bg) !important;
+}

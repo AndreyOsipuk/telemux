@@ -6,6 +6,10 @@ import { Navigate, createBrowserRouter, type RouteObject } from 'react-router';
 
 import PanelLayout from '@/layouts/PanelLayout';
 
+const OverviewPage = lazy(() => import('@/pages/overview/OverviewPage'));
+const ServersPage = lazy(() => import('@/pages/servers/ServersPage'));
+const ConnectionsPage = lazy(() => import('@/pages/connections/ConnectionsPage'));
+const CertsPage = lazy(() => import('@/pages/certs/CertsPage'));
 const PairsPage = lazy(() => import('@/pages/pairs/PairsPage'));
 const DriftPage = lazy(() => import('@/pages/drift/DriftPage'));
 const UsersPage = lazy(() => import('@/pages/users/UsersPage'));
@@ -18,14 +22,17 @@ export const routes: RouteObject[] = [
     path: '/',
     element: <PanelLayout />,
     children: [
-      { index: true, element: <Navigate to="/pairs" replace /> },
+      { index: true, element: <OverviewPage /> },
+      { path: 'servers', element: <ServersPage /> },
       { path: 'pairs', element: <PairsPage /> },
+      { path: 'connections', element: <ConnectionsPage /> },
       { path: 'drift', element: <DriftPage /> },
       { path: 'users', element: <UsersPage /> },
       { path: 'nodes', element: <NodesPage /> },
+      { path: 'certs', element: <CertsPage /> },
       { path: 'sync', element: <SyncPage /> },
       { path: 'api-docs', element: <ApiDocsPage /> },
-      { path: '*', element: <Navigate to="/pairs" replace /> },
+      { path: '*', element: <Navigate to="/" replace /> },
     ],
   },
 ];

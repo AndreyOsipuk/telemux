@@ -205,7 +205,7 @@ func TestIntegration_TLS_ListCerts(t *testing.T) {
 	if err := st.RecordTLSError(ctx, "web2.example.com", "нет зоны"); err != nil {
 		t.Fatal(err)
 	}
-	page1, total, err := st.ListCerts(ctx, 2, 0)
+	page1, total, err := st.ListCerts(ctx, "", 2, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,13 +218,47 @@ func TestIntegration_TLS_ListCerts(t *testing.T) {
 	if page1[1].Domain != "web5.example.com" || page1[1].NotAfter == nil || !page1[1].NotAfter.Equal(na) {
 		t.Fatalf("вторая строка: %+v", page1[1])
 	}
-	page2, _, err := st.ListCerts(ctx, 2, 2)
+	page2, _, err := st.ListCerts(ctx, "", 2, 2)
 	if err != nil || len(page2) != 1 || page2[0].Machine != "pr2" || page2[0].LastError != "нет зоны" || page2[0].Assigned {
 		t.Fatalf("вторая страница: %+v, %v", page2, err)
 	}
 	raw, _ := json.Marshal(append(page1, page2...))
 	if strings.Contains(string(raw), "SECRET-KEY") || strings.Contains(string(raw), "CERT") {
 		t.Fatalf("в списке не должно быть ни ключей, ни сертификатов: %s", raw)
+	}
+}
+
+// Фильтр по машине и итоги для обзора: истекающие (меньше границы, в том числе
+// уже истёкшие) и ещё не выпущенные.
+func TestIntegration_TLS_ListCertsMachineAndCounts(t *testing.T) {
+	st := setupTLS(t)
+	defer st.Close()
+	ctx := context.Background()
+	seedTargets(t, st, relayWeb("pr1", "web1.example.com,web5.example.com", true),
+		relayWeb("pr2", "web2.example.com,web3.example.com", false))
+	now := time.Now().UTC().Truncate(time.Second)
+	for d, na := range map[string]time.Time{
+		"web1.example.com": now.Add(60 * 24 * time.Hour), // свежий
+		"web5.example.com": now.Add(5 * 24 * time.Hour),  // истекает
+		"web2.example.com": now.Add(-24 * time.Hour),     // уже истёк
+	} {
+		if err := st.SaveTLSCert(ctx, d, []byte("C"), []byte("K"), na); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, total, err := st.ListCerts(ctx, "pr2", 100, 0)
+	if err != nil || total != 2 || len(list) != 2 || list[0].Domain != "web2.example.com" || list[1].Machine != "pr2" {
+		t.Fatalf("фильтр pr2: total=%d %+v %v", total, list, err)
+	}
+	if _, total, _ := st.ListCerts(ctx, "nobody", 100, 0); total != 0 {
+		t.Fatalf("неизвестная машина - пусто, а не %d", total)
+	}
+	c, err := st.CertCounts(ctx, now.Add(14*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c != (CertCounts{Total: 4, Expiring: 2, Missing: 1}) {
+		t.Fatalf("итоги: %+v", c)
 	}
 }
 

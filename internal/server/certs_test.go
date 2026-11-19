@@ -25,6 +25,10 @@ type fakeCerts struct {
 	changed   bool     // публикация даёт новую ревизию
 	calls     int      // любые обращения к базе
 	list      []store.CertInfo
+	lastMach  string           // machine последнего ListCerts
+	counts    store.CertCounts // ответ CertCounts
+	countsErr error
+	before    time.Time // граница последнего CertCounts
 }
 
 type fakeCertRow struct {
@@ -92,11 +96,26 @@ func (f *fakeCerts) PublishTLSWeb(_ context.Context, target string) (store.Publi
 	return store.PublishResult{Revision: 7, Changed: []string{}}, nil
 }
 
-func (f *fakeCerts) ListCerts(_ context.Context, limit, offset int) ([]store.CertInfo, int, error) {
+func (f *fakeCerts) ListCerts(_ context.Context, machine string, limit, offset int) ([]store.CertInfo, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	return page(f.list, limit, offset), len(f.list), nil
+	f.lastMach = machine
+	var all []store.CertInfo
+	for _, c := range f.list {
+		if machine == "" || c.Machine == machine {
+			all = append(all, c)
+		}
+	}
+	return page(all, limit, offset), len(all), nil
+}
+
+func (f *fakeCerts) CertCounts(_ context.Context, before time.Time) (store.CertCounts, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.before = before
+	return f.counts, f.countsErr
 }
 
 // fakeIssuer - выпуск без сети: сертификат на 90 дней от «сейчас» теста.

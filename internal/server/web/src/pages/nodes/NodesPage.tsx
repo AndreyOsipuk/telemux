@@ -1,22 +1,26 @@
 // «Машины»: два раздела.
-// 1. Машины флота (/api/v1/machines): код, вид, релей, агент и мост, «видели N назад»,
-//    локальные проверки и ресурсы из последнего отчёта агента. Постранично. Кнопка
-//    «Добавить машину» и у каждой машины - «Команда установки» агента.
+// 1. Машины флота (/api/v1/machines): сверху карточки «всего / в сети / не в сети»
+//    (/api/v1/overview), в таблице - код, вид, runtime-статус, нагрузка (CPU, память,
+//    диск), аптайм, подключения и онлайн, версии telemt, mtg и агента, релей, «видели N
+//    назад», проверки и ресурсы. Постранично. Клик по строке - карточка машины;
+//    кнопка «Добавить машину» и у каждой машины - «Команда установки» агента.
 // 2. Узлы управления кластером (/api/nodes) - мастер и реплики самого telemux: роль,
 //    адрес (скрыт по умолчанию, как в 3x-ui), статус по последнему heartbeat.
 
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsFetching, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { Button, Card, Col, Row, Space, Statistic, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { EyeInvisibleOutlined, EyeOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 
-import { useIsMaster, useMachines, useNodes } from '@/api/queries';
+import { useIsMaster, useMachines, useNodes, useOverview } from '@/api/queries';
 import type { ClusterNode, Machine, MachineStatus } from '@/api/types';
 import ErrorAlert from '@/components/ErrorAlert';
 import { CheckTags, KindTag, ResourceTags, resourceRows } from '@/components/FleetTags';
 import { JoinCommandButton } from '@/components/JoinCommand';
+import MachineDrawer from '@/components/MachineDrawer';
+import { useRuntimeColumns } from '@/components/MachineCells';
 import { usePaging } from '@/hooks/usePaging';
 import StatusCell from '@/components/StatusDot';
 import { secondsSince, useNow, useRelativeTime } from '@/hooks/useRelativeTime';
@@ -33,12 +37,47 @@ export function nodeStatus(n: ClusterNode, now: number): MachineStatus {
   return age <= NODE_STALE_SECONDS ? 'online' : 'offline';
 }
 
+// Карточки над таблицей: всего машин, с агентом в сети, не в сети (молчат дольше 10 минут).
+function FleetCounters() {
+  const { t } = useTranslation();
+  const overview = useOverview();
+  const m = overview.data?.machines;
+  if (!m) return null;
+  return (
+    <Row gutter={[16, 16]} style={{ marginBottom: 16 }} data-testid="fleet-counters">
+      <Col xs={8}>
+        <Card size="small">
+          <Statistic title={t('nodes.total')} value={m.total} />
+        </Card>
+      </Col>
+      <Col xs={8}>
+        <Card size="small">
+          <Statistic title={t('nodes.online')} value={m.online} styles={{ content: { color: 'var(--ant-color-success)' } }} />
+        </Card>
+      </Col>
+      <Col xs={8}>
+        <Card size="small">
+          <Statistic
+            title={t('nodes.offline')}
+            value={m.silent}
+            styles={{ content: m.silent > 0 ? { color: 'var(--ant-color-error)' } : undefined }}
+          />
+        </Card>
+      </Col>
+    </Row>
+  );
+}
+
+const RUNTIME_KEYS = ['status', 'cpu', 'mem', 'disk', 'uptime', 'connections', 'online', 'telemt', 'mtg'] as const;
+
 function FleetMachines() {
   const { t } = useTranslation();
   const now = useNow();
   const relative = useRelativeTime();
   const isMaster = useIsMaster();
   const [adding, setAdding] = useState(false);
+  const [opened, setOpened] = useState<Machine | null>(null);
+  const runtimeCols = useRuntimeColumns([...RUNTIME_KEYS]);
   const paging = usePaging(20);
   const machines = useMachines(paging.pageSize, paging.offset);
   const { syncTotal } = paging;
@@ -61,6 +100,7 @@ function FleetMachines() {
           </Space>
         ),
       },
+      ...runtimeCols,
       {
         title: t('fleet.relay'),
         dataIndex: 'relay_code',
@@ -107,7 +147,7 @@ function FleetMachines() {
         render: (_v, m) => <JoinCommandButton code={m.code} hasAgent={m.seen_at !== null} />,
       },
     ],
-    [t, now, relative],
+    [t, now, relative, runtimeCols],
   );
 
   return (
@@ -134,9 +174,15 @@ function FleetMachines() {
         columns={columns}
         dataSource={machines.data?.data ?? []}
         loading={machines.isPending || (machines.isFetching && machines.isPlaceholderData)}
-        scroll={{ x: 1190 }}
+        scroll={{ x: 2110 }}
         locale={{ emptyText: machines.isSuccess ? t('nodes.fleetEmpty') : <span /> }}
         pagination={paging.pagination(total)}
+        onRow={(m) => ({ onClick: () => setOpened(m), style: { cursor: 'pointer' } })}
+      />
+      {/* Свежие данные машины после автообновления списка, если она ещё на странице. */}
+      <MachineDrawer
+        machine={opened && (machines.data?.data.find((m) => m.code === opened.code) ?? opened)}
+        onClose={() => setOpened(null)}
       />
     </Card>
   );
@@ -147,9 +193,9 @@ export default function NodesPage() {
   const qc = useQueryClient();
   const nodes = useNodes();
   // Кнопка «Обновить» - для обоих разделов.
-  const fetching = useIsFetching({ predicate: (q) => q.queryKey[0] === 'machines' || q.queryKey[0] === 'nodes' });
-  const refreshAll = () =>
-    qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'machines' || q.queryKey[0] === 'nodes' });
+  const fleetKey = (k: unknown) => k === 'machines' || k === 'nodes' || k === 'overview';
+  const fetching = useIsFetching({ predicate: (q) => fleetKey(q.queryKey[0]) });
+  const refreshAll = () => qc.invalidateQueries({ predicate: (q) => fleetKey(q.queryKey[0]) });
   const now = useNow();
   const relative = useRelativeTime();
   const [showAddress, setShowAddress] = useState(false);
@@ -213,6 +259,7 @@ export default function NodesPage() {
           {t('common.refresh')}
         </Button>
       </div>
+      <FleetCounters />
       <FleetMachines />
       <Card
         title={t('nodes.clusterTitle')}

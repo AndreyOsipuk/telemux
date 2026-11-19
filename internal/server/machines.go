@@ -87,6 +87,7 @@ func (s *Server) routesMachines() {
 			s.writeStoreErr(w, err)
 			return
 		}
+		s.fillRuntimeStatus(list, time.Now())
 		writeJSON(w, pageBody(list, total, limit, offset))
 	})
 
@@ -101,6 +102,7 @@ func (s *Server) routesMachines() {
 			s.writeStoreErr(w, err)
 			return
 		}
+		s.fillPairsRuntimeStatus(pairs, time.Now())
 		writeJSON(w, pageBody(pairs, total, limit, offset))
 	})
 
@@ -147,6 +149,7 @@ func (s *Server) routesMachines() {
 		writeJSON(w, pageBody(list, total, limit, offset))
 	})
 	s.routesRuntime()
+	s.routesOverview()
 }
 
 // readPage проверяет доступ (токен бота или сессия) и разбирает limit (1..100,

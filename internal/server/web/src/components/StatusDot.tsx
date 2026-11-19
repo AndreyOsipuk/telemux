@@ -1,19 +1,21 @@
 // Источник: форк 3x-ui, frontend/src/pages/nodes/NodeList.tsx, StatusDot/StatusLabel
 // (GPL-3.0). Адаптировано под статусы telemux: управляющие узлы кластера
-// (online/degraded/offline/unknown) и машины флота в паре (ok/behind/failed/...).
+// (online/degraded/offline/unknown), машины флота в паре (ok/behind/failed/...) и
+// runtime-статус машины по отчёту агента (online/stale/degraded/offline).
 
 import { Badge, Space } from 'antd';
 import type { BadgeProps } from 'antd';
 import { useTranslation } from 'react-i18next';
 
-import type { MachineStatus, PairStatus } from '@/api/types';
+import type { MachineStatus, PairStatus, RuntimeStatus } from '@/api/types';
 import './StatusDot.css';
 
-export type DotStatus = MachineStatus | PairStatus;
+export type DotStatus = MachineStatus | PairStatus | RuntimeStatus;
 
 const BADGE: Record<DotStatus, BadgeProps['status']> = {
   online: 'success',
   degraded: 'warning',
+  stale: 'warning',
   offline: 'error',
   unknown: 'default',
   ok: 'success',
@@ -28,6 +30,7 @@ const COLOR: Partial<Record<DotStatus, string>> = {
   online: 'var(--ant-color-success)',
   ok: 'var(--ant-color-success)',
   degraded: 'var(--ant-color-warning)',
+  stale: 'var(--ant-color-warning)',
   silent: 'var(--ant-color-warning)',
   behind: 'var(--ant-color-primary)',
   offline: 'var(--ant-color-error)',

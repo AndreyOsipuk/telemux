@@ -298,7 +298,11 @@ func (s *Server) routesRuntime() {
 			return
 		}
 		q := r.URL.Query()
-		f := store.ConnFilter{Machine: q.Get("machine"), Product: q.Get("product")}
+		f := store.ConnFilter{Machine: q.Get("machine"), Product: q.Get("product"), User: q.Get("user")}
+		if len(f.User) > maxRuntimeKeyLen {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("user - префикс ключа до %d символов", maxRuntimeKeyLen), s.deps.Log)
+			return
+		}
 		if f.Product != "" && f.Product != store.ProductTelemt && f.Product != store.ProductMtg {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("product %q: допустимы telemt, mtg", f.Product), s.deps.Log)
 			return

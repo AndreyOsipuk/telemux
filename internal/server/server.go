@@ -61,6 +61,9 @@ type Deps struct {
 	// Выпуск и продление сертификатов на мастере (ACME); nil → выключен.
 	ACME *ACMEDeps
 
+	// Справочник серверов (/api/v1/servers, ADR 0005); nil → выключено.
+	Servers ServerStore
+
 	// Внешний TLS-слушатель для агентов и мостов машин-выходов (только /v1/ и /healthz).
 	// Пусто → выключен. Сертификат самоподписанный, клиенты закрепляют его отпечаток.
 	TLSListen   string
@@ -202,6 +205,9 @@ func (s *Server) routes() {
 	}
 	if s.deps.Certs != nil {
 		s.routesCerts()
+	}
+	if s.deps.Servers != nil {
+		s.routesServers()
 	}
 	s.mux.HandleFunc("GET /api/openapi.json", s.handleSpec)
 	// Дашборд (встроенный, см. web.go).

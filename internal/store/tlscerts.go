@@ -297,16 +297,19 @@ const certDomainsCTE = `WITH d AS (
    WHERE t.kind = 'relay' AND t.enabled AND btrim(x) <> '')`
 
 // ListCerts - домены включённых релеев и состояние их сертификатов по машине и
-// домену, постранично; total - всего строк.
-func (s *Store) ListCerts(ctx context.Context, limit, offset int) ([]CertInfo, int, error) {
+// домену, постранично; machine не пустой - только эта машина; total - всего строк
+// с фильтром.
+func (s *Store) ListCerts(ctx context.Context, machine string, limit, offset int) ([]CertInfo, int, error) {
 	var total int
-	if err := s.pool.QueryRow(ctx, certDomainsCTE+` SELECT count(*) FROM d`, ResourceTLSWeb).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(ctx, certDomainsCTE+` SELECT count(*) FROM d WHERE ($2 = '' OR d.code = $2)`,
+		ResourceTLSWeb, machine).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count certs: %w", err)
 	}
 	rows, err := s.pool.Query(ctx, certDomainsCTE+`
 		SELECT d.code, d.domain, d.assigned, c.not_after, c.issued_at, COALESCE(c.last_error, ''), c.last_try_at
 		  FROM d LEFT JOIN tls_certs c ON c.domain = d.domain
-		 ORDER BY d.code, d.domain LIMIT $2 OFFSET $3`, ResourceTLSWeb, limit, offset)
+		 WHERE ($2 = '' OR d.code = $2)
+		 ORDER BY d.code, d.domain LIMIT $3 OFFSET $4`, ResourceTLSWeb, machine, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("certs: %w", err)
 	}
@@ -323,6 +326,28 @@ func (s *Store) ListCerts(ctx context.Context, limit, offset int) ([]CertInfo, i
 		return nil, 0, fmt.Errorf("certs: %w", err)
 	}
 	return out, total, nil
+}
+
+// CertCounts - итоги по сертификатам доменов включённых релеев (строки как в ListCerts).
+type CertCounts struct {
+	Total    int // строк (машина, домен)
+	Expiring int // сертификат есть и кончается раньше before (в том числе уже истёк)
+	Missing  int // сертификата ещё нет
+}
+
+// CertCounts считает итоги одним запросом; before - граница «скоро истекает».
+func (s *Store) CertCounts(ctx context.Context, before time.Time) (CertCounts, error) {
+	var c CertCounts
+	err := s.pool.QueryRow(ctx, certDomainsCTE+`
+		SELECT count(*)::int,
+		       count(*) FILTER (WHERE c.not_after IS NOT NULL AND c.not_after < $2)::int,
+		       count(*) FILTER (WHERE c.not_after IS NULL)::int
+		  FROM d LEFT JOIN tls_certs c ON c.domain = d.domain`, ResourceTLSWeb, before).
+		Scan(&c.Total, &c.Expiring, &c.Missing)
+	if err != nil {
+		return c, fmt.Errorf("итоги сертификатов: %w", err)
+	}
+	return c, nil
 }
 
 // ACMEAccount - аккаунт ACME мастера для одного каталога.

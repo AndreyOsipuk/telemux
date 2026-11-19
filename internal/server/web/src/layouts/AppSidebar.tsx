@@ -11,6 +11,10 @@ import type { MenuProps } from 'antd';
 import {
   ApiOutlined,
   ClusterOutlined,
+  CloudServerOutlined,
+  DashboardOutlined,
+  LinkOutlined,
+  SafetyCertificateOutlined,
   CloseOutlined,
   DeploymentUnitOutlined,
   LogoutOutlined,
@@ -128,10 +132,14 @@ export default function AppSidebar({ onLogout, authEnabled }: AppSidebarProps) {
 
   const navItems = useMemo<NavItem[]>(
     () => [
+      { key: '/', icon: DashboardOutlined, title: t('menu.overview') },
+      { key: '/servers', icon: CloudServerOutlined, title: t('menu.servers') },
       { key: '/pairs', icon: DeploymentUnitOutlined, title: t('menu.pairs') },
-      { key: '/drift', icon: WarningOutlined, title: t('menu.drift') },
-      { key: '/users', icon: TeamOutlined, title: t('menu.users') },
+      { key: '/connections', icon: LinkOutlined, title: t('menu.connections') },
       { key: '/nodes', icon: ClusterOutlined, title: t('menu.nodes') },
+      { key: '/users', icon: TeamOutlined, title: t('menu.users') },
+      { key: '/drift', icon: WarningOutlined, title: t('menu.drift') },
+      { key: '/certs', icon: SafetyCertificateOutlined, title: t('menu.certs') },
       { key: '/sync', icon: SyncOutlined, title: t('menu.sync') },
       { key: '/api-docs', icon: ApiOutlined, title: t('menu.apiDocs') },
     ],
@@ -142,7 +150,9 @@ export default function AppSidebar({ onLogout, authEnabled }: AppSidebarProps) {
     [authEnabled, t],
   );
 
-  const selectedKey = navItems.find((n) => pathname.startsWith(n.key))?.key ?? pathname;
+  // «/» - только сам обзор: иначе startsWith('/') совпал бы с любым разделом.
+  const selectedKey =
+    navItems.find((n) => (n.key === '/' ? pathname === '/' : pathname.startsWith(n.key)))?.key ?? pathname;
 
   const toMenuItems = (items: NavItem[]): MenuProps['items'] =>
     items.map(({ key, icon: Icon, title }) => ({ key, icon: <Icon />, label: title, title: '' }));

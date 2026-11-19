@@ -1,14 +1,14 @@
 // Тесты экрана «Машины»: раздел «Машины флота» (/api/v1/machines, постранично) и
 // узлы управления кластером (/api/nodes) со статусом по последнему heartbeat.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { FLEET_REFRESH_MS, qk } from '@/api/queries';
 import type { ClusterNode, Machine } from '@/api/types';
 import ru from '@/i18n/ru.json';
 import NodesPage, { NODE_STALE_SECONDS, nodeStatus } from '@/pages/nodes/NodesPage';
-import { machine, pageOf, urlPath } from './fleet-fixtures';
+import { cert, connection, logEntry, machine, machineRuntime, overviewOf, pageOf, runtimeMachine, urlParam, urlPath } from './fleet-fixtures';
 import { mockFetch, renderWithProviders } from './test-utils';
 
 function node(code: string, last_seen_at: string | null, enabled = true): ClusterNode {
@@ -214,5 +214,133 @@ describe('NodesPage: узлы управления кластером', () => {
     // Оба раздела - со своим баннером.
     await screen.findAllByText(ru.errors.network, {}, { timeout: 5000 });
     expect(screen.getAllByText(ru.errors.network)).toHaveLength(2);
+  });
+});
+
+describe('NodesPage: runtime машин и карточка машины', () => {
+  const RT: Machine[] = [
+    runtimeMachine('relay-a', {
+      kind: 'relay',
+      mtg_version: '2.1.7',
+      agent_version: '0.7.0',
+      observed: [
+        { resource: 'telemt.users', revision: 7, status: 'applied', seen_at: new Date().toISOString(), desired_revision: 9 },
+      ],
+      checks: [{ name: 'bridge', ok: true }],
+    }),
+    runtimeMachine('exit-a1', { relay_code: 'relay-a', runtime_status: 'degraded', telemt_api_ok: false }),
+    machine('exit-old', { relay_code: 'relay-a', runtime_status: 'offline' }),
+  ];
+
+  function rtBackend() {
+    return (url: string) => {
+      const path = urlPath(url);
+      if (path === '/api/v1/machines') return { body: pageOf(RT, url) };
+      if (path === '/api/v1/overview') return { body: overviewOf(RT) };
+      if (url === '/api/nodes') return { body: { nodes: [] } };
+      if (path === '/api/v1/machines/relay-a/runtime') return { body: machineRuntime('relay-a') };
+      if (path === '/api/v1/connections') return { body: pageOf([connection('relay-a', 'alice_1')], url) };
+      if (path === '/api/v1/log-errors')
+        return { body: pageOf([{ machine: 'relay-a', key: 'alice_1', kind: 'limit', count: 17 }], url) };
+      if (path === '/api/v1/targets/relay-a/apply-log') return { body: pageOf([logEntry(0, { error: 'apply boom', status: 'failed' })], url) };
+      if (path === '/api/v1/certs') return { body: pageOf([cert('relay-a', 'web.example.com')], url) };
+      return undefined;
+    };
+  }
+
+  it('карточки «всего / в сети / не в сети» и runtime-колонки', async () => {
+    mockFetch(rtBackend());
+
+    renderWithProviders(<NodesPage />);
+
+    const counters = await screen.findByTestId('fleet-counters');
+    expect(within(counters).getByText(ru.nodes.total).closest('.ant-statistic')).toHaveTextContent('3');
+    expect(within(counters).getByText(ru.nodes.online).closest('.ant-statistic')).toHaveTextContent('2');
+    expect(within(counters).getByText(ru.nodes.offline).closest('.ant-statistic')).toHaveTextContent('1');
+
+    await within(screen.getByTestId('fleet-machines')).findByText('2.1.7');
+    const relay = fleetRow('relay-a');
+    expect(within(relay).getByText(ru.status.online)).toBeInTheDocument();
+    expect(within(relay).getByText('12.5%')).toBeInTheDocument();
+    expect(within(relay).getByText('3 д')).toBeInTheDocument();
+    expect(within(relay).getByText('3.5.17')).toBeInTheDocument();
+    expect(within(fleetRow('exit-a1')).getByText(ru.status.degraded)).toBeInTheDocument();
+    expect(within(fleetRow('exit-old')).getByText(ru.status.offline)).toBeInTheDocument();
+  });
+
+  it('клик по машине - карточка: состояние, ресурсы, подключения, журнал, история, сертификаты', async () => {
+    const fetchFn = mockFetch(rtBackend());
+    const user = userEvent.setup();
+    const calls = () => fetchFn.mock.calls.map(([u]) => String(u));
+
+    renderWithProviders(<NodesPage />);
+    await within(screen.getByTestId('fleet-machines')).findByText('2.1.7');
+    await user.click(fleetRow('relay-a'));
+
+    // «Состояние» - runtime целиком.
+    const state = await screen.findByTestId('machine-state');
+    expect(within(state).getByText('91%')).toHaveClass('ant-typography-danger');
+    expect(within(state).getByText('10.3 Мбит/с')).toBeInTheDocument();
+    expect(within(state).getByText('120')).toBeInTheDocument();
+    expect(within(state).getByText('connection refused')).toBeInTheDocument();
+    // Вкладки, которые не открывали, ничего не грузят.
+    expect(calls().some((u) => urlPath(u) === '/api/v1/log-errors')).toBe(false);
+
+    await user.click(screen.getByRole('tab', { name: ru.drawer.tabs.resources }));
+    const drawer = screen.getByTestId('machine-drawer');
+    const res = await within(drawer).findByTestId('res-telemt.users');
+    expect(res).toHaveTextContent('telemt.users 7/9');
+    expect(res).toHaveAttribute('data-state', 'behind');
+
+    await user.click(screen.getByRole('tab', { name: ru.drawer.tabs.connections }));
+    expect(await screen.findByText('alice_1')).toBeInTheDocument();
+    const conn = calls().find((u) => urlPath(u) === '/api/v1/connections') ?? '';
+    expect(urlParam(conn, 'machine')).toBe('relay-a');
+    expect(urlParam(conn, 'min_connections')).toBe('0');
+
+    await user.click(screen.getByRole('tab', { name: ru.drawer.tabs.logErrors }));
+    expect(await screen.findByText('17')).toBeInTheDocument();
+    const log = calls().find((u) => urlPath(u) === '/api/v1/log-errors') ?? '';
+    expect(urlParam(log, 'machine')).toBe('relay-a');
+    const since = Date.parse(urlParam(log, 'since') ?? '');
+    expect(Math.abs(Date.now() - 24 * 3600_000 - since)).toBeLessThan(60_000);
+
+    await user.click(screen.getByRole('tab', { name: ru.drawer.tabs.history }));
+    expect(await screen.findByText('apply boom')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: ru.drawer.tabs.certs }));
+    expect(await screen.findByText('web.example.com')).toBeInTheDocument();
+    await waitFor(() => expect(calls()).toContain('/api/v1/certs?machine=relay-a&limit=20&offset=0'));
+  });
+
+  it('машина без runtime-отчёта - «агент ещё не присылал»', async () => {
+    mockFetch((url) => {
+      if (urlPath(url) === '/api/v1/machines') return { body: pageOf([machine('exit-new', { runtime_status: 'offline' })], url) };
+      if (urlPath(url) === '/api/v1/machines/exit-new/runtime')
+        return { body: { code: 'exit-new', seen_at: null, stale: true, agent_version: '', host: null, telemt: null, mtg: null } };
+      return undefined;
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<NodesPage />);
+    await within(screen.getByTestId('fleet-machines')).findByText('exit-new');
+    await user.click(fleetRow('exit-new'));
+
+    expect(await screen.findByText(ru.drawer.noRuntime)).toBeInTheDocument();
+  });
+
+  it('карточка: 500 у runtime - понятный текст', async () => {
+    mockFetch((url) => {
+      if (urlPath(url) === '/api/v1/machines') return { body: pageOf(RT, url) };
+      if (urlPath(url) === '/api/v1/machines/relay-a/runtime') return { status: 500, body: { code: 'internal', message: 'pq: boom' } };
+      return undefined;
+    });
+    const user = userEvent.setup();
+
+    renderWithProviders(<NodesPage />);
+    await within(screen.getByTestId('fleet-machines')).findAllByText('relay-a');
+    await user.click(fleetRow('relay-a'));
+
+    expect(await screen.findByText('Ошибка сервера (500). Подробности - в журнале демона.')).toBeInTheDocument();
   });
 });

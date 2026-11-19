@@ -28,7 +28,13 @@ npm run gen:api   # типы из ../../../api/openapi.yaml -> src/api/generated
 | `src/api/errors.ts` | понятный текст ошибки: 409 `not_master` -> «эта машина не мастер» с адресом мастера, сеть, 503, 5xx |
 | `src/api/client.ts` | ручки, которыми пользуется панель; флот (машины, пары, дрейф, журнал применений) - `/api/v1`, постранично |
 | `src/api/types.ts` | типы: из спеки (`generated/openapi.ts`) и временные для старых ручек, которых в спеке ещё нет |
-| `src/api/queries.ts` | хуки react-query; экраны флота (Пары, Дрейф, Машины) обновляются раз в 30 секунд |
+| `src/api/queries.ts` | хуки react-query; экраны флота (Обзор, Пары, Дрейф, Машины, Сертификаты) обновляются раз в 30 секунд, подключения - раз в 15 |
+| `src/pages/overview/` | «Обзор» - главная (`/`): плитки итогов и машины компактной таблицей (`/api/v1/overview`) |
+| `src/pages/connections/` | «Подключения»: сводка по машинам и продуктам, пользователи онлайн с фильтрами |
+| `src/pages/certs/` | «Сертификаты» (`/api/v1/certs`) |
+| `src/components/MachineDrawer.tsx` | карточка машины: состояние, ресурсы и ревизии, подключения, ошибки журнала, история применений, сертификаты |
+| `src/components/MachineCells.tsx` | runtime-колонки машины (статус, нагрузка, аптайм, подключения, версии) для «Обзора» и «Машин» |
+| `src/components/ConnectionsTable.tsx`, `CertsTable.tsx`, `LogErrorsTable.tsx` | таблицы с серверной пагинацией - на своих экранах и во вкладках карточки машины |
 | `src/components/JoinCommand.tsx` | одноразовая команда установки агента (копирование, срок, файрвол) и действие «Команда установки» у машины (`POST /api/v1/targets/{code}/join`) |
 | `src/pages/nodes/AddMachineModal.tsx` | «Добавить машину» (`POST /api/v1/targets`): код, роль, ресурсы, для выхода - релей, IPv4 и socks-вход на релее |
 | `src/hooks/usePaging.ts` | серверная пагинация `{data, paging}` для таблиц |

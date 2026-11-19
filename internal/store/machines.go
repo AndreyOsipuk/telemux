@@ -36,6 +36,18 @@ type Machine struct {
 	TelemtVersion string     `json:"telemt_version,omitempty"`
 	MtgVersion    string     `json:"mtg_version,omitempty"`
 	RuntimeSeenAt *time.Time `json:"runtime_seen_at"`
+	// Нагрузка машины; nil - runtime-отчёта нет или агент не прислал host.
+	Host *RuntimeHost `json:"host"`
+	// Ответил ли API продукта в последнем отчёте; nil - продукта нет или отчёта не было.
+	TelemtAPIOK *bool `json:"telemt_api_ok"`
+	MtgAPIOK    *bool `json:"mtg_api_ok"`
+	// Подключения и пользователи онлайн по строкам runtime_user_conns машины
+	// (как в /api/v1/connections): сумма подключений и пользователи с подключениями.
+	Connections int64 `json:"connections"`
+	UsersOnline int   `json:"users_online"`
+	// Сводный runtime-статус (online, stale, degraded, offline) - считает сервер
+	// по порогам свежести; хранилище его не заполняет.
+	RuntimeStatus string `json:"runtime_status,omitempty"`
 }
 
 // MachineFilter - фильтры списка машин; пустые поля не фильтруют.
@@ -71,10 +83,16 @@ func (s *Store) queryMachines(ctx context.Context, tail string, args ...any) ([]
 	rows, err := s.pool.Query(ctx,
 		`SELECT t.code, t.kind, COALESCE(t.relay_code, ''), t.enabled, t.resources,
 		        COALESCE(a.agent_version, ''), COALESCE(a.via, ''), a.seen_at, COALESCE(a.checks, '[]'),
-		        COALESCE(r.telemt->>'version', ''), COALESCE(r.mtg->>'version', ''), r.seen_at
+		        COALESCE(r.telemt->>'version', ''), COALESCE(r.mtg->>'version', ''), r.seen_at,
+		        r.host, `+apiOKExpr("r.telemt")+`, `+apiOKExpr("r.mtg")+`,
+		        COALESCE(u.conns, 0), COALESCE(u.online, 0)
 		   FROM targets t
 		   LEFT JOIN agent_state a ON a.target = t.code
 		   LEFT JOIN agent_runtime r ON r.target = t.code
+		   LEFT JOIN LATERAL (
+		     SELECT sum(c.connections)::bigint AS conns,
+		            count(DISTINCT c.user_key) FILTER (WHERE c.connections > 0)::int AS online
+		       FROM runtime_user_conns c WHERE c.target = t.code) u ON TRUE
 		`+tail, args...)
 	if err != nil {
 		return nil, fmt.Errorf("machines: %w", err)
@@ -85,7 +103,8 @@ func (s *Store) queryMachines(ctx context.Context, tail string, args ...any) ([]
 		var m Machine
 		if err := rows.Scan(&m.Code, &m.Kind, &m.RelayCode, &m.Enabled, &m.Resources,
 			&m.AgentVersion, &m.Via, &m.SeenAt, &m.Checks,
-			&m.TelemtVersion, &m.MtgVersion, &m.RuntimeSeenAt); err != nil {
+			&m.TelemtVersion, &m.MtgVersion, &m.RuntimeSeenAt,
+			&m.Host, &m.TelemtAPIOK, &m.MtgAPIOK, &m.Connections, &m.UsersOnline); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan machine: %w", err)
 		}
@@ -127,6 +146,12 @@ func (s *Store) queryMachines(ctx context.Context, tail string, args ...any) ([]
 		return nil, fmt.Errorf("machines observed: %w", err)
 	}
 	return list, nil
+}
+
+// apiOKExpr - api_ok продукта из JSON-снимка: NULL, если продукта нет или поле не
+// булево (мусор в снимке не должен ронять выборку приведением типа).
+func apiOKExpr(col string) string {
+	return `CASE WHEN jsonb_typeof(` + col + `->'api_ok') = 'boolean' THEN (` + col + `->>'api_ok')::boolean END`
 }
 
 func machineCodes(list []Machine) []string {

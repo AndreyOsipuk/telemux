@@ -98,3 +98,117 @@ export interface DriftResponse extends Page<DriftItem> {
 
 // Статус управляющего узла кластера (/api/nodes) по последнему heartbeat.
 export type MachineStatus = 'online' | 'degraded' | 'offline' | 'unknown';
+
+// ---- runtime-отчёты агентов: нагрузка, подключения, журнал, сертификаты ----
+
+// Сводный runtime-статус машины (считает мастер): online, stale, degraded, offline.
+export type RuntimeStatus = NonNullable<Machine['runtime_status']>;
+export type RuntimeHost = components['schemas']['RuntimeHost'];
+export type MachineRuntime = components['schemas']['MachineRuntime'];
+export type Product = components['schemas']['Product'];
+export type Connection = components['schemas']['Connection'];
+export type ConnectionSummary = components['schemas']['ConnectionSummary'];
+export type LogErrorSum = components['schemas']['LogErrorSum'];
+export type LogErrorKind = components['schemas']['LogErrorKind'];
+export type CertInfo = components['schemas']['CertInfo'];
+export type UserConnections = components['schemas']['UserConnections'];
+export type Overview = components['schemas']['Overview'];
+
+// Фильтры списка подключений; пустые поля не передаются.
+export interface ConnFilter {
+  machine?: string;
+  product?: Product;
+  minConnections?: number;
+  user?: string;
+}
+
+// ---- серверы: то, что видит клиент (docs/adr/0005-servers.md) ----
+// Типы написаны вручную по контракту ADR; после перегенерации openapi.ts их можно
+// брать из components['schemas'].
+
+export type ServerEngine = 'telemt' | 'mtg';
+// maintenance - клиент видит «на профилактике»; test - скрыт от клиентов; disabled - выключен везде.
+export type ServerState = 'active' | 'maintenance' | 'test' | 'disabled';
+export type EndpointProtocol = 'ee' | 'dd' | 'web';
+
+// Точка входа - одна ссылка клиента.
+export interface ServerEndpoint {
+  id?: number;
+  protocol: EndpointProtocol;
+  host: string;
+  // Для web не используется.
+  port: number;
+  // Домен в ee-секрете; для ee обязателен.
+  tls_domain: string;
+  via_relay: boolean;
+  label: string;
+  sort_order: number;
+  enabled: boolean;
+  note: string;
+}
+
+// Живые цифры машины сервера по последнему runtime-отчёту агента.
+export interface ServerMachineLive {
+  code: string;
+  seen_at: string | null;
+  connections: number;
+  users_online: number;
+}
+
+export interface Server {
+  no: number;
+  name: string;
+  emoji: string;
+  country: string;
+  engine: ServerEngine;
+  relay_code: string | null;
+  node_code: string | null;
+  state: ServerState;
+  relay_only: boolean;
+  node_retired: boolean;
+  tls_domain: string;
+  extra_tls_domains: string[];
+  // null - общий лимит по умолчанию.
+  user_max_tcp_conns: number | null;
+  // null - без лимита.
+  user_max_unique_ips: number | null;
+  // Настройки движка по каталогу полей; ключа нет - значение по умолчанию.
+  settings: Record<string, string>;
+  note: string;
+  endpoints: ServerEndpoint[];
+  created_at: string;
+  updated_at: string;
+  live: { relay: ServerMachineLive | null; node: ServerMachineLive | null };
+}
+
+// Тело POST /api/v1/servers и PUT /api/v1/servers/{no}.
+export type ServerInput = Omit<Server, 'live' | 'created_at' | 'updated_at'>;
+
+export type ServerFieldType = 'int' | 'bool' | 'string' | 'enum' | 'hostport' | 'host' | 'duration';
+// instant - без касания машин; reload - перечитывание конфига; restart - рвёт подключения; firewall - iptables.
+export type ServerFieldApply = 'instant' | 'reload' | 'restart' | 'firewall';
+
+// Поле каталога настроек движка (GET /api/v1/servers/fields).
+export interface ServerField {
+  key: string;
+  engine: ServerEngine;
+  group: string;
+  type: ServerFieldType;
+  default: string;
+  min?: number;
+  max?: number;
+  enum?: string[];
+  apply: ServerFieldApply;
+  // Смена меняет ссылки всех пользователей или рвёт подключения.
+  danger: boolean;
+  title_ru: string;
+  title_en: string;
+  hint_ru: string;
+  hint_en: string;
+}
+
+// Фильтры списка серверов; пустые поля не передаются.
+export interface ServerFilter {
+  engine?: ServerEngine;
+  state?: ServerState;
+}

@@ -74,11 +74,14 @@ func (a *auth) isPublic(path string) bool {
 		strings.HasPrefix(path, "/api/v1/targets/"),
 		path == "/api/v1/machines",
 		strings.HasPrefix(path, "/api/v1/machines/"),
-		path == "/api/v1/connections" || path == "/api/v1/connections/summary",
+		path == "/api/v1/connections" || path == "/api/v1/connections/summary" || path == "/api/v1/connections/by-user",
+		path == "/api/v1/overview",
 		path == "/api/v1/log-errors",
 		path == "/api/v1/pairs",
 		path == "/api/v1/drift",
 		path == "/api/v1/certs",
+		path == "/api/v1/servers", // серверы (ADR 0005): Bearer бота или сессия
+		strings.HasPrefix(path, "/api/v1/servers/"),
 		strings.HasPrefix(path, "/join/"): // одноразовый token
 		return true
 	case !strings.HasPrefix(path, "/api/"): // статика SPA (/, /assets/*)

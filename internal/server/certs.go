@@ -22,7 +22,8 @@ type CertStore interface {
 	SaveTLSCert(ctx context.Context, domain string, certPEM, keyPEM []byte, notAfter time.Time) error
 	RecordTLSError(ctx context.Context, domain, msg string) error
 	PublishTLSWeb(ctx context.Context, target string) (store.PublishResult, error)
-	ListCerts(ctx context.Context, limit, offset int) ([]store.CertInfo, int, error)
+	ListCerts(ctx context.Context, machine string, limit, offset int) ([]store.CertInfo, int, error)
+	CertCounts(ctx context.Context, before time.Time) (store.CertCounts, error)
 }
 
 // ACMEDeps - выпуск сертификатов на мастере; nil в Deps - выпуск выключен.
@@ -178,7 +179,7 @@ func (s *Server) routesCerts() {
 		if !ok {
 			return
 		}
-		list, total, err := s.deps.Certs.ListCerts(r.Context(), limit, offset)
+		list, total, err := s.deps.Certs.ListCerts(r.Context(), r.URL.Query().Get("machine"), limit, offset)
 		if err != nil {
 			s.writeStoreErr(w, err)
 			return

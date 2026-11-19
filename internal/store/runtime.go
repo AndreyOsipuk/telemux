@@ -285,6 +285,7 @@ type ConnFilter struct {
 	Machine        string
 	Product        string
 	MinConnections int64
+	User           string // префикс ключа пользователя (starts_with, без шаблонов LIKE)
 }
 
 // ConnRow - подключения пользователя на машине по последнему снимку.
@@ -303,17 +304,18 @@ type ConnRow struct {
 
 // Connections - подключения по фильтру, порядок machine, product, key; total - с фильтром.
 func (s *Store) Connections(ctx context.Context, f ConnFilter, limit, offset int) ([]ConnRow, int, error) {
-	const where = `WHERE ($1 = '' OR target = $1) AND ($2 = '' OR product = $2) AND connections >= $3`
+	const where = `WHERE ($1 = '' OR target = $1) AND ($2 = '' OR product = $2) AND connections >= $3
+	                 AND starts_with(user_key, $4)`
 	var total int
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM runtime_user_conns `+where,
-		f.Machine, f.Product, f.MinConnections).Scan(&total); err != nil {
+		f.Machine, f.Product, f.MinConnections, f.User).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count connections: %w", err)
 	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT target, product, user_key, connections, active_ips, bytes_in, bytes_out, last_seen, seen_at
 		   FROM runtime_user_conns `+where+`
 		  ORDER BY target, product, user_key
-		  LIMIT $4 OFFSET $5`, f.Machine, f.Product, f.MinConnections, limit, offset)
+		  LIMIT $5 OFFSET $6`, f.Machine, f.Product, f.MinConnections, f.User, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("connections: %w", err)
 	}
@@ -421,4 +423,82 @@ func (s *Store) LogErrors(ctx context.Context, since time.Time, machine string, 
 		out = append(out, e)
 	}
 	return out, total, rows.Err()
+}
+
+// MaxConnUsers - сколько пользователей можно спросить в ConnectionsByUser за раз.
+const MaxConnUsers = 100
+
+// UserConns - подключения пользователя по всем машинам (последние снимки).
+type UserConns struct {
+	Key         string     `json:"key"`
+	Connections int64      `json:"connections"`
+	Machines    int        `json:"machines"` // машин, где у пользователя есть подключения
+	Online      bool       `json:"online"`   // connections > 0
+	SeenAt      *time.Time `json:"seen_at"`  // самый свежий снимок с этим пользователем; nil - строк нет
+}
+
+// ConnectionsByUser - сумма подключений по машинам для каждого из keys одним
+// запросом; порядок и состав - как в keys (пользователь без строк - нули).
+func (s *Store) ConnectionsByUser(ctx context.Context, keys []string) ([]UserConns, error) {
+	out := make([]UserConns, len(keys))
+	idx := make(map[string]int, len(keys))
+	for i, k := range keys {
+		out[i] = UserConns{Key: k}
+		idx[k] = i
+	}
+	if len(keys) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT user_key, COALESCE(sum(connections), 0)::bigint,
+		        count(DISTINCT target) FILTER (WHERE connections > 0)::int, max(seen_at)
+		   FROM runtime_user_conns WHERE user_key = ANY($1)
+		  GROUP BY user_key`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("connections by user: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var u UserConns
+		if err := rows.Scan(&u.Key, &u.Connections, &u.Machines, &u.SeenAt); err != nil {
+			return nil, fmt.Errorf("scan connections by user: %w", err)
+		}
+		u.Online = u.Connections > 0
+		if i, ok := idx[u.Key]; ok {
+			out[i] = u
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("connections by user: %w", err)
+	}
+	return out, nil
+}
+
+// FleetTotals - итоги флота для обзора панели.
+type FleetTotals struct {
+	Machines         int
+	AgentsOnline     int // runtime-отчёт свежее порога
+	AgentsSilent     int // включённые машины без runtime-отчёта дольше порога или вовсе без него
+	ConnectionsTotal int64
+	UsersOnline      int // уникальные пользователи с подключениями
+}
+
+// FleetTotals считает итоги одним запросом: машины, свежие и молчащие агенты
+// (freshSince и silentBefore - границы по seen_at runtime-отчёта), подключения
+// и уникальные пользователи с подключениями по всем машинам.
+func (s *Store) FleetTotals(ctx context.Context, freshSince, silentBefore time.Time) (FleetTotals, error) {
+	var t FleetTotals
+	err := s.pool.QueryRow(ctx,
+		`SELECT (SELECT count(*) FROM targets)::int,
+		        (SELECT count(*) FROM agent_runtime WHERE seen_at > $1)::int,
+		        (SELECT count(*) FROM targets t LEFT JOIN agent_runtime r ON r.target = t.code
+		          WHERE t.enabled AND (r.seen_at IS NULL OR r.seen_at < $2))::int,
+		        (SELECT COALESCE(sum(connections), 0) FROM runtime_user_conns)::bigint,
+		        (SELECT count(DISTINCT user_key) FROM runtime_user_conns WHERE connections > 0)::int`,
+		freshSince, silentBefore).
+		Scan(&t.Machines, &t.AgentsOnline, &t.AgentsSilent, &t.ConnectionsTotal, &t.UsersOnline)
+	if err != nil {
+		return t, fmt.Errorf("итоги флота: %w", err)
+	}
+	return t, nil
 }
