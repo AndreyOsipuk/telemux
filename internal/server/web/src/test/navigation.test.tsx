@@ -25,13 +25,11 @@ describe('сайдбар', () => {
     expect(items).toEqual([
       ru.menu.overview,
       ru.menu.servers,
-      ru.menu.pairs,
-      ru.menu.connections,
+      ru.menu.map,
       ru.menu.nodes,
+      ru.menu.connections,
       ru.menu.users,
-      ru.menu.drift,
-      ru.menu.certs,
-      ru.menu.sync,
+      ru.menu.events,
       ru.menu.apiDocs,
     ]);
   });
@@ -55,9 +53,9 @@ describe('сайдбар', () => {
 
 describe('маршруты', () => {
   const children = routes[0].children ?? [];
-  it('индекс - «Обзор», есть подключения и сертификаты', () => {
+  it('индекс - «Обзор», есть карта и события', () => {
     expect(children.find((r) => r.index)).toBeTruthy();
-    for (const path of ['servers', 'pairs', 'connections', 'nodes', 'users', 'drift', 'certs', 'sync', 'api-docs']) {
+    for (const path of ['servers', 'map', 'connections', 'nodes', 'users', 'events', 'api-docs']) {
       expect(children.some((r) => r.path === path)).toBe(true);
     }
   });
@@ -84,5 +82,13 @@ describe('formatBytes / formatPct', () => {
     [undefined, '-'],
   ])('%s -> %s', (v, want) => {
     expect(formatPct(v as number | undefined)).toBe(want);
+  });
+});
+
+describe('productName', () => {
+  it('mtg показывается как mtg-multi, остальное как есть', async () => {
+    const { productName } = await import('@/utils/format');
+    expect(productName('mtg')).toBe('mtg-multi');
+    expect(productName('telemt')).toBe('telemt');
   });
 });

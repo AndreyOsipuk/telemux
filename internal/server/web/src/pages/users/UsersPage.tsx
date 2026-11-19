@@ -1,5 +1,5 @@
-// Пользователи: серверная пагинация {data, paging}, создание, вкл/выкл, продление,
-// удаление. Запись - только на мастере (кнопки выключены на реплике, 409 - понятным текстом).
+// Пользователи: серверная пагинация {data, paging}, создание, вкл/выкл, удаление;
+// клик по строке или «Изменить» - карточка пользователя (срок, подключения). Запись - только на мастере (кнопки выключены на реплике, 409 - понятным текстом).
 // У каждого пользователя - онлайн ли он и сколько у него подключений по всем машинам:
 // один запрос /api/v1/connections/by-user на всю страницу, обновление раз в 15 секунд.
 
@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { App, Badge, Button, Card, Form, Input, Popconfirm, Space, Switch, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { DeleteOutlined, FieldTimeOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
 import { api } from '@/api/client';
@@ -17,14 +17,10 @@ import { qk, useConnectionsByUser, useIsMaster, useUsers } from '@/api/queries';
 import type { User, UserConnections } from '@/api/types';
 import ErrorAlert from '@/components/ErrorAlert';
 import { formatDate } from '@/utils/format';
+import UserDrawer, { UserStatusTag } from './UserDrawer';
 
-export const RENEW_DAYS = 30;
-
-// Новый срок при продлении: от текущего срока, а если он прошёл - от сейчас.
-export function renewedExpiration(current: string | null, days: number, now = new Date()): string {
-  const base = current && dayjs(current).isAfter(now) ? dayjs(current) : dayjs(now);
-  return base.add(days, 'day').toISOString();
-}
+// Расчёт продления живёт в карточке пользователя; реэкспорт - для тестов и старых импортов.
+export { renewedExpiration } from './UserDrawer';
 
 export default function UsersPage() {
   const { t } = useTranslation();
@@ -73,11 +69,7 @@ export default function UsersPage() {
     onSuccess: onDone(t('common.saved')),
     onError,
   });
-  const renew = useMutation({
-    mutationFn: (u: User) => api.renewUser(u.username, renewedExpiration(u.expiration_at, RENEW_DAYS)),
-    onSuccess: onDone(t('users.renewed', { days: RENEW_DAYS })),
-    onError,
-  });
+  const [opened, setOpened] = useState<string | null>(null);
 
   const writeHint = isMaster ? undefined : t('role.writeOnMaster');
 
@@ -87,6 +79,7 @@ export default function UsersPage() {
       dataIndex: 'username',
       render: (v: string) => <Typography.Text strong>{v}</Typography.Text>,
     },
+    { title: t('users.statusTitle'), key: 'status', width: 120, render: (_v, u) => <UserStatusTag u={u} /> },
     {
       title: t('users.online'),
       key: 'online',
@@ -145,6 +138,7 @@ export default function UsersPage() {
       render: (v: boolean, u) => (
         <Tooltip title={writeHint}>
           <Switch
+            onClick={(_c, e) => e.stopPropagation()}
             size="small"
             checked={v}
             disabled={!isMaster}
@@ -158,16 +152,9 @@ export default function UsersPage() {
       title: t('common.actions'),
       align: 'right',
       render: (_v, u) => (
-        <Space>
-          <Tooltip title={writeHint ?? t('users.renew', { days: RENEW_DAYS })}>
-            <Button
-              size="small"
-              icon={<FieldTimeOutlined />}
-              disabled={!isMaster}
-              onClick={() => renew.mutate(u)}
-            >
-              +{RENEW_DAYS}
-            </Button>
+        <Space onClick={(e) => e.stopPropagation()}>
+          <Tooltip title={t('users.edit')}>
+            <Button size="small" icon={<EditOutlined />} aria-label={t('users.edit')} onClick={() => setOpened(u.username)} />
           </Tooltip>
           <Popconfirm
             title={t('users.deleteConfirm', { name: u.username })}
@@ -225,7 +212,8 @@ export default function UsersPage() {
           columns={columns}
           dataSource={users.data?.data ?? []}
           loading={users.isPending}
-          scroll={{ x: 900 }}
+          scroll={{ x: 1000 }}
+          onRow={(u) => ({ onClick: () => setOpened(u.username), style: { cursor: 'pointer' } })}
           pagination={{
             current: page,
             pageSize,
@@ -240,6 +228,11 @@ export default function UsersPage() {
           }}
         />
       </Card>
+      <UserDrawer
+        user={(opened && users.data?.data.find((u) => u.username === opened)) || null}
+        conns={opened ? connsByUser.get(opened) : undefined}
+        onClose={() => setOpened(null)}
+      />
     </>
   );
 }

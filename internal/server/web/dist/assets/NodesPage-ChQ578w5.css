@@ -1,1 +1,0 @@
-.name-cell{flex-direction:column;display:flex}.name-cell .name{font-weight:500}.name-cell .remark{opacity:.65;font-size:12px}.address-header{align-items:center;gap:6px;display:inline-flex}.address-hidden{filter:blur(5px);transition:filter .2s}.address-visible{filter:none}

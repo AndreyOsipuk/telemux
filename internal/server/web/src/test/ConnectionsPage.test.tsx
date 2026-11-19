@@ -8,7 +8,7 @@ import userEvent from '@testing-library/user-event';
 import { CONNECTIONS_REFRESH_MS } from '@/api/queries';
 import type { Connection, ConnectionSummary } from '@/api/types';
 import ru from '@/i18n/ru.json';
-import ConnectionsPage from '@/pages/connections/ConnectionsPage';
+import ConnectionsPage, { groupSummary } from '@/pages/connections/ConnectionsPage';
 import { NOW_ISO, connection, pageOf, urlParam, urlPath } from './fleet-fixtures';
 import { mockFetch, renderWithProviders } from './test-utils';
 
@@ -67,18 +67,27 @@ const connCalls = (fn: ReturnType<typeof mockFetch>) =>
 const usersCard = () => screen.getByTestId('connections-users');
 
 describe('ConnectionsPage', () => {
-  it('сводка: подключения, онлайн, API, свежесть', async () => {
+  it('сводка: одна строка на машину, telemt и mtg рядом; API и свежесть', async () => {
     mockFetch(backend());
 
     renderWithProviders(<ConnectionsPage />);
 
     const summary = screen.getByTestId('connections-summary');
-    expect(await within(summary).findByText('340')).toBeInTheDocument();
-    expect(within(summary).getByText('118')).toBeInTheDocument();
-    expect(within(summary).getByText(ru.drawer.apiOk)).toBeInTheDocument();
+    expect(await within(summary).findByText('340 подкл. · 118 онлайн')).toBeInTheDocument();
+    expect(within(summary).getByText('0 подкл. · 0 онлайн')).toBeInTheDocument();
+    expect(summary.querySelectorAll('tbody tr[data-row-key]')).toHaveLength(1);
     expect(within(summary).getByText(ru.drawer.apiDown)).toBeInTheDocument();
-    expect(within(summary).getByText('connection refused')).toBeInTheDocument();
     expect(within(summary).getByText(ru.connections.stale)).toBeInTheDocument();
+  });
+
+  it('groupSummary: строки машины склеиваются, свежесть - самая старая', () => {
+    const old = '2026-01-01T00:00:00Z';
+    const g = groupSummary([SUMMARY[0], { ...SUMMARY[1], seen_at: old }, { ...SUMMARY[0], machine: 'ps5' }]);
+    expect(g.map((m) => [m.machine, !!m.telemt, !!m.mtg, m.stale])).toEqual([
+      ['relay-a', true, true, true],
+      ['ps5', true, false, false],
+    ]);
+    expect(g[0].seen_at).toBe(old);
   });
 
   it('пользователи онлайн: по умолчанию min_connections=1, трафик человекочитаемо', async () => {
@@ -140,7 +149,7 @@ describe('ConnectionsPage', () => {
     await waitFor(() => expect(connCalls(fetchFn).some((u) => urlParam(u, 'machine') === 'relay-a')).toBe(true));
 
     await user.click(within(card).getByRole('combobox', { name: ru.connections.product }));
-    await user.click(await screen.findByTitle('mtg'));
+    await user.click(await screen.findByTitle('mtg-multi'));
     await waitFor(() => expect(within(card).queryByText('alice_1')).not.toBeInTheDocument());
     expect(within(card).getByText('bob_2')).toBeInTheDocument();
 

@@ -179,10 +179,31 @@ export interface Server {
   created_at: string;
   updated_at: string;
   live: { relay: ServerMachineLive | null; node: ServerMachineLive | null };
+  // Кто публикует конфиги машин сервера (ADR 0006); у старого мастера поля нет.
+  config_source?: ConfigSource;
+  // Сводка последнего сравнения сборки telemux с текущими конфигами.
+  render?: ServerRenderSummary;
 }
 
-// Тело POST /api/v1/servers и PUT /api/v1/servers/{no}.
-export type ServerInput = Omit<Server, 'live' | 'created_at' | 'updated_at'>;
+// Тело POST /api/v1/servers и PUT /api/v1/servers/{no}: источник конфига меняется
+// отдельной ручкой, сводка сборки - только для чтения.
+export type ServerInput = Omit<Server, 'live' | 'created_at' | 'updated_at' | 'config_source' | 'render'>;
+
+// ---- сборка конфигов telemux (ADR 0006) ----
+export type ConfigSource = components['schemas']['ConfigSource'];
+export type ServerRenderSummary = components['schemas']['ServerRenderSummary'];
+export type ServerRenderItem = components['schemas']['ServerRenderItem'];
+
+// ---- машины как ноды 3x-ui (ADR 0007) ----
+export type TargetPatch = components['schemas']['TargetPatch'];
+export type Target = components['schemas']['Target'];
+export type MachineCheck = components['schemas']['MachineCheck'];
+export type EndpointCheck = components['schemas']['EndpointCheck'];
+export type MachineMetrics = components['schemas']['MachineMetrics'];
+export type MetricPoint = components['schemas']['MetricPoint'];
+export type MetricStep = MachineMetrics['step'];
+export type MachineEvent = components['schemas']['MachineEvent'];
+export type MachineEventKind = MachineEvent['kind'];
 
 export type ServerFieldType = 'int' | 'bool' | 'string' | 'enum' | 'hostport' | 'host' | 'duration';
 // instant - без касания машин; reload - перечитывание конфига; restart - рвёт подключения; firewall - iptables.
@@ -212,3 +233,11 @@ export interface ServerFilter {
   engine?: ServerEngine;
   state?: ServerState;
 }
+
+// ---- версии telemt и mtg-multi, обновление из релизов GitHub (ADR 0008) ----
+export type StackStatus = components['schemas']['StackStatus'];
+export type StackProduct = components['schemas']['StackProduct'];
+export type StackMachine = components['schemas']['StackMachine'];
+export type StackProductState = components['schemas']['StackProductState'];
+export type StackUpdateState = components['schemas']['StackUpdateState'];
+export type StackUpdateRequest = components['schemas']['StackUpdateRequest'];

@@ -15,7 +15,9 @@
     "overview": "Overview",
     "connections": "Connections",
     "certs": "Certificates",
-    "servers": "Servers"
+    "servers": "Servers",
+    "events": "Events",
+    "map": "Map"
   },
   "common": {
     "actions": "Actions",
@@ -122,14 +124,35 @@
     "deleted": "User deleted",
     "deleteConfirm": "Delete {{name}}?",
     "newPlaceholder": "new user's username",
-    "renew": "Extend by {{days}} days",
-    "renewed": "Extended by {{days}} days",
     "online": "Online",
     "offline": "no",
     "active": "Now",
     "activeHint": "current connections across all machines",
     "onMachines": "machines with connections: {{n}}",
-    "connsFailed": "Could not load user connections"
+    "connsFailed": "Could not load user connections",
+    "statusTitle": "Status",
+    "status": {
+      "active": "active",
+      "expired": "expired",
+      "disabled": "disabled"
+    },
+    "edit": "Open card",
+    "expirationSet": "Expires {{date}}",
+    "expirationCleared": "Expiration removed - unlimited",
+    "daysLeft_one": "{{count}} day left",
+    "daysLeft_other": "{{count}} days left",
+    "expiredAgo": "expired {{date}}",
+    "maxDefault": "default",
+    "createdAt": "Created",
+    "nowLine": "{{conns}} connections on {{machines}} machines",
+    "changeExpiration": "Expiration",
+    "extendHint": "from the current expiration, or from today if it has passed",
+    "extend_one": "+{{count}} day",
+    "extend_other": "+{{count}} days",
+    "makeUnlimited": "Unlimited",
+    "pickDate": "Pick a date",
+    "setDate": "Set date",
+    "connectionsNow": "Connections now"
   },
   "nodes": {
     "code": "Code",
@@ -242,7 +265,7 @@
     "resourcesHint": "what the agent applies on the machine; with none the agent only reports",
     "resource": {
       "telemt": "telemt - users",
-      "mtg": "mtg - config"
+      "mtg": "mtg-multi - config"
     },
     "relay": "Relay",
     "relayPlaceholder": "relay of this exit",
@@ -284,7 +307,7 @@
   },
   "runtime": {
     "status": "Status",
-    "statusHint": "online - fresh agent runtime report; stale report - agent silent for over 3 minutes; degraded - agent alive but telemt or mtg does not respond; offline - agent silent for over 10 minutes",
+    "statusHint": "online - fresh agent runtime report; stale report - agent silent for over 3 minutes; degraded - agent alive but telemt or mtg-multi does not respond; offline - agent silent for over 10 minutes",
     "productDown": "agent alive, not responding: {{products}}",
     "cpu": "CPU",
     "mem": "Memory",
@@ -292,7 +315,8 @@
     "load": "Load",
     "uptime": "Uptime",
     "connections": "Connections",
-    "online": "Online"
+    "online": "Online",
+    "versionDiffers": "Differs from the version most fleet machines run ({{major}})"
   },
   "overview": {
     "machines": "Machines",
@@ -310,7 +334,25 @@
     "certsOff": "certificate issuing is off on the master",
     "tableTitle": "Fleet machines",
     "tableHint": "click a row to open the machine card",
-    "truncated": "Showing the first {{n}} of {{total}} machines"
+    "truncated": "Showing the first {{n}} of {{total}} machines",
+    "problems": "Problems",
+    "problemsOpen": "open",
+    "problemsTitle": "Needs attention",
+    "problemsHint": "enabled machines; click opens the machine card on the right tab",
+    "noProblems": "No problems",
+    "problem": "Problem",
+    "problemDetail": "Details",
+    "problemKind": {
+      "silent": "agent silent",
+      "no_agent": "agent not installed",
+      "degraded": "product not responding",
+      "apply_failed": "revision failed",
+      "behind": "revision not applied yet"
+    },
+    "recentEvents": "Recent alerts",
+    "allEvents": "All events",
+    "logErrors": "Log errors in 24 hours",
+    "logErrorsHint": "by user and error kind, most frequent first"
   },
   "connections": {
     "summaryTitle": "Per-machine summary",
@@ -327,14 +369,16 @@
     "ips": "Active IPs",
     "noIps": "none",
     "traffic": "Traffic in / out",
-    "trafficMtgOnly": "only mtg counts traffic",
+    "trafficMtgOnly": "only mtg-multi counts traffic",
     "lastSeen": "Activity",
     "stale": "stale",
     "search": "search by user",
     "allMachines": "all machines",
     "allProducts": "all products",
     "minConnections": "connections from",
-    "empty": "No connections"
+    "empty": "No connections",
+    "cell": "{{conns}} conn. · {{users}} online",
+    "summaryTruncated": "Showing the first {{n}} summary rows"
   },
   "certs": {
     "title": "Relay WEB domains",
@@ -406,7 +450,9 @@
       "connections": "Connections",
       "logErrors": "Log errors",
       "history": "Apply history",
-      "certs": "Certificates"
+      "certs": "Certificates",
+      "metrics": "Load",
+      "check": "Connectivity"
     }
   },
   "servers": {
@@ -469,7 +515,9 @@
       "viaRelayShort": "via relay",
       "direct": "direct",
       "tlsDomainShort": "domain {{domain}}",
-      "disabled": "disabled"
+      "disabled": "disabled",
+      "offCount_one": "disabled: {{count}}",
+      "offCount_other": "disabled: {{count}}"
     },
     "form": {
       "createTitle": "New server",
@@ -502,7 +550,8 @@
       "settingsHint": "Empty field - the key is not written and the default applies (shown in grey)",
       "noSettings": "The catalog has no settings for this engine",
       "fieldsFailed": "Failed to load the settings catalog",
-      "saveFailed": "Failed to save the server"
+      "saveFailed": "Failed to save the server",
+      "tabRender": "Config build"
     },
     "confirm": {
       "title": "Save server {{no}}?",
@@ -518,6 +567,193 @@
       "unknown_setting": "Unknown engine setting",
       "bad_setting": "Invalid setting value",
       "bad_endpoint": "Invalid endpoint"
+    },
+    "config": "Config",
+    "configHint": "Who publishes the server machine configs and whether the telemux build matches the current ones"
+  },
+  "machine": {
+    "enabledAria": "Machine {{code}} enabled",
+    "enableHint": "Enable: revisions are published again and alerts resume",
+    "disableHint": "Disable the machine",
+    "disableConfirm": "Disable {{code}}?",
+    "disableEffect": "New revisions are not published to it and it raises no alerts. The agent keeps reporting; the config on the machine stays as is.",
+    "disable": "Disable",
+    "enabledOk": "{{code}} enabled",
+    "disabledOk": "{{code}} disabled",
+    "deleteAria": "Delete {{code}}",
+    "deleteOnlyDisabled": "Only a disabled machine can be deleted",
+    "deleteConfirm": "Delete machine {{code}}?",
+    "deleteEffect": "Agent tokens, desired and applied state, the log and load history are deleted. Alert events stay.",
+    "deleted": "Machine {{code}} deleted",
+    "deleteFailed": "Could not delete {{code}}",
+    "deleteEnabled": "The machine is enabled - disable it first.",
+    "inUse": "The machine is still referenced: {{detail}}. Remove it from servers and pairs first."
+  },
+  "metrics": {
+    "rangeAria": "Chart window",
+    "range": {
+      "1h": "1 hour",
+      "6h": "6 hours",
+      "24h": "24 hours",
+      "7d": "7 days"
+    },
+    "step": "step {{step}}, history is kept for 8 days",
+    "empty": "No history in this window: the agent sent no reports",
+    "host": "CPU, memory, disk",
+    "net": "Network",
+    "load": "Connections",
+    "rx": "Inbound",
+    "tx": "Outbound",
+    "connections": "Connections",
+    "usersOnline": "Users online",
+    "bps": "bit/s",
+    "kbps": "kbit/s",
+    "mbps": "Mbit/s",
+    "gbps": "Gbit/s"
+  },
+  "check": {
+    "run": "Check connectivity",
+    "hint": "From the master: agent freshness and every endpoint of the machine servers (TCP, TLS for web). Up to 20 seconds.",
+    "onMaster": "The check runs from the master - open the master panel",
+    "allOk": "All good: the agent is fresh and every endpoint answered",
+    "someFailed": "There are problems: the agent is silent or an endpoint did not answer",
+    "checkedAt": "Checked at {{at}}",
+    "agent": "Agent",
+    "agentState": "State",
+    "fresh": "reporting",
+    "silent": "silent",
+    "ago": "{{d}} ago",
+    "endpoints": "Endpoints",
+    "noEndpoints": "The machine servers have no enabled endpoints",
+    "server": "Server",
+    "protocol": "Type",
+    "address": "Address",
+    "viaRelay": "via relay",
+    "okMs": "ok, {{ms}} ms",
+    "fail": "fail",
+    "daysLeft_one": "{{count}} day",
+    "truncated": "More than 200 endpoints - the first 200 were checked",
+    "daysLeft_other": "{{count}} days"
+  },
+  "events": {
+    "hint": "Master alerts per machine: silent for over 10 minutes, back, failed to apply a revision. Kept for 30 days; the bot gets the same feed.",
+    "truncated": "Not all events are shown - too many",
+    "at": "Time",
+    "machine": "Machine",
+    "kind": "Event",
+    "detail": "Details",
+    "filterMachine": "Machine",
+    "filterKind": "Event",
+    "empty": "No alerts",
+    "kinds": {
+      "down": "down",
+      "up": "back up",
+      "apply_failed": "apply failed"
+    }
+  },
+  "render": {
+    "source": "Configs published by",
+    "sources": {
+      "bot": "bot",
+      "telemux": "telemux"
+    },
+    "toTelemux": "Switch to telemux",
+    "toBot": "Return to bot",
+    "toTelemuxTitle": "Let telemux publish server {{no}} configs?",
+    "toTelemuxText": "telemux will publish the built machine configs itself, and the bot publishing these resources will be rejected. You can return to the bot at any time.",
+    "toBotTitle": "Return server {{no}} config publishing to the bot?",
+    "toBotText": "telemux stops publishing the server machine configs; the bot publishes them again.",
+    "switch": "Switch",
+    "switchedTelemux": "Server {{no}}: configs are published by telemux",
+    "switchedBot": "Server {{no}}: configs are published by the bot",
+    "mismatchTitle": "The telemux build does not match the current configs",
+    "mismatchForce": "Switch anyway? telemux will publish its build - machine configs will change.",
+    "forceOk": "Switch anyway",
+    "summary": "Comparison",
+    "never": "No comparison yet",
+    "allEqual": "all match",
+    "notAllEqual": "{{n}} of {{total}} differ",
+    "hint": "Once a minute telemux builds the server machine configs and compares them with the current revisions. The diff is current → telemux; secrets are masked.",
+    "equal": "matches",
+    "differs": "differs",
+    "equalShort": "match",
+    "differsShort": "mismatch",
+    "summaryHint": "Resources compared: {{rows}}, not built or not assigned: {{errors}}",
+    "currentSha": "Current revision (sha)",
+    "candidateSha": "telemux build (sha)",
+    "renderedAt": "Built at",
+    "noDiff": "No differences",
+    "noCandidate": "No build - see the error above",
+    "errors": {
+      "not_assigned": "not assigned",
+      "no_address": "no machine address",
+      "no_tls_domain": "no TLS domain",
+      "bad_setting": "bad setting",
+      "shared_machine": "shared machine",
+      "publish_failed": "publish failed"
+    }
+  },
+  "map": {
+    "hint": "How clients reach the machines abroad: a line is a server, from its relay (or direct) to its machine. Click a machine for its card, a label for the server form.",
+    "relays": "Relays",
+    "servers": "Servers",
+    "exits": "Machines abroad",
+    "direct": "Direct",
+    "directHint": "no relay",
+    "unknownMachine": "not in fleet",
+    "load": "{{conns}} conn. · {{users}} online",
+    "serverTip": "Server {{no}} - {{name}} ({{engine}})",
+    "pathOff": "every endpoint on this path is disabled",
+    "empty": "No servers with machines",
+    "unplaced": "Machines abroad without servers:",
+    "legendOff": "disabled",
+    "retired": "Exit retired",
+    "retiredHint": "machine abroad retired",
+    "relayServerTip": "Server {{no}} ({{engine}}) - {{name}}",
+    "domainTip": "relay domain in links: {{domain}}"
+  },
+  "stack": {
+    "title": "Versions and updates",
+    "check": "Check releases",
+    "checkHint": "Fetch the latest GitHub releases now (the master also checks every 6 hours)",
+    "checkedOk": "Releases checked",
+    "tooOften": "Releases can be checked at most once a minute",
+    "checked": "checked {{ago}}",
+    "checkError": "check failed",
+    "noRelease": "release not known yet",
+    "publishedAt": "published {{date}}",
+    "empty": "No machines with telemt or mtg-multi",
+    "unknown": "version unknown",
+    "custom": "custom build",
+    "customHint": "A version with a suffix after X.Y.Z is a separate build (for example with the webalias patch). A release on the same core is not offered.",
+    "pending": "updating to {{to}}",
+    "failed": "failed to update to {{to}}",
+    "available": "{{latest}} available",
+    "update": "Update",
+    "updateAnyway": "Update anyway",
+    "updateAria": "Update {{product}} on {{code}}",
+    "machineDisabled": "The machine is disabled - enable it first",
+    "started": "{{code}}: {{product}} update to {{to}} started",
+    "confirmTitle": "Update {{product}} on {{code}} to {{to}}?",
+    "confirmText": "The master downloads the GitHub release and verifies its checksum; the agent replaces the binary and restarts the service - connections on the machine drop. If the service does not come up, the agent restores the previous version.",
+    "customTitle": "{{code}} runs a custom {{product}} build - replace it with the release?",
+    "customText": "Now {{current}}, release {{latest}}. The custom build changes (for example webalias) are lost and connections on the machine drop.",
+    "forceOk": "Replace anyway",
+    "force": {
+      "custom_build": "The machine runs a custom build - replace it with the release?",
+      "not_newer": "The release is not newer than the current version - install anyway?"
+    },
+    "unsupported": "The master cannot update telemt and mtg-multi yet - this arrives with a telemux update.",
+    "busy": "An update is already running on this machine - wait for the result",
+    "assetMissing": "{{code}}: the {{product}} release has no file for this machine"
+  },
+  "usage": {
+    "retired": "retired",
+    "unused": "not in servers",
+    "hint": {
+      "exit": "Exit of relay-only servers: clients connect to the relay, there are no connections here",
+      "retired": "The machine abroad is retired in all its servers",
+      "unused": "The machine is not in any server"
     }
   }
 }

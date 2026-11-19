@@ -3,6 +3,7 @@
 // Описание пока справочное: бот берёт серверы из своей базы до переключения.
 
 import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, App, Button, Card, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -16,6 +17,8 @@ import { StatusDot } from '@/components/StatusDot';
 import { usePaging } from '@/hooks/usePaging';
 import { secondsSince, useNow, useRelativeTime } from '@/hooks/useRelativeTime';
 import ServerForm, { PROTOCOL_COLOR } from './ServerForm';
+import { productName } from '@/utils/format';
+import './ServersPage.css';
 import { ENGINES, STATES, liveStatus, worstStatus } from './serverModel';
 
 const ENGINE_COLOR: Record<ServerEngine, string> = { telemt: 'blue', mtg: 'purple' };
@@ -27,7 +30,7 @@ const STATE_COLOR: Record<ServerState, string> = {
 };
 
 export function EngineTag({ engine }: { engine: ServerEngine }) {
-  return <Tag color={ENGINE_COLOR[engine]}>{engine}</Tag>;
+  return <Tag color={ENGINE_COLOR[engine]}>{productName(engine)}</Tag>;
 }
 
 export function StateTag({ state }: { state: ServerState }) {
@@ -39,29 +42,55 @@ export function StateTag({ state }: { state: ServerState }) {
   );
 }
 
-function EndpointTag({ ep }: { ep: ServerEndpoint }) {
+// Точка входа одной строкой: протокол, путь (через релей или напрямую) и порт - порт
+// различает две dd-точки (основной и альтернативный порт), подпись бота - в подсказке.
+export function EndpointLine({ ep }: { ep: ServerEndpoint }) {
   const { t } = useTranslation();
-  const where = ep.protocol === 'web' ? ep.host : `${ep.host}:${ep.port}`;
   const tip = (
     <div>
-      <div className="mono">{where}</div>
-      <div>{ep.via_relay ? t('servers.endpoint.viaRelayShort') : t('servers.endpoint.direct')}</div>
+      <div className="mono">{ep.protocol === 'web' ? ep.host : `${ep.host}:${ep.port}`}</div>
       {ep.protocol === 'ee' && ep.tls_domain && <div>{t('servers.endpoint.tlsDomainShort', { domain: ep.tls_domain })}</div>}
       {ep.label && <div>{ep.label}</div>}
-      {!ep.enabled && <div>{t('servers.endpoint.disabled')}</div>}
     </div>
   );
   return (
     <Tooltip title={tip}>
-      <Tag
-        color={ep.enabled ? PROTOCOL_COLOR[ep.protocol] : undefined}
-        style={ep.enabled ? undefined : { opacity: 0.5, textDecoration: 'line-through' }}
-        data-endpoint={ep.protocol}
-        data-enabled={ep.enabled}
-      >
-        {ep.protocol}
-      </Tag>
+      <div className="endpoint-line" data-endpoint={ep.protocol} data-enabled={ep.enabled}>
+        <Tag color={PROTOCOL_COLOR[ep.protocol]}>{ep.protocol}</Tag>
+        <span>{ep.via_relay ? t('servers.endpoint.viaRelayShort') : t('servers.endpoint.direct')}</span>
+        {ep.protocol !== 'web' && <span className="mono endpoint-port">:{ep.port}</span>}
+      </div>
     </Tooltip>
+  );
+}
+
+// Включённые точки - строками; выключенные - одной серой строкой с перечнем в подсказке.
+function EndpointsCell({ s }: { s: Server }) {
+  const { t } = useTranslation();
+  const sorted = [...s.endpoints].sort((a, b) => a.sort_order - b.sort_order);
+  const on = sorted.filter((e) => e.enabled);
+  const off = sorted.filter((e) => !e.enabled);
+  if (sorted.length === 0) return <Typography.Text type="secondary">-</Typography.Text>;
+  return (
+    <div data-testid={`endpoints-${s.no}`}>
+      {on.map((ep, i) => (
+        <EndpointLine key={ep.id ?? `on-${i}`} ep={ep} />
+      ))}
+      {off.length > 0 && (
+        <Tooltip
+          title={off.map((e, i) => (
+            <div key={e.id ?? i}>
+              {e.protocol} {e.via_relay ? t('servers.endpoint.viaRelayShort') : t('servers.endpoint.direct')}
+              {e.protocol !== 'web' ? ` :${e.port}` : ''}
+            </div>
+          ))}
+        >
+          <Typography.Text type="secondary" className="endpoint-off" data-testid={`endpoints-off-${s.no}`}>
+            {t('servers.endpoint.offCount', { count: off.length })}
+          </Typography.Text>
+        </Tooltip>
+      )}
+    </div>
   );
 }
 
@@ -127,6 +156,29 @@ function LiveCell({ s, now }: { s: Server; now: number }) {
   );
 }
 
+// Кто публикует конфиги и сошлась ли сборка telemux с текущими (ADR 0006).
+function ConfigCell({ s }: { s: Server }) {
+  const { t } = useTranslation();
+  const src = s.config_source ?? 'bot';
+  const r = s.render;
+  let status: ReactNode = null;
+  if (r && r.rendered_at) {
+    status = r.equal ? (
+      <Tag color="success">{t('render.equalShort')}</Tag>
+    ) : (
+      <Tooltip title={t('render.summaryHint', { rows: r.rows, errors: r.errors })}>
+        <Tag color="warning">{t('render.differsShort')}</Tag>
+      </Tooltip>
+    );
+  }
+  return (
+    <Space size={4} wrap data-testid={`config-${s.no}`}>
+      <Tag color={src === 'telemux' ? 'blue' : 'default'}>{t(`render.sources.${src}`)}</Tag>
+      {status}
+    </Space>
+  );
+}
+
 type FormState = { mode: 'create' } | { mode: 'edit'; server: Server } | null;
 
 export default function ServersPage() {
@@ -171,19 +223,8 @@ export default function ServersPage() {
       {
         title: t('servers.endpoints'),
         key: 'endpoints',
-        width: 180,
-        render: (_v, s) =>
-          s.endpoints.length === 0 ? (
-            <Typography.Text type="secondary">-</Typography.Text>
-          ) : (
-            <Space size={2} wrap data-testid={`endpoints-${s.no}`}>
-              {[...s.endpoints]
-                .sort((a, b) => a.sort_order - b.sort_order)
-                .map((ep, i) => (
-                  <EndpointTag key={ep.id ?? i} ep={ep} />
-                ))}
-            </Space>
-          ),
+        width: 210,
+        render: (_v, s) => <EndpointsCell s={s} />,
       },
       {
         title: (
@@ -196,6 +237,16 @@ export default function ServersPage() {
         render: (_v, s) => <LiveCell s={s} now={now} />,
       },
       { title: t('servers.state'), dataIndex: 'state', width: 120, render: (v: ServerState) => <StateTag state={v} /> },
+      {
+        title: (
+          <Tooltip title={t('servers.configHint')}>
+            <span>{t('servers.config')}</span>
+          </Tooltip>
+        ),
+        key: 'config',
+        width: 150,
+        render: (_v, s) => <ConfigCell s={s} />,
+      },
       {
         title: t('common.actions'),
         key: 'actions',
@@ -264,7 +315,7 @@ export default function ServersPage() {
             aria-label={t('servers.filterEngine')}
             value={filter.engine}
             onChange={(v) => setF({ ...filter, engine: v })}
-            options={ENGINES.map((e) => ({ value: e, label: e }))}
+            options={ENGINES.map((e) => ({ value: e, label: productName(e) }))}
           />
           <Select<ServerState>
             allowClear
@@ -282,7 +333,7 @@ export default function ServersPage() {
           columns={columns}
           dataSource={servers.data?.data ?? []}
           loading={servers.isPending || (servers.isFetching && servers.isPlaceholderData)}
-          scroll={{ x: 1110 }}
+          scroll={{ x: 1260 }}
           locale={{ emptyText: servers.isSuccess ? t('servers.empty') : <span /> }}
           pagination={paging.pagination(total)}
         />

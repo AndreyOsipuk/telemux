@@ -1,4 +1,4 @@
-// Тесты «Обзора»: плитки итогов, компактная таблица машин, карточка машины по клику,
+// Тесты «Обзора»: плитки итогов, список проблем, карточка машины по клику,
 // пустой флот, ошибки 401 и 500, флот больше 500 машин, сертификаты выключены.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
@@ -7,8 +7,8 @@ import userEvent from '@testing-library/user-event';
 import { FLEET_REFRESH_MS, qk } from '@/api/queries';
 import type { Machine } from '@/api/types';
 import ru from '@/i18n/ru.json';
-import OverviewPage from '@/pages/overview/OverviewPage';
-import { machine, machineRuntime, overviewOf, runtimeMachine, urlPath } from './fleet-fixtures';
+import OverviewPage, { fleetProblems } from '@/pages/overview/OverviewPage';
+import { NOW_ISO, machine, machineRuntime, overviewOf, runtimeMachine, urlPath } from './fleet-fixtures';
 import { mockFetch, renderWithProviders } from './test-utils';
 
 afterEach(() => {
@@ -27,22 +27,42 @@ const MACHINES: Machine[] = [
   machine('exit-new', { runtime_status: 'offline', seen_at: null, agent_version: undefined }),
 ];
 
-const row = (code: string) => {
-  const el = within(screen.getByTestId('overview-machines'))
+const problemRow = (code: string, kind: string) => {
+  const el = within(screen.getByTestId('overview-problems'))
     .getAllByRole('row')
-    .find((r) => r.getAttribute('data-row-key') === code);
-  if (!el) throw new Error(`нет строки ${code}`);
+    .find((r) => r.getAttribute('data-row-key')?.startsWith(`${code}/${kind}/`));
+  if (!el) throw new Error(`нет проблемы ${code}/${kind}`);
   return el;
 };
 
+describe('fleetProblems', () => {
+  it('молчит, нет агента, продукт не отвечает, ревизия упала или не дошла; выключенные - нет', () => {
+    const ms: Machine[] = [
+      runtimeMachine('ok'),
+      machine('silent', { runtime_status: 'offline' }),
+      machine('fresh', { seen_at: null }),
+      runtimeMachine('deg', { runtime_status: 'degraded', telemt_api_ok: false }),
+      machine('fail', { observed: [{ resource: 'mtg.config', revision: 3, status: 'failed', error: 'bad', seen_at: NOW_ISO() }] }),
+      machine('late', { observed: [{ resource: 'telemt.users', revision: 3, status: 'applied', seen_at: NOW_ISO(), desired_revision: 5 }] }),
+      machine('off', { enabled: false, runtime_status: 'offline' }),
+    ];
+    expect(fleetProblems(ms).map((p) => `${p.machine.code}:${p.kind}:${p.detail ?? ''}`)).toEqual([
+      'silent:silent:',
+      'fresh:no_agent:',
+      'deg:degraded:telemt',
+      'fail:apply_failed:bad',
+      'late:behind:3 → 5',
+    ]);
+  });
+});
+
 describe('OverviewPage', () => {
-  it('плитки: машины, подключения, пары, сертификаты', async () => {
+  it('плитки: машины, подключения, проблемы, сертификаты', async () => {
     mockFetch((url) => (url === '/api/v1/overview' ? { body: overviewOf(MACHINES) } : undefined));
 
     renderWithProviders(<OverviewPage />);
 
     const machines = await screen.findByTestId('tile-machines');
-    expect(within(machines).getByText(ru.overview.machines)).toBeInTheDocument();
     expect(within(machines).getByText(ru.overview.agentsOnline).closest('.ant-statistic')).toHaveTextContent('2');
     expect(within(machines).getByText(ru.overview.agentsSilent).closest('.ant-statistic')).toHaveTextContent('1');
     expect(within(machines).getByText(ru.overview.total).closest('.ant-statistic')).toHaveTextContent('3');
@@ -51,75 +71,43 @@ describe('OverviewPage', () => {
     expect(within(conns).getByText(ru.overview.total).closest('.ant-statistic')).toHaveTextContent('43');
     expect(within(conns).getByText(ru.overview.usersOnline).closest('.ant-statistic')).toHaveTextContent('9');
 
-    const pairs = screen.getByTestId('tile-pairs');
-    expect(within(pairs).getByText(ru.overview.pairsOk).closest('.ant-statistic')).toHaveTextContent('2');
-    expect(within(pairs).getByText(ru.overview.pairsProblem).closest('.ant-statistic')).toHaveTextContent('1');
+    expect(within(screen.getByTestId('tile-problems')).getByText(ru.overview.problemsOpen).closest('.ant-statistic')).toHaveTextContent('2');
 
     const certs = screen.getByTestId('tile-certs');
     expect(within(certs).getByText('истекают за 14 дней').closest('.ant-statistic')).toHaveTextContent('1');
     expect(within(certs).getByText(ru.overview.certsMissing).closest('.ant-statistic')).toHaveTextContent('1');
   });
 
-  it('таблица машин: статус, нагрузка, аптайм, подключения, версии', async () => {
-    mockFetch((url) => (url === '/api/v1/overview' ? { body: overviewOf(MACHINES) } : undefined));
-
-    renderWithProviders(<OverviewPage />);
-    await within(screen.getByTestId('overview-machines')).findByText('relay-a');
-
-    const relay = row('relay-a');
-    expect(within(relay).getByText(ru.kinds.relay)).toBeInTheDocument();
-    expect(within(relay).getByText(ru.status.online)).toBeInTheDocument();
-    expect(within(relay).getByText('12.5%')).toBeInTheDocument();
-    expect(within(relay).getByText('40%')).toBeInTheDocument();
-    expect(within(relay).getByText('55%')).toBeInTheDocument();
-    expect(within(relay).getByText('0.42')).toBeInTheDocument();
-    expect(within(relay).getByText('3 д')).toBeInTheDocument();
-    expect(within(relay).getByText('40')).toBeInTheDocument();
-    expect(within(relay).getByText('6')).toBeInTheDocument();
-    expect(within(relay).getByText('3.5.17')).toBeInTheDocument();
-    expect(within(relay).getByText('2.1.7')).toBeInTheDocument();
-    expect(within(relay).getByText('0.7.0')).toBeInTheDocument();
-
-    const exit = row('exit-a1');
-    expect(within(exit).getByText(ru.status.degraded)).toBeInTheDocument();
-    // Нагрузка выше порога - красным.
-    expect(within(exit).getByText('95%')).toHaveClass('ant-typography-danger');
-    expect(within(exit).getByText('80%')).toHaveClass('ant-typography-warning');
-    expect(within(exit).getByText('2 ч')).toBeInTheDocument();
-
-    const fresh = row('exit-new');
-    expect(within(fresh).getByText(ru.status.offline)).toBeInTheDocument();
-  });
-
-  it('клик по строке - карточка машины с runtime-снимком', async () => {
+  it('список проблем вместо таблицы машин; клик - карточка машины', async () => {
     const fetchFn = mockFetch((url) => {
       if (url === '/api/v1/overview') return { body: overviewOf(MACHINES) };
-      if (urlPath(url) === '/api/v1/machines/relay-a/runtime') return { body: machineRuntime('relay-a') };
+      if (urlPath(url) === '/api/v1/machines/exit-a1/runtime') return { body: machineRuntime('exit-a1') };
       return undefined;
     });
     const user = userEvent.setup();
 
     renderWithProviders(<OverviewPage />);
-    await within(screen.getByTestId('overview-machines')).findByText('relay-a');
-    await user.click(row('relay-a'));
+    await within(screen.getByTestId('overview-problems')).findByText(ru.overview.problemKind.degraded);
+    expect(within(problemRow('exit-a1', 'degraded')).getByText('telemt')).toBeInTheDocument();
+    expect(within(problemRow('exit-new', 'no_agent')).getByText(ru.overview.problemKind.no_agent)).toBeInTheDocument();
+    expect(screen.queryByTestId('overview-machines')).not.toBeInTheDocument();
 
-    const state = await screen.findByTestId('machine-state');
-    expect(screen.getByText('Машина relay-a')).toBeInTheDocument();
-    expect(within(state).getByText('cdn.example.org')).toBeInTheDocument();
-    expect(within(state).getByText('connection refused')).toBeInTheDocument();
-    expect(fetchFn.mock.calls.map(([u]) => String(u))).toContain('/api/v1/machines/relay-a/runtime');
+    await user.click(problemRow('exit-a1', 'degraded'));
+    await screen.findByTestId('machine-state');
+    expect(screen.getByText('Машина exit-a1')).toBeInTheDocument();
+    expect(fetchFn.mock.calls.map(([u]) => String(u))).toContain('/api/v1/machines/exit-a1/runtime');
   });
 
-  it('пустой флот', async () => {
+  it('проблем нет', async () => {
     mockFetch((url) =>
       url === '/api/v1/overview'
-        ? { body: overviewOf([], { pairs: { total: 0, ok: 0, problem: 0 }, connections: { total: 0, users_online: 0 } }) }
+        ? { body: overviewOf([runtimeMachine('relay-a')], { connections: { total: 0, users_online: 0 } }) }
         : undefined,
     );
 
     renderWithProviders(<OverviewPage />);
 
-    expect(await screen.findByText(ru.nodes.fleetEmpty)).toBeInTheDocument();
+    expect(await screen.findByText(ru.overview.noProblems)).toBeInTheDocument();
     expect(screen.getByTestId('tile-machines')).toBeInTheDocument();
   });
 

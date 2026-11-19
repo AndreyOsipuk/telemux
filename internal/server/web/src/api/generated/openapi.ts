@@ -718,6 +718,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/stack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Версии telemt и mtg-multi - последние релизы и машины
+         * @description Последние релизы GitHub по продуктам (мастер проверяет раз в 6 часов и по
+         *     `POST /api/v1/stack/check`) и состояние машин страницей. Версии сравниваются по ядру
+         *     X.Y.Z, ведущая `v` отбрасывается. Своя сборка (`custom_build`) - версия с суффиксом
+         *     после ядра (`1.15.0-webalias`) или неразборчивая; для неё `update_available` только
+         *     если ядро релиза строго больше. Продукта на машине нет (агент его не присылает) -
+         *     поле продукта `null`. Состояния машин нет на реплике - там `data` пустой.
+         */
+        get: operations["getStack"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/stack/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Проверить последние релизы сейчас
+         * @description Только мастер. Запрашивает последний релиз каждого продукта на GitHub и сохраняет
+         *     результат. Ошибка GitHub по продукту - в его `error`, прошлый результат остаётся
+         *     (не 5xx). Чаще раза в минуту - 429 `too_many_requests`.
+         */
+        post: operations["checkStack"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/machines/{code}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Обновить telemt или mtg-multi на машине
+         * @description Только мастер. Мастер скачивает релиз, сверяет SHA256 по контрольной сумме релиза,
+         *     кладёт бинарь в кэш и публикует машине ресурс `stack`. Агент в режиме apply заменяет
+         *     бинарь, перезапускает сервис и проверяет, что он поднялся; не поднялся - возвращает
+         *     прежний. Результат - в `GET /api/v1/stack` (`update.status`) и в ленте тревог
+         *     (`apply_failed`). `version` не задана - последний релиз.
+         *
+         *     Ресурс `stack` - разовая команда: в ревизии только обновляемый продукт, а после итога
+         *     (applied, failed, таймаут 30 минут) мастер публикует новую ревизию без него. На машине
+         *     одновременно идёт не больше одного обновления (по любому продукту).
+         *
+         *     Ошибки: 400 `unknown_product`, `unknown_version` (нет такого релиза или его версия не
+         *     разбирается); 404 - нет машины; 409 `machine_disabled`, `product_missing` (агент этот
+         *     продукт не присылает), `custom_build` (на машине своя сборка - нужен `force: true`),
+         *     `not_newer` (версия не новее текущей - нужен `force: true`), `update_in_progress`
+         *     (обновление на машине ещё идёт), `asset_missing` (в релизе нет файла под архитектуру
+         *     машины или архитектура не поддерживается); 503 `release_unavailable` (релиз не
+         *     скачался или сумма не сошлась).
+         */
+        post: operations["updateMachineProduct"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events": {
         parameters: {
             query?: never;
@@ -736,6 +819,28 @@ export interface paths {
          *     событий после `after_id`, `paging.offset` всегда 0.
          */
         get: operations["listEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/stack/blobs/{sha256}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Бинарь обновления для агента
+         * @description Бинарь из кэша мастера по его SHA256. Токен машины даёт доступ только к бинарям из
+         *     последней ревизии её ресурса `stack`; чужой или неизвестный - 404. Бинаря нет в кэше
+         *     этого узла и узел не мастер - 409 `not_master` (идти к следующему адресу).
+         */
+        get: operations["getStackBlob"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1520,12 +1625,79 @@ export interface components {
             kind: "down" | "up" | "apply_failed";
             detail: string;
         };
+        StackProduct: {
+            product: components["schemas"]["Product"];
+            /** @example telemt/telemt */
+            repo: string;
+            /** @description Последний релиз; null - ещё ни разу не узнали */
+            latest: {
+                /** @example 3.5.17 */
+                version: string;
+                /** @example 3.5.17 */
+                tag: string;
+                /** Format: date-time */
+                published_at: string;
+            } | null;
+            /** Format: date-time */
+            checked_at: string | null;
+            /** @description Ошибка последней проверки; прошлый latest остаётся */
+            error: string | null;
+        };
+        StackProductState: {
+            /** @description Версия из runtime-отчёта; null - агент её не прислал */
+            current: string | null;
+            latest: string | null;
+            update_available: boolean;
+            /** @description Своя сборка: суффикс после X.Y.Z или версия не разобрана */
+            custom_build: boolean;
+            /** @description Последнее обновление через telemux; null - не было */
+            update: components["schemas"]["StackUpdateState"] | null;
+        };
+        StackMachine: {
+            code: string;
+            /** @enum {string} */
+            kind: "relay" | "exit";
+            enabled: boolean;
+            telemt: components["schemas"]["StackProductState"] | null;
+            mtg: components["schemas"]["StackProductState"] | null;
+        };
+        StackStatus: {
+            products: components["schemas"]["StackProduct"][];
+            data: components["schemas"]["StackMachine"][];
+            paging: components["schemas"]["Paging"];
+        };
+        StackUpdateRequest: {
+            product: components["schemas"]["Product"];
+            /** @description Версия релиза; по умолчанию последний */
+            version?: string;
+            /**
+             * @description Обновить свою сборку или поставить не более новую версию
+             * @default false
+             */
+            force: boolean;
+        };
+        StackUpdateState: {
+            code: string;
+            product: components["schemas"]["Product"];
+            /** @description Версия на машине в момент запроса */
+            from: string | null;
+            to: string;
+            /** @description Ревизия ресурса stack */
+            revision: number;
+            /** @enum {string} */
+            status: "pending" | "applied" | "failed";
+            error: string | null;
+            /** Format: date-time */
+            requested_at: string;
+            /** Format: date-time */
+            finished_at: string | null;
+        };
         Error: {
             /**
              * @description Машинный код
              * @enum {string}
              */
-            code: "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "gone" | "unprocessable" | "not_implemented" | "unavailable" | "internal" | "not_master" | "mass_delete_guard" | "payload_too_large" | "unknown_machine" | "engine_immutable" | "unknown_setting" | "bad_setting" | "bad_endpoint" | "batch_too_large" | "machine_enabled" | "machine_in_use" | "machine_disabled" | "too_many_points" | "render_mismatch" | "managed_by_telemux";
+            code: "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "gone" | "unprocessable" | "not_implemented" | "unavailable" | "internal" | "not_master" | "mass_delete_guard" | "payload_too_large" | "unknown_machine" | "engine_immutable" | "unknown_setting" | "bad_setting" | "bad_endpoint" | "batch_too_large" | "machine_enabled" | "machine_in_use" | "machine_disabled" | "too_many_points" | "render_mismatch" | "managed_by_telemux" | "too_many_requests" | "unknown_product" | "unknown_version" | "product_missing" | "custom_build" | "not_newer" | "update_in_progress" | "release_unavailable" | "asset_missing";
             message: string;
             /** @description Копия message для старой панели */
             error?: string;
@@ -1865,7 +2037,7 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["Limit"];
                 offset?: components["parameters"]["Offset"];
-                resource?: "telemt.users" | "telemt.config" | "mtg.config" | "xui.clients" | "tls.web";
+                resource?: "telemt.users" | "telemt.config" | "mtg.config" | "xui.clients" | "tls.web" | "stack";
                 enabled?: boolean;
                 kind?: "exit" | "relay" | "panel";
             };
@@ -2579,6 +2751,92 @@ export interface operations {
             503: components["responses"]["Error"];
         };
     };
+    getStack: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                offset?: components["parameters"]["Offset"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Релизы и машины */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StackStatus"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    checkStack: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Релизы после проверки */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        products: components["schemas"]["StackProduct"][];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    updateMachineProduct: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StackUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Ревизия опубликована, агент применит её */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StackUpdateState"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
     listEvents: {
         parameters: {
             query?: {
@@ -2605,6 +2863,37 @@ export interface operations {
             };
             400: components["responses"]["Error"];
             401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    getStackBlob: {
+        parameters: {
+            query: {
+                target: string;
+            };
+            header?: never;
+            path: {
+                sha256: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Бинарь */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
             500: components["responses"]["Error"];
             503: components["responses"]["Error"];
         };

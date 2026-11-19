@@ -10,11 +10,11 @@ import { Drawer, Layout, Menu } from 'antd';
 import type { MenuProps } from 'antd';
 import {
   ApiOutlined,
+  BellOutlined,
   ClusterOutlined,
   CloudServerOutlined,
   DashboardOutlined,
   LinkOutlined,
-  SafetyCertificateOutlined,
   CloseOutlined,
   DeploymentUnitOutlined,
   LogoutOutlined,
@@ -23,9 +23,7 @@ import {
   PushpinFilled,
   PushpinOutlined,
   SunOutlined,
-  SyncOutlined,
   TeamOutlined,
-  WarningOutlined,
 } from '@ant-design/icons';
 
 import { useTheme } from '@/hooks/useTheme';
@@ -134,13 +132,11 @@ export default function AppSidebar({ onLogout, authEnabled }: AppSidebarProps) {
     () => [
       { key: '/', icon: DashboardOutlined, title: t('menu.overview') },
       { key: '/servers', icon: CloudServerOutlined, title: t('menu.servers') },
-      { key: '/pairs', icon: DeploymentUnitOutlined, title: t('menu.pairs') },
-      { key: '/connections', icon: LinkOutlined, title: t('menu.connections') },
+      { key: '/map', icon: DeploymentUnitOutlined, title: t('menu.map') },
       { key: '/nodes', icon: ClusterOutlined, title: t('menu.nodes') },
+      { key: '/connections', icon: LinkOutlined, title: t('menu.connections') },
       { key: '/users', icon: TeamOutlined, title: t('menu.users') },
-      { key: '/drift', icon: WarningOutlined, title: t('menu.drift') },
-      { key: '/certs', icon: SafetyCertificateOutlined, title: t('menu.certs') },
-      { key: '/sync', icon: SyncOutlined, title: t('menu.sync') },
+      { key: '/events', icon: BellOutlined, title: t('menu.events') },
       { key: '/api-docs', icon: ApiOutlined, title: t('menu.apiDocs') },
     ],
     [t],

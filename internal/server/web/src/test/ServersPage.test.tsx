@@ -122,9 +122,11 @@ describe('ServersPage: список', () => {
     expect(listCalls(fetchFn)[0]).toBe('/api/v1/servers?limit=20&offset=0');
 
     const eps = within(row(1)).getByTestId('endpoints-1');
-    const tags = Array.from(eps.querySelectorAll<HTMLElement>('[data-endpoint]'));
-    expect(tags.map((t) => t.textContent)).toEqual(['ee', 'dd', 'web']);
-    expect(tags.map((t) => t.dataset.enabled)).toEqual(['true', 'true', 'false']);
+    // Включённые точки - строками «протокол, путь, порт»; выключенные - одной серой строкой.
+    const lines = Array.from(eps.querySelectorAll<HTMLElement>('[data-endpoint]'));
+    expect(lines.map((l) => l.dataset.endpoint)).toEqual(['ee', 'dd']);
+    expect(lines[0]).toHaveTextContent(/ee.*:443/);
+    expect(within(row(1)).getByTestId('endpoints-off-1')).toHaveTextContent('выключено: 1');
 
     const live = within(row(1)).getByTestId('live-1');
     expect(live).toHaveTextContent('42 / 9');
@@ -159,7 +161,7 @@ describe('ServersPage: список', () => {
     renderWithProviders(<ServersPage />);
     await screen.findByText('Страна 1');
 
-    await pick(user, screen.getByRole('combobox', { name: ru.servers.filterEngine }), 'mtg');
+    await pick(user, screen.getByRole('combobox', { name: ru.servers.filterEngine }), 'mtg-multi');
     await waitFor(() => expect(listCalls(fetchFn)).toContain('/api/v1/servers?engine=mtg&limit=20&offset=0'));
     await waitFor(() => expect(screen.queryByText('Страна 1')).not.toBeInTheDocument());
 
@@ -289,8 +291,8 @@ describe('ServerForm: создание', () => {
     expect(within(dialog).getByTestId('settings-group-Маскировка')).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole('tab', { name: ru.servers.form.tabMain }));
-    await user.click(within(dialog).getByText('mtg'));
-    await user.click(within(dialog).getByRole('tab', { name: /Настройки mtg/ }));
+    await user.click(within(dialog).getByText('mtg-multi'));
+    await user.click(within(dialog).getByRole('tab', { name: /Настройки mtg-multi/ }));
     expect(within(dialog).getByLabelText(/Параллельность mtg/)).toHaveAttribute('placeholder', '8192');
     expect(within(dialog).queryByLabelText(/Порт маскировки/)).not.toBeInTheDocument();
   });

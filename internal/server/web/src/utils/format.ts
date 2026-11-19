@@ -4,6 +4,9 @@ import dayjs from 'dayjs';
 export const formatDateTime = (iso: string) => dayjs(iso).format('DD.MM.YYYY HH:mm:ss');
 export const formatDate = (iso: string) => dayjs(iso).format('DD.MM.YYYY');
 
+// Название продукта (движка) в интерфейсе: в API он `mtg`, а на машинах это mtg-multi.
+export const productName = (p: string) => (p === 'mtg' ? 'mtg-multi' : p);
+
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
 
 // Байты человекочитаемо, по 1024: 0 B, 512 B, 1.5 KB, 12 MB.

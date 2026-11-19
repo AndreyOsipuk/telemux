@@ -15,7 +15,7 @@ import ErrorAlert from '@/components/ErrorAlert';
 import { useDebounced } from '@/hooks/useDebounced';
 import { usePaging } from '@/hooks/usePaging';
 import { secondsSince, useNow, useRelativeTime } from '@/hooks/useRelativeTime';
-import { formatBytes, formatDateTime } from '@/utils/format';
+import { productName, formatBytes, formatDateTime } from '@/utils/format';
 
 export const PRODUCTS: Product[] = ['telemt', 'mtg'];
 const PRODUCT_COLOR: Record<Product, string> = { telemt: 'blue', mtg: 'purple' };
@@ -23,7 +23,7 @@ const PRODUCT_COLOR: Record<Product, string> = { telemt: 'blue', mtg: 'purple' }
 export function ProductTag({ product }: { product: Product }) {
   return (
     <Tag color={PRODUCT_COLOR[product]} style={{ margin: 0 }}>
-      {product}
+      {productName(product)}
     </Tag>
   );
 }
@@ -33,13 +33,15 @@ export const connKey = (c: Connection) => `${c.machine}/${c.product}/${c.key}`;
 interface ConnectionsTableProps {
   // Машина задана (карточка машины): фильтра и колонки «Машина» нет.
   fixedMachine?: string;
+  // Пользователь задан (карточка пользователя): поиска и колонки «Пользователь» нет.
+  fixedUser?: string;
   // Машины для фильтра; пусто - фильтр по машине не показывается.
   machineOptions?: string[];
   // Минимум подключений по умолчанию: 1 - только пользователи онлайн.
   defaultMinConnections?: number;
 }
 
-export default function ConnectionsTable({ fixedMachine, machineOptions = [], defaultMinConnections = 1 }: ConnectionsTableProps) {
+export default function ConnectionsTable({ fixedMachine, fixedUser, machineOptions = [], defaultMinConnections = 1 }: ConnectionsTableProps) {
   const { t } = useTranslation();
   const now = useNow();
   const relative = useRelativeTime();
@@ -54,9 +56,9 @@ export default function ConnectionsTable({ fixedMachine, machineOptions = [], de
       machine: fixedMachine ?? machine,
       product,
       minConnections: minConns ?? undefined,
-      user: user || undefined,
+      user: fixedUser ?? (user || undefined),
     }),
-    [fixedMachine, machine, product, minConns, user],
+    [fixedMachine, fixedUser, machine, product, minConns, user],
   );
 
   const paging = usePaging(20);
@@ -69,7 +71,8 @@ export default function ConnectionsTable({ fixedMachine, machineOptions = [], de
   useEffect(() => syncTotal(total), [syncTotal, total]);
 
   const columns = useMemo<ColumnsType<Connection>>(() => {
-    const cols: ColumnsType<Connection> = [
+    const cols: ColumnsType<Connection> = [];
+    if (!fixedUser) cols.push(
       {
         title: t('connections.user'),
         dataIndex: 'key',
@@ -80,7 +83,7 @@ export default function ConnectionsTable({ fixedMachine, machineOptions = [], de
           </Typography.Text>
         ),
       },
-    ];
+    );
     if (!fixedMachine) {
       cols.push({ title: t('connections.machine'), dataIndex: 'machine', width: 120, render: (v: string) => <span className="mono">{v}</span> });
     }
@@ -127,20 +130,22 @@ export default function ConnectionsTable({ fixedMachine, machineOptions = [], de
       },
     );
     return cols;
-  }, [t, fixedMachine, relative, now]);
+  }, [t, fixedMachine, fixedUser, relative, now]);
 
   return (
     <>
       <Space wrap style={{ marginBottom: 12 }}>
-        <Input
-          allowClear
-          prefix={<SearchOutlined />}
-          placeholder={t('connections.search')}
-          aria-label={t('connections.search')}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ width: 220 }}
-        />
+        {!fixedUser && (
+          <Input
+            allowClear
+            prefix={<SearchOutlined />}
+            placeholder={t('connections.search')}
+            aria-label={t('connections.search')}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ width: 220 }}
+          />
+        )}
         {!fixedMachine && machineOptions.length > 0 && (
           <Select<string>
             allowClear
@@ -158,7 +163,7 @@ export default function ConnectionsTable({ fixedMachine, machineOptions = [], de
           placeholder={t('connections.allProducts')}
           value={product}
           onChange={(v) => setProduct(v)}
-          options={PRODUCTS.map((p) => ({ value: p, label: p }))}
+          options={PRODUCTS.map((p) => ({ value: p, label: productName(p) }))}
           style={{ width: 140 }}
         />
         <Space size={6}>

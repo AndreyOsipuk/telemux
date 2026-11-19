@@ -4,7 +4,7 @@
 
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Tooltip, Typography } from 'antd';
+import { Tag, Tooltip, Typography } from 'antd';
 import type { ColumnType } from 'antd/es/table';
 
 import type { Machine, RuntimeStatus } from '@/api/types';
@@ -66,8 +66,38 @@ export type RuntimeColumnKey =
   | 'mtg'
   | 'agent';
 
-// Колонки runtime-полей машины по ключам, в порядке keys.
-export function useRuntimeColumns(keys: RuntimeColumnKey[]): ColumnType<Machine>[] {
+// Самая частая версия продукта среди машин - «эталон» флота; пусто - версий нет.
+export function majorityVersion(versions: (string | null | undefined)[]): string | undefined {
+  const n = new Map<string, number>();
+  for (const v of versions) if (v) n.set(v, (n.get(v) ?? 0) + 1);
+  let best: string | undefined;
+  let bestN = 0;
+  for (const [v, c] of n) if (c > bestN || (c === bestN && best !== undefined && v > best)) [best, bestN] = [v, c];
+  return best;
+}
+
+export interface FleetVersions {
+  telemt?: string;
+  mtg?: string;
+}
+
+// Версия продукта: отличается от самой частой во флоте - оранжевым с подсказкой.
+function VersionCell({ v, major }: { v?: string | null; major?: string }) {
+  const { t } = useTranslation();
+  if (!v) return dash;
+  if (!major || v === major) return <span className="mono">{v}</span>;
+  return (
+    <Tooltip title={t('runtime.versionDiffers', { major })}>
+      <Tag color="warning" className="mono" data-testid="version-differs">
+        {v}
+      </Tag>
+    </Tooltip>
+  );
+}
+
+// Колонки runtime-полей машины по ключам, в порядке keys; versions - версии большинства
+// флота, чтобы подсветить машины с другой версией.
+export function useRuntimeColumns(keys: RuntimeColumnKey[], versions: FleetVersions = {}): ColumnType<Machine>[] {
   const { t } = useTranslation();
   const duration = useDuration();
   return useMemo(() => {
@@ -112,11 +142,11 @@ export function useRuntimeColumns(keys: RuntimeColumnKey[]): ColumnType<Machine>
         align: 'right',
         render: (_v, m) => (m.runtime_seen_at ? <span className="mono">{m.users_online}</span> : dash),
       },
-      telemt: { key: 'telemt', title: 'telemt', width: 100, render: (_v, m) => mono(m.telemt_version) },
-      mtg: { key: 'mtg', title: 'mtg', width: 100, render: (_v, m) => mono(m.mtg_version) },
+      telemt: { key: 'telemt', title: 'telemt', width: 110, render: (_v, m) => <VersionCell v={m.telemt_version} major={versions.telemt} /> },
+      mtg: { key: 'mtg', title: 'mtg-multi', width: 130, render: (_v, m) => <VersionCell v={m.mtg_version} major={versions.mtg} /> },
       agent: { key: 'agent', title: t('fleet.agent'), width: 100, render: (_v, m) => mono(m.agent_version) },
     };
     return keys.map((k) => all[k]);
     // keys - константа экрана; join - чтобы новый массив с теми же ключами не пересобирал колонки.
-  }, [t, duration, keys.join(',')]);
+  }, [t, duration, keys.join(','), versions.telemt, versions.mtg]);
 }

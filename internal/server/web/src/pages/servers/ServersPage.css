@@ -1,0 +1,19 @@
+/* Точки входа в списке серверов: строка на точку. */
+.endpoint-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  line-height: 24px;
+}
+.endpoint-line .ant-tag {
+  margin-inline-end: 0;
+  min-width: 36px;
+  text-align: center;
+}
+.endpoint-port {
+  opacity: 0.65;
+}
+.endpoint-off {
+  font-size: 12px;
+}

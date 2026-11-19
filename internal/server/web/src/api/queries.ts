@@ -3,8 +3,10 @@
 import { QueryClient, keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { api } from './client';
+import { machineUsage } from '@/utils/machineUsage';
+import { useMemo } from 'react';
 import { ApiError } from './http';
-import type { ConnFilter, MachineKind, NewTarget, PairMachine, ServerFilter, ServerInput } from './types';
+import type { StackStatus, StackUpdateRequest, ConfigSource, ConnFilter, MachineEvent, MachineKind, MetricStep, NewTarget, PairMachine, ServerFilter, ServerInput } from './types';
 
 export const qk = {
   me: ['me'] as const,
@@ -34,6 +36,12 @@ export const qk = {
   serverFields: ['server-fields'] as const,
   // Под префиксом machines: инвалидация флота обновляет и выбор машин в форме сервера.
   machinesByKind: (kind: MachineKind) => ['machines', 'kind', kind] as const,
+  machineMetrics: (code: string, range: MetricRange) => ['machine-metrics', code, range] as const,
+  events: ['events'] as const,
+  stack: (limit: number, offset: number) => ['stack', limit, offset] as const,
+  stackAll: ['stack'] as const,
+  // Под префиксом servers: смена источника и правка сервера перечитывают сборку.
+  serverRender: (no: number) => ['servers', 'render', no] as const,
 };
 
 // Подключения меняются быстро: экран «Подключения» обновляется раз в 15 секунд.
@@ -229,4 +237,124 @@ export function useDeleteServer() {
     mutationFn: (no: number) => api.deleteServer(no),
     onSuccess: () => void qc.invalidateQueries({ queryKey: qk.serversAll }),
   });
+}
+
+// ---- машины как ноды 3x-ui (ADR 0007) ----
+
+// Включить или выключить машину: сразу обновляются флот, пары и серверы.
+export function useSetTargetEnabled() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ code, enabled }: { code: string; enabled: boolean }) => api.updateTarget(code, { enabled }),
+    onSuccess: () => void invalidateFleet(qc),
+  });
+}
+
+export function useDeleteTarget() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (code: string) => api.deleteTarget(code),
+    onSuccess: () => void invalidateFleet(qc),
+  });
+}
+
+// Проверка связи - действие по кнопке (до 20 с), результат не кешируется.
+export function useCheckMachine() {
+  return useMutation({ mutationFn: (code: string) => api.checkMachine(code) });
+}
+
+// Окна графиков нагрузки и шаг: точек не больше 2000 (лимит ручки) и не меньше ~24.
+export type MetricRange = '1h' | '6h' | '24h' | '7d';
+export const METRIC_RANGES: Record<MetricRange, { ms: number; step: MetricStep }> = {
+  '1h': { ms: 3600_000, step: '1m' },
+  '6h': { ms: 6 * 3600_000, step: '1m' },
+  '24h': { ms: 24 * 3600_000, step: '5m' },
+  '7d': { ms: 7 * 24 * 3600_000, step: '1h' },
+};
+
+// Время для параметров ручки: без миллисекунд, UTC.
+const isoSec = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+export const useMachineMetrics = (code: string, range: MetricRange) =>
+  useQuery({
+    queryKey: qk.machineMetrics(code, range),
+    queryFn: () => {
+      const now = Date.now();
+      const r = METRIC_RANGES[range];
+      // Окно [from, to): to на минуту вперёд, чтобы попала текущая неполная минута.
+      return api.machineMetrics(code, isoSec(now - r.ms), isoSec(now + 60_000), r.step);
+    },
+    placeholderData: keepPreviousData,
+    refetchInterval: 60_000,
+  });
+
+// Лента тревог: ручка отдаёт события по возрастанию id после after_id (хранение 30 дней),
+// панель забирает всё постранично и показывает новые первыми.
+export const EVENTS_PAGE = 500;
+export const EVENTS_MAX_PAGES = 20;
+
+export async function fetchAllEvents(): Promise<{ data: MachineEvent[]; truncated: boolean }> {
+  const out: MachineEvent[] = [];
+  let after = 0;
+  for (let page = 0; page < EVENTS_MAX_PAGES; page++) {
+    const res = await api.events(after, EVENTS_PAGE);
+    out.push(...res.data);
+    if (res.data.length === 0 || res.data.length >= res.paging.total) return { data: out.reverse(), truncated: false };
+    after = res.data[res.data.length - 1].id;
+  }
+  return { data: out.reverse(), truncated: true };
+}
+
+export const useEvents = () =>
+  useQuery({ queryKey: qk.events, queryFn: fetchAllEvents, refetchInterval: FLEET_REFRESH_MS });
+
+// ---- сборка конфигов (ADR 0006) ----
+
+export const useServerRender = (no: number, enabled = true) =>
+  useQuery({ queryKey: qk.serverRender(no), queryFn: () => api.serverRender(no), enabled, refetchInterval: FLEET_REFRESH_MS });
+
+export function useSetConfigSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ no, source, force }: { no: number; source: ConfigSource; force?: boolean }) =>
+      api.setConfigSource(no, source, force),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.serversAll }),
+  });
+}
+
+// ---- версии и обновления (ADR 0008) ----
+
+// Пока хоть одно обновление идёт - опрос раз в 5 с, иначе раз в минуту.
+export const STACK_PENDING_REFRESH_MS = 5_000;
+export const STACK_REFRESH_MS = 60_000;
+
+export function hasPendingUpdate(s: StackStatus | undefined): boolean {
+  return (s?.data ?? []).some((m) => m.telemt?.update?.status === 'pending' || m.mtg?.update?.status === 'pending');
+}
+
+export const useStack = (limit: number, offset: number) =>
+  useQuery({
+    queryKey: qk.stack(limit, offset),
+    queryFn: () => api.stack(limit, offset),
+    placeholderData: keepPreviousData,
+    refetchInterval: (q) => (hasPendingUpdate(q.state.data) ? STACK_PENDING_REFRESH_MS : STACK_REFRESH_MS),
+  });
+
+export function useCheckStack() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: api.checkStack, onSuccess: () => void qc.invalidateQueries({ queryKey: qk.stackAll }) });
+}
+
+export function useUpdateMachineProduct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ code, body }: { code: string; body: StackUpdateRequest }) => api.updateMachineProduct(code, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.stackAll }),
+  });
+}
+
+// Роль каждой машины по серверам (выход, выведена, не в серверах) - для серых счётчиков.
+export function useMachineUsage() {
+  const servers = useServers({}, 100, 0);
+  return useMemo(() => machineUsage(servers.data?.data ?? []), [servers.data]);
 }

@@ -1,0 +1,86 @@
+/* «Карта»: узлы поверх SVG с линиями серверов. */
+.map-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.map-columns > :nth-child(2) {
+  text-align: center;
+}
+.map-columns > :nth-child(3) {
+  text-align: right;
+}
+.map-box {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+.map-svg {
+  position: absolute;
+  inset: 0;
+}
+.map-slot {
+  position: absolute;
+}
+.map-node {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--ant-color-border, rgba(128, 128, 128, 0.3));
+  border-radius: 8px;
+  background: var(--ant-color-bg-container, #fff);
+  overflow: hidden;
+}
+.map-node-click {
+  cursor: pointer;
+}
+.map-node-click:hover {
+  border-color: var(--ant-color-primary, #1677ff);
+}
+.map-node-direct {
+  border-style: dashed;
+}
+.map-node-off {
+  opacity: 0.55;
+}
+.map-node-sub {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.map-label {
+  position: absolute;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.map-tag {
+  cursor: pointer;
+  margin-inline-end: 0;
+}
+.map-unplaced {
+  margin-top: 12px;
+}
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin-top: 16px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+.map-line {
+  display: inline-block;
+  width: 22px;
+  border-top: 2px solid;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+.map-line-dashed {
+  border-top-style: dashed;
+}

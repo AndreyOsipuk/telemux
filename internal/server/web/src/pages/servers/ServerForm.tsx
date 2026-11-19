@@ -47,8 +47,10 @@ import {
   type ServerFormValues,
   type SettingValue,
 } from './serverModel';
+import RenderTab from './RenderTab';
+import { productName } from '@/utils/format';
 
-type TabKey = 'main' | 'endpoints' | 'limits' | 'settings';
+type TabKey = 'main' | 'endpoints' | 'limits' | 'settings' | 'render';
 
 // Коды ошибок записи из ADR 0005: заголовок над формой и вкладка, где искать причину.
 const ERROR_TAB: Record<string, TabKey> = {
@@ -340,7 +342,7 @@ function MainTab({ creating, machineOptions }: { creating: boolean; machineOptio
         label={t('servers.engine')}
         extra={creating ? t('servers.form.engineOnce') : t('servers.form.engineImmutable')}
       >
-        <Segmented options={ENGINES} disabled={!creating} />
+        <Segmented options={ENGINES.map((e) => ({ value: e, label: productName(e) }))} disabled={!creating} />
       </Form.Item>
       <Row gutter={12}>
         <Col xs={24} sm={12}>
@@ -518,7 +520,7 @@ export default function ServerForm({ server, onClose }: { server: Server | null;
     { key: 'limits', label: t('servers.form.tabLimits'), children: <LimitsTab />, forceRender: true },
     {
       key: 'settings',
-      label: t('servers.form.tabSettings', { engine }),
+      label: t('servers.form.tabSettings', { engine: productName(engine) }),
       children: fieldsQ.isError ? (
         <ErrorAlert error={fieldsQ.error} onRetry={() => fieldsQ.refetch()} title={t('servers.form.fieldsFailed')} />
       ) : (
@@ -526,6 +528,8 @@ export default function ServerForm({ server, onClose }: { server: Server | null;
       ),
       forceRender: true,
     },
+    // Сборка есть только у сохранённого сервера; полей формы во вкладке нет.
+    ...(server ? [{ key: 'render' as const, label: t('servers.form.tabRender'), children: <RenderTab server={server} />, forceRender: false }] : []),
   ];
 
   return (

@@ -62,3 +62,8 @@ body,
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
+
+/* Машина вне работы (выведена или не в серверах): строка приглушена. */
+.row-off > td {
+  opacity: 0.45;
+}

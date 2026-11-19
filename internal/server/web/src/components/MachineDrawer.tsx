@@ -1,7 +1,8 @@
 // Карточка машины (Drawer) - всё, что мастер знает о машине, по вкладкам:
 // «Состояние» (runtime-снимок целиком), «Ресурсы и ревизии» (применённое и желаемое,
 // локальные проверки), «Подключения», «Ошибки журнала» за 24 ч, «История применений»
-// и «Сертификаты». Вкладка грузит данные только когда её открыли.
+// «Сертификаты», «Нагрузка» (графики истории) и «Связь» (проверка с мастера). В шапке -
+// включение/выключение и удаление машины. Вкладка грузит данные только когда её открыли.
 
 import { useState } from 'react';
 import type { ReactNode } from 'react';
@@ -16,12 +17,14 @@ import ConnectionsTable from '@/components/ConnectionsTable';
 import ErrorAlert from '@/components/ErrorAlert';
 import { CheckTags, KindTag, ResourceTags, resourceRows } from '@/components/FleetTags';
 import LogErrorsTable from '@/components/LogErrorsTable';
+import { MachineDeleteButton, MachineEnabledSwitch } from '@/components/MachineActions';
+import { CheckTab, MetricsTab } from '@/components/MachineOps';
 import { PctText, RuntimeStatusCell } from '@/components/MachineCells';
-import TargetHistory from '@/pages/pairs/TargetHistory';
+import TargetHistory from '@/components/TargetHistory';
 import { secondsSince, useDuration, useNow, useRelativeTime } from '@/hooks/useRelativeTime';
 import { formatDateTime } from '@/utils/format';
 
-export type MachineTab = 'state' | 'resources' | 'connections' | 'logErrors' | 'history' | 'certs';
+export type MachineTab = 'state' | 'metrics' | 'check' | 'resources' | 'connections' | 'logErrors' | 'history' | 'certs';
 
 const dash = <Typography.Text type="secondary">-</Typography.Text>;
 const text = (v: string | number | undefined | null) =>
@@ -90,13 +93,13 @@ function StateTab({ code }: { code: string }) {
         item('api', t('drawer.api'), <ApiOk ok={r.mtg.api_ok} error={r.mtg.error} />),
         item('conns', t('drawer.connectionsTotal'), text(r.mtg.connections_total)),
       ]
-    : [item('none', 'mtg', t('drawer.noProduct'))];
+    : [item('none', 'mtg-multi', t('drawer.noProduct'))];
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }} data-testid="machine-state">
       <Descriptions size="small" bordered column={1} title={t('drawer.report')} items={report} />
       <Descriptions size="small" bordered column={1} title={t('drawer.host')} items={host} />
       <Descriptions size="small" bordered column={1} title="telemt" items={telemt} />
-      <Descriptions size="small" bordered column={1} title="mtg" items={mtg} />
+      <Descriptions size="small" bordered column={1} title="mtg-multi" items={mtg} />
     </Space>
   );
 }
@@ -154,13 +157,22 @@ export default function MachineDrawer({ machine, onClose, initialTab = 'state' }
   const { t } = useTranslation();
   const [tab, setTab] = useState<MachineTab>(initialTab);
   const m = machine;
+  const close = () => {
+    setTab(initialTab);
+    onClose();
+  };
   return (
     <Drawer
       open={m !== null}
-      onClose={() => {
-        setTab(initialTab);
-        onClose();
-      }}
+      onClose={close}
+      extra={
+        m ? (
+          <Space size={12}>
+            <MachineEnabledSwitch m={m} />
+            <MachineDeleteButton m={m} onDeleted={close} />
+          </Space>
+        ) : undefined
+      }
       size="large"
       destroyOnHidden
       title={
@@ -181,6 +193,8 @@ export default function MachineDrawer({ machine, onClose, initialTab = 'state' }
           onChange={(k) => setTab(k as MachineTab)}
           items={[
             { key: 'state', label: t('drawer.tabs.state'), children: <StateTab code={m.code} /> },
+            { key: 'metrics', label: t('drawer.tabs.metrics'), children: <MetricsTab code={m.code} /> },
+            { key: 'check', label: t('drawer.tabs.check'), children: <CheckTab code={m.code} /> },
             { key: 'resources', label: t('drawer.tabs.resources'), children: <ResourcesTab m={m} /> },
             { key: 'connections', label: t('drawer.tabs.connections'), children: <ConnectionsTable fixedMachine={m.code} defaultMinConnections={0} /> },
             { key: 'logErrors', label: t('drawer.tabs.logErrors'), children: <LogErrorsTable machine={m.code} /> },

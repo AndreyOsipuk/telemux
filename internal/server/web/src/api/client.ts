@@ -15,8 +15,13 @@ import type {
   UserConnections,
   DriftResponse,
   JoinCommand,
+  ConfigSource,
   Machine,
+  MachineCheck,
+  MachineEvent,
   MachineKind,
+  MachineMetrics,
+  MetricStep,
   Me,
   NewTarget,
   NewUser,
@@ -27,7 +32,14 @@ import type {
   ServerField,
   ServerFilter,
   ServerInput,
+  ServerRenderItem,
+  StackProduct,
+  StackStatus,
+  StackUpdateRequest,
+  StackUpdateState,
   SyncStatus,
+  Target,
+  TargetPatch,
   User,
 } from './types';
 
@@ -84,6 +96,31 @@ export const api = {
   createTarget: (body: NewTarget) => request<JoinCommand>('/api/v1/targets', { method: 'POST', body }),
   // Новая одноразовая команда для существующей машины; прежняя неиспользованная сгорает.
   createJoin: (code: string) => request<JoinCommand>(`/api/v1/targets/${enc(code)}/join`, { method: 'POST' }),
+  // Включить/выключить машину (и поправить настройки). Только мастер.
+  updateTarget: (code: string, body: TargetPatch) =>
+    request<Target>(`/api/v1/targets/${enc(code)}`, { method: 'PUT', body }),
+  // Только выключенную и ни на что не ссылающуюся: иначе 409 machine_enabled / machine_in_use.
+  deleteTarget: (code: string) => request<unknown>(`/api/v1/targets/${enc(code)}`, { method: 'DELETE' }),
+  // Проверка связи с мастера: свежесть агента и точки входа серверов машины (до 20 с).
+  checkMachine: (code: string) => request<MachineCheck>(`/api/v1/machines/${enc(code)}/check`, { method: 'POST' }),
+  machineMetrics: (code: string, from: string, to: string, step: MetricStep) =>
+    request<MachineMetrics>(
+      `/api/v1/machines/${enc(code)}/metrics?${query([
+        ['from', from],
+        ['to', to],
+        ['step', step],
+      ])}`,
+    ),
+  // Версии продуктов на машинах и последние релизы GitHub (ADR 0008).
+  stack: (limit: number, offset: number) => request<StackStatus>(`/api/v1/stack?${paging(limit, offset)}`),
+  // Проверить релизы сейчас; чаще раза в минуту - 429.
+  checkStack: () => request<{ products: StackProduct[] }>('/api/v1/stack/check', { method: 'POST' }),
+  // Запуск обновления продукта на машине (202); итог - в stack (update.status).
+  updateMachineProduct: (code: string, body: StackUpdateRequest) =>
+    request<StackUpdateState>(`/api/v1/machines/${enc(code)}/update`, { method: 'POST', body }),
+  // Тревоги после after_id по возрастанию id.
+  events: (afterId: number, limit: number) =>
+    request<Page<MachineEvent>>(`/api/v1/events?after_id=${afterId}&limit=${limit}`),
   applyLog: (code: string, limit: number, offset: number) =>
     request<Page<ApplyLogEntry>>(`/api/v1/targets/${enc(code)}/apply-log?${paging(limit, offset)}`),
 
@@ -141,4 +178,9 @@ export const api = {
   updateServer: (no: number, body: ServerInput) => request<Server>(`/api/v1/servers/${no}`, { method: 'PUT', body }),
   // Только выключенный (state=disabled), иначе 409.
   deleteServer: (no: number) => request<unknown>(`/api/v1/servers/${no}`, { method: 'DELETE' }),
+  // Сравнение сборки telemux с текущими конфигами машин сервера (ADR 0006).
+  serverRender: (no: number) => request<{ data: ServerRenderItem[] }>(`/api/v1/servers/${no}/render`),
+  // На telemux - только при совпадении сборки, иначе 409 render_mismatch; force - всё равно.
+  setConfigSource: (no: number, source: ConfigSource, force = false) =>
+    request<Server>(`/api/v1/servers/${no}/config-source`, { method: 'PUT', body: { source, force } }),
 };

@@ -10,7 +10,6 @@ import type { FirewallStatus, JoinCommand, Machine, NewTarget, Pair } from '@/ap
 import ru from '@/i18n/ru.json';
 import { IPV4_RE, isSocks, toNewTarget } from '@/pages/nodes/AddMachineModal';
 import NodesPage from '@/pages/nodes/NodesPage';
-import PairsPage from '@/pages/pairs/PairsPage';
 import { machine, pageOf, pairMachine, urlPath } from './fleet-fixtures';
 import { mockFetch, renderWithProviders } from './test-utils';
 
@@ -428,29 +427,6 @@ describe('Команда установки для существующей ма
     expect(await within(dialog).findByTestId('join-command-text')).toHaveTextContent(COMMAND);
     expect(within(dialog).getByText(ru.join.renewedNote)).toBeInTheDocument();
     expect(posts(fn, '/api/v1/targets/exit-silent/join')).toHaveLength(1);
-  });
-
-  it('из «Пар»: клик не открывает историю; 409 - текст сервера', async () => {
-    mockFetch(
-      backend({
-        pairs: RELAYS,
-        join: () => ({ status: 409, body: { code: 'conflict', message: 'у релея relay-b нет выходов с адресом и socks' } }),
-      }),
-    );
-    const user = userEvent.setup();
-    renderWithProviders(<PairsPage />);
-
-    const btn = await screen.findByRole('button', { name: join('relay-b') });
-    await waitFor(() => expect(btn).toBeEnabled());
-    await user.click(btn);
-    const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText(ru.join.hasAgentNote)).toBeInTheDocument();
-    await user.click(within(dialog).getByRole('button', { name: ru.join.issue }));
-
-    expect(await within(dialog).findByText('у релея relay-b нет выходов с адресом и socks')).toBeInTheDocument();
-    expect(within(dialog).getByText(ru.join.failed)).toBeInTheDocument();
-    // История применений (Drawer) не открылась.
-    expect(screen.queryByText(ru.history.title.replace('{{code}}', 'relay-b'))).not.toBeInTheDocument();
   });
 
   it('у реплики действие выключено', async () => {

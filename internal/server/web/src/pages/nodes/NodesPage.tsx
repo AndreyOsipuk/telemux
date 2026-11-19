@@ -3,7 +3,8 @@
 //    (/api/v1/overview), в таблице - код, вид, runtime-статус, нагрузка (CPU, память,
 //    диск), аптайм, подключения и онлайн, версии telemt, mtg и агента, релей, «видели N
 //    назад», проверки и ресурсы. Постранично. Клик по строке - карточка машины;
-//    кнопка «Добавить машину» и у каждой машины - «Команда установки» агента.
+//    кнопка «Добавить машину», у каждой машины - «Команда установки» агента,
+//    переключатель «включена» и удаление (только выключенной).
 // 2. Узлы управления кластером (/api/nodes) - мастер и реплики самого telemux: роль,
 //    адрес (скрыт по умолчанию, как в 3x-ui), статус по последнему heartbeat.
 
@@ -14,18 +15,22 @@ import { Button, Card, Col, Row, Space, Statistic, Table, Tag, Tooltip, Typograp
 import type { ColumnsType } from 'antd/es/table';
 import { EyeInvisibleOutlined, EyeOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 
-import { useIsMaster, useMachines, useNodes, useOverview } from '@/api/queries';
+import { useIsMaster, useMachineUsage, useMachines, useNodes, useOverview } from '@/api/queries';
 import type { ClusterNode, Machine, MachineStatus } from '@/api/types';
 import ErrorAlert from '@/components/ErrorAlert';
 import { CheckTags, KindTag, ResourceTags, resourceRows } from '@/components/FleetTags';
 import { JoinCommandButton } from '@/components/JoinCommand';
+import { MachineActions } from '@/components/MachineActions';
+import { IdleCount, UsageTag } from '@/components/UsageTag';
+import { offUsage } from '@/utils/machineUsage';
 import MachineDrawer from '@/components/MachineDrawer';
-import { useRuntimeColumns } from '@/components/MachineCells';
+import { majorityVersion, useRuntimeColumns } from '@/components/MachineCells';
 import { usePaging } from '@/hooks/usePaging';
 import StatusCell from '@/components/StatusDot';
 import { secondsSince, useNow, useRelativeTime } from '@/hooks/useRelativeTime';
 import { formatDateTime } from '@/utils/format';
 import AddMachineModal from './AddMachineModal';
+import StackCard from './StackCard';
 import './NodesPage.css';
 
 // Heartbeat агента - раз в несколько секунд; дольше этого молчания - машина не на связи.
@@ -77,9 +82,27 @@ function FleetMachines() {
   const isMaster = useIsMaster();
   const [adding, setAdding] = useState(false);
   const [opened, setOpened] = useState<Machine | null>(null);
-  const runtimeCols = useRuntimeColumns([...RUNTIME_KEYS]);
   const paging = usePaging(20);
   const machines = useMachines(paging.pageSize, paging.offset);
+  // Эталон версий - по всему флоту из «Обзора» (до 500 машин), а не по странице.
+  const overview = useOverview();
+  const fleet = overview.data?.data;
+  const versions = useMemo(
+    () => ({ telemt: majorityVersion((fleet ?? []).map((m) => m.telemt_version)), mtg: majorityVersion((fleet ?? []).map((m) => m.mtg_version)) }),
+    [fleet],
+  );
+  const baseCols = useRuntimeColumns([...RUNTIME_KEYS], versions);
+  const usage = useMachineUsage();
+  // Подключения и онлайн у машин без клиентов - серым прочерком.
+  const runtimeCols = useMemo(
+    () =>
+      baseCols.map((c) =>
+        c.key === 'connections' || c.key === 'online'
+          ? { ...c, render: (v: unknown, m: Machine, i: number) => <IdleCount usage={usage.get(m.code)}>{c.render?.(v, m, i) as React.ReactNode}</IdleCount> }
+          : c,
+      ),
+    [baseCols, usage],
+  );
   const { syncTotal } = paging;
   const total = machines.data?.paging.total;
   useEffect(() => syncTotal(total), [syncTotal, total]);
@@ -97,6 +120,7 @@ function FleetMachines() {
               {v}
             </Typography.Text>
             {!m.enabled && <Tag>{t('nodes.disabled')}</Tag>}
+            <UsageTag usage={usage.get(m.code)} />
           </Space>
         ),
       },
@@ -143,11 +167,16 @@ function FleetMachines() {
       },
       {
         title: t('common.actions'),
-        width: 190,
-        render: (_v, m) => <JoinCommandButton code={m.code} hasAgent={m.seen_at !== null} />,
+        width: 270,
+        render: (_v, m) => (
+          <Space size={12}>
+            <MachineActions m={m} />
+            <JoinCommandButton code={m.code} hasAgent={m.seen_at !== null} />
+          </Space>
+        ),
       },
     ],
-    [t, now, relative, runtimeCols],
+    [t, now, relative, runtimeCols, usage],
   );
 
   return (
@@ -174,9 +203,10 @@ function FleetMachines() {
         columns={columns}
         dataSource={machines.data?.data ?? []}
         loading={machines.isPending || (machines.isFetching && machines.isPlaceholderData)}
-        scroll={{ x: 2110 }}
+        scroll={{ x: 2190 }}
         locale={{ emptyText: machines.isSuccess ? t('nodes.fleetEmpty') : <span /> }}
         pagination={paging.pagination(total)}
+        rowClassName={(m) => (offUsage(usage.get(m.code)) ? 'row-off' : '')}
         onRow={(m) => ({ onClick: () => setOpened(m), style: { cursor: 'pointer' } })}
       />
       {/* Свежие данные машины после автообновления списка, если она ещё на странице. */}
@@ -193,7 +223,7 @@ export default function NodesPage() {
   const qc = useQueryClient();
   const nodes = useNodes();
   // Кнопка «Обновить» - для обоих разделов.
-  const fleetKey = (k: unknown) => k === 'machines' || k === 'nodes' || k === 'overview';
+  const fleetKey = (k: unknown) => k === 'machines' || k === 'nodes' || k === 'overview' || k === 'stack';
   const fetching = useIsFetching({ predicate: (q) => fleetKey(q.queryKey[0]) });
   const refreshAll = () => qc.invalidateQueries({ predicate: (q) => fleetKey(q.queryKey[0]) });
   const now = useNow();
@@ -261,6 +291,7 @@ export default function NodesPage() {
       </div>
       <FleetCounters />
       <FleetMachines />
+      <StackCard />
       <Card
         title={t('nodes.clusterTitle')}
         extra={<Typography.Text type="secondary">{t('nodes.clusterHint')}</Typography.Text>}

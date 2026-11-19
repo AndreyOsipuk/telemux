@@ -211,9 +211,9 @@ describe('NodesPage: узлы управления кластером', () => {
 
     renderWithProviders(<NodesPage />);
 
-    // Оба раздела - со своим баннером.
+    // Каждый раздел (машины, версии, кластер) - со своим баннером.
     await screen.findAllByText(ru.errors.network, {}, { timeout: 5000 });
-    expect(screen.getAllByText(ru.errors.network)).toHaveLength(2);
+    expect(screen.getAllByText(ru.errors.network)).toHaveLength(3);
   });
 });
 
@@ -247,6 +247,25 @@ describe('NodesPage: runtime машин и карточка машины', () =>
       return undefined;
     };
   }
+
+  it('версия telemt не как у большинства флота - подсвечена', async () => {
+    const ms: Machine[] = [
+      runtimeMachine('a', { telemt_version: '3.5.17' }),
+      runtimeMachine('b', { telemt_version: '3.5.17' }),
+      runtimeMachine('c', { telemt_version: '3.5.10' }),
+    ];
+    mockFetch((url) => {
+      const path = urlPath(url);
+      if (path === '/api/v1/machines') return { body: pageOf(ms, url) };
+      if (path === '/api/v1/overview') return { body: overviewOf(ms) };
+      if (url === '/api/nodes') return { body: { nodes: [] } };
+      return undefined;
+    });
+    renderWithProviders(<NodesPage />);
+    const tag = await screen.findByTestId('version-differs');
+    expect(tag).toHaveTextContent('3.5.10');
+    expect(screen.getAllByTestId('version-differs')).toHaveLength(1);
+  });
 
   it('карточки «всего / в сети / не в сети» и runtime-колонки', async () => {
     mockFetch(rtBackend());
