@@ -19,6 +19,7 @@ type fakeAgents struct {
 	mu       sync.Mutex
 	rev      *fakeRevisions
 	tokens   map[string]string // токен → машина
+	disabled map[string]bool   // выключенные машины (отчитываются, ревизий не получают)
 	observed []store.ObservedReport
 
 	machines              []store.Machine
@@ -50,14 +51,14 @@ type fakeAgents struct {
 	lastThreshold time.Duration
 }
 
-func (f *fakeAgents) TargetByAgentToken(_ context.Context, token string) (string, error) {
+func (f *fakeAgents) AgentTargetByToken(_ context.Context, token string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	code, ok := f.tokens[token]
 	if !ok {
-		return "", store.ErrBadAgentToken
+		return "", false, store.ErrBadAgentToken
 	}
-	return code, nil
+	return code, !f.disabled[code], nil
 }
 
 func (f *fakeAgents) MaxRevision(_ context.Context, _ string) (int64, error) {

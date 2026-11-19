@@ -64,19 +64,34 @@ func randomToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// TargetByAgentToken - машина, которой принадлежит токен.
+// TargetByAgentToken - включённая машина, которой принадлежит токен.
 func (s *Store) TargetByAgentToken(ctx context.Context, token string) (string, error) {
-	var code string
-	err := s.pool.QueryRow(ctx,
-		`SELECT a.target FROM agent_tokens a JOIN targets t ON t.code = a.target
-		  WHERE a.token_sha256 = $1 AND t.enabled`, tokenHash(token)).Scan(&code)
-	if errors.Is(err, pgx.ErrNoRows) {
+	code, enabled, err := s.AgentTargetByToken(ctx, token)
+	if err != nil {
+		return "", err
+	}
+	if !enabled {
 		return "", ErrBadAgentToken
 	}
-	if err != nil {
-		return "", fmt.Errorf("поиск токена: %w", err)
-	}
 	return code, nil
+}
+
+// AgentTargetByToken - машина, которой принадлежит токен, и включена ли она.
+// Агент выключенной машины продолжает отчитываться, но новых ревизий не получает
+// (ADR 0007).
+func (s *Store) AgentTargetByToken(ctx context.Context, token string) (string, bool, error) {
+	var code string
+	var enabled bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT a.target, t.enabled FROM agent_tokens a JOIN targets t ON t.code = a.target
+		  WHERE a.token_sha256 = $1`, tokenHash(token)).Scan(&code, &enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, ErrBadAgentToken
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("поиск токена: %w", err)
+	}
+	return code, enabled, nil
 }
 
 // MaxRevision - последняя ревизия любого ресурса машины (0 - публикаций не было).

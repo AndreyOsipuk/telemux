@@ -253,6 +253,8 @@ func (f *fakeRevisions) PublishResource(_ context.Context, target, resource stri
 		return store.PublishResult{}, store.ErrUnknownTarget
 	case target == "ps2":
 		return store.PublishResult{}, store.ErrResourceNotAssigned
+	case target == "off1":
+		return store.PublishResult{}, store.ErrMachineDisabled
 	}
 	f.rev++
 	f.published++

@@ -29,7 +29,8 @@ const (
 	logErrorsWindow = 24 * time.Hour
 	// logErrorsSkew - запас на расхождение часов бота и мастера для since.
 	logErrorsSkew = time.Minute
-	// runtimePruneEvery - как часто мастер чистит счётчики журнала старше суток.
+	// runtimePruneEvery - как часто мастер чистит счётчики журнала старше суток
+	// (и историю нагрузки и события - machineops.go).
 	runtimePruneEvery = 10 * time.Minute
 
 	// Период журнала в отчёте агента. Агент читает журнал не дальше чем на час
@@ -195,13 +196,14 @@ func validateRuntime(rep store.RuntimeReport, now time.Time) error {
 	return nil
 }
 
-// pruneRuntime удаляет счётчики журнала старше суток. Только на мастере:
-// на реплике база только для чтения.
+// pruneRuntime удаляет счётчики журнала старше суток, историю нагрузки старше
+// 8 дней и события старше 30 дней. Только на мастере: на реплике база только для чтения.
 func (s *Server) pruneRuntime(ctx context.Context) {
 	st, err := s.currentRole(ctx)
 	if err != nil || !st.IsMaster() {
 		return
 	}
+	defer s.pruneMachineOps(ctx)
 	n, err := s.deps.Agents.PruneLogErrors(ctx, time.Now().Add(-logErrorsWindow))
 	if err != nil {
 		s.deps.Log.Warn("чистка runtime_log_errors не удалась, повтор при следующем проходе", "err", err)
@@ -260,6 +262,7 @@ func (s *Server) routesRuntime() {
 			s.writeStoreErr(w, err)
 			return
 		}
+		s.recordMetrics(r.Context(), code)
 		w.WriteHeader(http.StatusNoContent)
 	})
 

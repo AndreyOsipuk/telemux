@@ -62,7 +62,8 @@ export interface paths {
          *     Только мастер. Код - `^[a-z][a-z0-9-]{1,31}$`, занятый код - 409. Для выхода (`exit`)
          *     обязательны `relay_code` (существующий релей), `address` (публичный IPv4 выхода) и
          *     `bridge_socks` (адрес socks-входа на релее, через который релей ходит в этот выход,
-         *     например `socks5://127.0.0.1:10872`). Ресурсы - из `telemt.users`, `mtg.config`.
+         *     например `socks5://127.0.0.1:10872`). Релею можно задать `address` - его публичный
+         *     IPv4 для сборки `telemt.config`. Ресурсы - из `telemt.users`, `mtg.config`.
          *     Если на мастере настроена цепочка файрвола (`TELEMUX_AGENT_FW_CHAIN`), адрес выхода
          *     сразу открывается на TLS-порту агентов.
          *     Новый релей ходит к мастеру через мост своего выхода, а выходов у него ещё нет: машина
@@ -182,7 +183,10 @@ export interface paths {
          *     мастер-панели 3x-ui (машина вида panel). Новая ревизия создаётся только при изменении
          *     содержимого. `telemt.config` проверяется до публикации: текст разбирается как TOML,
          *     в нём нет `[[web.vhosts.profiles]]` и есть `include` на users.toml - иначе 400.
-         *     `telemt.users` сюда не публикуется: его собирает telemux.
+         *     `telemt.users` сюда не публикуется: его собирает telemux. Выключенной машине - 409
+         *     `machine_disabled`. `telemt.config` и `mtg.config` машины, которые собирает сам telemux
+         *     (сервер с `config_source=telemux`, ADR 0006), - 409 `managed_by_telemux`: бот считает
+         *     это пропуском.
          */
         put: operations["putTargetResource"];
         post?: never;
@@ -464,8 +468,9 @@ export interface paths {
         /**
          * Серверы с точками входа и живыми цифрами
          * @description Справочник серверов (ADR 0005): «Сервер N» - движок, релей и машина за рубежом,
-         *     лимиты, настройки движка и точки входа (одна точка входа = одна ссылка). Пока
-         *     справочное описание: на машины и бота не влияет. По номеру; фильтры `engine`,
+         *     лимиты, настройки движка и точки входа (одна точка входа = одна ссылка). Из описания
+         *     telemux собирает конфиги машин (ADR 0006): `config_source` - кто их публикует,
+         *     `render` - сводка последнего сравнения сборки. По номеру; фильтры `engine`,
          *     `state`; `paging.total` - с фильтром. `live` - живые цифры машин сервера по
          *     последнему runtime-отчёту агента (продукт = движок сервера).
          */
@@ -543,6 +548,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{no}/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                no: number;
+            };
+            cookie?: never;
+        };
+        /**
+         * Сравнение сборки telemux с конфигами машин сервера
+         * @description Последний проход цикла сборки на мастере (раз в минуту и сразу после правки сервера
+         *     или пользователей): по каждой машине и ресурсу (`telemt.config`, `mtg.config`) - sha
+         *     кандидата telemux и текущей ревизии, совпадение, ошибка сборки и unified diff
+         *     «текущий → кандидат». Значения в секциях `[secrets]` и `[access.users]` в diff
+         *     заменены на `<secret>` (сменённый ключ - `<secret changed>`). Ошибки - строкой
+         *     `код: текст`: `no_address` (у машины нет `targets.settings.address`), `not_assigned`
+         *     (ресурс не назначен машине или она выключена - кандидат собран, но не публикуется),
+         *     `no_tls_domain`, `bad_setting`, `shared_machine` (ресурс машины собирают несколько
+         *     серверов), `publish_failed`. У сервера не больше двух машин - без пагинации.
+         */
+        get: operations["getServerRender"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{no}/config-source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                no: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Кто публикует конфиги машин сервера - бот или telemux
+         * @description Только мастер. На `telemux` - только если последнее сравнение есть и совпало по всем
+         *     машинам сервера, иначе 409 `render_mismatch`; `force: true` переключает и при
+         *     расхождении. Обратно на `bot` - всегда. При `telemux` цикл сборки сам публикует
+         *     кандидата (ревизия - только при изменении), а публикация этих ресурсов ботом - 409
+         *     `managed_by_telemux`.
+         */
+        put: operations["setServerConfigSource"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/targets/{code}/apply-log": {
         parameters: {
             query?: never;
@@ -563,6 +624,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/targets/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Включить, выключить машину и поправить её настройки
+         * @description Частичное обновление: `enabled` и (или) `settings`, хотя бы одно. Только мастер.
+         *     `settings` сливаются с текущими: ключ с пустым значением удаляется (можно только
+         *     `web_domains` и адрес релея). Допустимые ключи - по виду машины, проверка - как при
+         *     добавлении: выход - `address` (публичный IPv4), `bridge_socks`
+         *     (`socks5://127.0.0.1:<порт>`); релей - `address` (IP машины) и `web_domains` (домены
+         *     через запятую); вход панели - `inbound_id`, `node_id`,
+         *     `port` (целые больше 0) и `node_code`. Чужой или неверный ключ - 400 `bad_setting`,
+         *     неизвестное поле тела - 400.
+         *     Выключенной машине не публикуются новые ревизии (публикация ресурса ей - 409
+         *     `machine_disabled`), её нет в тревогах; агент продолжает отчитываться, а
+         *     `/v1/desired` отвечает ему 304. При включении мастер публикует `telemt.users`
+         *     машинам, у которых он устарел; ресурсы бота (`telemt.config`, `mtg.config`) бот
+         *     публикует сам.
+         */
+        put: operations["updateTarget"];
+        post?: never;
+        /**
+         * Удалить выключенную машину
+         * @description Только мастер. Включённую - 409 `machine_enabled`. На машину ссылаются серверы
+         *     (`relay_code`, `node_code`), выходы релея или входы панели - 409 `machine_in_use`,
+         *     в `message` - номера серверов и коды машин. Удаляются токены агента, желаемое и
+         *     применённое состояние, журнал, runtime и история нагрузки; события тревог остаются.
+         */
+        delete: operations["deleteTarget"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/machines/{code}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Проверка связи с машиной
+         * @description Только мастер (проверка идёт с него). Свежесть агента (последний отчёт observed или
+         *     runtime против порога свежести и `silent_after`) и каждая включённая точка входа
+         *     серверов машины (кроме серверов в `state=disabled`): через релей - точки серверов,
+         *     где машина - `relay_code`, напрямую - где `node_code`. TCP-подключение к host:port,
+         *     для `web` - к host:443 и TLS-рукопожатие с SNI=host с проверкой цепочки и имени
+         *     (срок сертификата - `not_after`, `days_left`). Таймаут 5 с на точку, до 8 точек
+         *     параллельно, всего не дольше 20 с: до чего не дошла очередь - ошибка в ответе.
+         *     Ошибки сети - в результате (`ok: false`, `error`), не 5xx. Не больше 200 точек
+         *     (`truncated: true` - были ещё).
+         */
+        post: operations["checkMachine"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/machines/{code}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * История нагрузки машины
+         * @description Каждый runtime-отчёт агента (раз в минуту) пишет строку истории; хранение 8 дней.
+         *     Значения усредняются по шагу `step` (границы шагов от 2000-01-01 UTC, не от `from`),
+         *     шаги без отчётов не возвращаются. По умолчанию - последние 24 часа с шагом 5m.
+         *     Окно `[from, to)`; `from` не раньше `to` - 400; больше 2000 точек - 400
+         *     `too_many_points`. Неизвестная машина - 404. `rx_bps`, `tx_bps` - бит/с;
+         *     нагрузка `null` - агент за шаг не прислал host.
+         */
+        get: operations["getMachineMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Лента тревог по машинам (для бота)
+         * @description События после `after_id` по возрастанию `id`. Бот запоминает последний `id` и
+         *     пересылает новые админу. Мастер раз в 30 с пишет: `down` - включённая машина с
+         *     агентом молчит дольше `silent_after` (10 мин), `up` - вернулась (по одному событию
+         *     на переход; машина, где агента ещё не ставили, не молчит); `apply_failed` - агент
+         *     сообщил провал применения ревизии ресурса (одно событие на ревизию). Выключенные
+         *     машины в тревогах не участвуют. Хранение - 30 дней. `paging.total` - сколько
+         *     событий после `after_id`, `paging.offset` всегда 0.
+         */
+        get: operations["listEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/desired": {
         parameters: {
             query?: never;
@@ -574,6 +755,8 @@ export interface paths {
          * Желаемое состояние машины (long-poll агента)
          * @description Ответ сразу, если есть ревизия новее `rev`; иначе запрос ждёт до `wait`
          *     (максимум 60 с) и возвращает 304. Токен машины даёт доступ только к её бандлу.
+         *     Выключенная машина (`enabled: false`) новых ревизий не получает: запрос ждёт
+         *     до `wait` и возвращает 304; отчёты `/v1/observed` и `/v1/runtime` она шлёт как обычно.
          */
         get: operations["getDesired"];
         put?: never;
@@ -617,6 +800,8 @@ export interface paths {
          *     (строки пользователей продукта заменяются, только если API продукта
          *     ответил - `api_ok: true`), счётчики журнала - 24 часа. Повтор того же
          *     периода журнала не удваивает счётчики.
+         *     Каждый отчёт добавляет строку истории нагрузки машины (минута, 8 дней) -
+         *     `/api/v1/machines/{code}/metrics`.
          *     Лимиты: до 5000 пользователей в каждом продукте, до 20 адресов на
          *     пользователя, до 5000 строк журнала - иначе 400; тело больше 2 МБ - 413
          *     (агент сам урезает отчёт: адреса, затем пользователей с меньшим числом
@@ -776,7 +961,7 @@ export interface components {
             kind: "exit" | "relay";
             /** @description Для выхода - его релей */
             relay_code?: string;
-            /** @description Для выхода - публичный IPv4 */
+            /** @description Публичный IPv4: для выхода обязателен, для релея - по желанию (announce_ip в telemt.config, ADR 0006) */
             address?: string;
             /** @description Для выхода - socks-вход на релее к этому выходу, socks5://127.0.0.1:<порт> */
             bridge_socks?: string;
@@ -1168,11 +1353,49 @@ export interface components {
             };
             note: string;
             endpoints: components["schemas"]["Endpoint"][];
+            config_source: components["schemas"]["ConfigSource"];
+            render?: components["schemas"]["ServerRenderSummary"];
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
             updated_at: string;
             live?: components["schemas"]["ServerLive"];
+        };
+        /**
+         * @description Кто публикует `telemt.config` / `mtg.config` машин сервера: `bot` (по умолчанию) или
+         *     сам telemux (ADR 0006). Меняется только `PUT /api/v1/servers/{no}/config-source`.
+         * @enum {string}
+         */
+        ConfigSource: "bot" | "telemux";
+        ServerRenderSummary: {
+            /** @description Ресурсов машин в сравнении */
+            rows: number;
+            /** @description Все собраны и совпали с текущими (и есть хоть один) */
+            equal: boolean;
+            /** @description Не собрались или не назначены */
+            errors: number;
+            /**
+             * Format: date-time
+             * @description null - сравнения ещё не было
+             */
+            rendered_at: string | null;
+        };
+        ServerRenderItem: {
+            /** @description Код машины */
+            target: string;
+            /** @enum {string} */
+            resource: "telemt.config" | "mtg.config";
+            /** @description null - кандидат не собран */
+            candidate_sha: string | null;
+            /** @description null - ревизий ресурса у машины нет */
+            current_sha: string | null;
+            equal: boolean;
+            /** @description `код: текст`; null - собран и назначен */
+            error: string | null;
+            /** Format: date-time */
+            rendered_at: string;
+            /** @description Unified diff текущий → кандидат, секреты замаскированы; пусто - совпадает или кандидата нет */
+            diff: string;
         };
         ServerField: {
             key: string;
@@ -1193,12 +1416,116 @@ export interface components {
             hint_ru: string;
             hint_en: string;
         };
+        TargetPatch: {
+            enabled?: boolean;
+            /** @description Сливаются с текущими; пустое значение удаляет ключ (только web_domains и адрес релея) */
+            settings?: {
+                [key: string]: string;
+            };
+        };
+        Target: {
+            code: string;
+            /** @enum {string} */
+            kind: "exit" | "relay" | "panel";
+            relay_code?: string;
+            resources: string[];
+            enabled: boolean;
+            settings?: {
+                [key: string]: string;
+            };
+        };
+        ProbeResult: {
+            ok: boolean;
+            /** @description Сколько заняла проверка */
+            ms: number;
+            error?: string;
+        };
+        TLSProbeResult: {
+            ok: boolean;
+            ms: number;
+            error?: string;
+            /** Format: date-time */
+            not_after: string | null;
+            days_left: number | null;
+        };
+        EndpointCheck: {
+            server_no: number;
+            server_name: string;
+            /** Format: int64 */
+            endpoint_id: number;
+            protocol: components["schemas"]["EndpointProtocol"];
+            host: string;
+            /** @description Для web - 443 */
+            port: number;
+            via_relay: boolean;
+            tcp: components["schemas"]["ProbeResult"];
+            /** @description Только у web */
+            tls: components["schemas"]["TLSProbeResult"] | null;
+        };
+        MachineCheck: {
+            code: string;
+            /** @enum {string} */
+            kind: "exit" | "relay" | "panel";
+            enabled: boolean;
+            /** Format: date-time */
+            checked_at: string;
+            /** @description Агент свежий и все точки входа ответили */
+            ok: boolean;
+            agent: {
+                /** Format: date-time */
+                seen_at: string | null;
+                age_seconds: number | null;
+                /** @description Отчёт не старше порога свежести */
+                fresh: boolean;
+                /** @description Молчит дольше silent_after или не отчитывался */
+                silent: boolean;
+                stale_after_seconds: number;
+                silent_after_seconds: number;
+            };
+            endpoints: components["schemas"]["EndpointCheck"][];
+            truncated: boolean;
+        };
+        MetricPoint: {
+            /**
+             * Format: date-time
+             * @description Начало шага
+             */
+            at: string;
+            cpu: number | null;
+            mem: number | null;
+            disk: number | null;
+            load1: number | null;
+            rx_bps: number | null;
+            tx_bps: number | null;
+            connections: number;
+            users_online: number;
+        };
+        MachineMetrics: {
+            code: string;
+            /** Format: date-time */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            /** @enum {string} */
+            step: "1m" | "5m" | "1h";
+            data: components["schemas"]["MetricPoint"][];
+        };
+        MachineEvent: {
+            /** Format: int64 */
+            id: number;
+            /** Format: date-time */
+            at: string;
+            machine: string;
+            /** @enum {string} */
+            kind: "down" | "up" | "apply_failed";
+            detail: string;
+        };
         Error: {
             /**
              * @description Машинный код
              * @enum {string}
              */
-            code: "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "gone" | "unprocessable" | "not_implemented" | "unavailable" | "internal" | "not_master" | "mass_delete_guard" | "payload_too_large" | "unknown_machine" | "engine_immutable" | "unknown_setting" | "bad_setting" | "bad_endpoint" | "batch_too_large";
+            code: "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "gone" | "unprocessable" | "not_implemented" | "unavailable" | "internal" | "not_master" | "mass_delete_guard" | "payload_too_large" | "unknown_machine" | "engine_immutable" | "unknown_setting" | "bad_setting" | "bad_endpoint" | "batch_too_large" | "machine_enabled" | "machine_in_use" | "machine_disabled" | "too_many_points" | "render_mismatch" | "managed_by_telemux";
             message: string;
             /** @description Копия message для старой панели */
             error?: string;
@@ -2039,6 +2366,70 @@ export interface operations {
             503: components["responses"]["Error"];
         };
     };
+    getServerRender: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                no: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Сравнение по машинам */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ServerRenderItem"][];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    setServerConfigSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                no: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    source: components["schemas"]["ConfigSource"];
+                    /** @default false */
+                    force?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Источник сменён (или уже был таким) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Server"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
     getApplyLog: {
         parameters: {
             query?: {
@@ -2068,6 +2459,152 @@ export interface operations {
             400: components["responses"]["Error"];
             401: components["responses"]["Error"];
             404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    updateTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TargetPatch"];
+            };
+        };
+        responses: {
+            /** @description Машина после изменения */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Target"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    deleteTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Удалена */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    checkMachine: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Результат проверки */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MachineCheck"];
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    getMachineMetrics: {
+        parameters: {
+            query?: {
+                from?: string;
+                to?: string;
+                step?: "1m" | "5m" | "1h";
+            };
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Точки истории */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MachineMetrics"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listEvents: {
+        parameters: {
+            query?: {
+                after_id?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница событий */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["MachineEvent"][];
+                        paging: components["schemas"]["Paging"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
             500: components["responses"]["Error"];
             503: components["responses"]["Error"];
         };

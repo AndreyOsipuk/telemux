@@ -268,6 +268,8 @@ func joinServer(t *testing.T, o joinOpts) (*Server, *fakeJoins, *fakeFirewall, s
 		TLSListen: "0.0.0.0:18443", TLSCertFile: cert,
 		Certs:   newFakeCerts(),
 		Servers: newFakeServers(),
+		Ops:     newFakeOps(),
+		Render:  &fakeRender{sources: map[int]string{}, rows: map[int][]store.RenderStatus{}},
 	})
 	return s, fj, fw, spki
 }
@@ -300,35 +302,35 @@ const exitBody = `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.
 func TestJoin_CreateTargetValidation(t *testing.T) {
 	s, fj, fw, _ := defaultJoin(t)
 	cases := map[string]string{
-		"не JSON":                `{`,
-		"код пустой":             `{"code":"","kind":"relay","resources":[]}`,
-		"код с заглавной":        `{"code":"Pr3","kind":"relay","resources":[]}`,
-		"код из одной буквы":     `{"code":"p","kind":"relay","resources":[]}`,
-		"код с подчёркиванием":   `{"code":"pr_3","kind":"relay","resources":[]}`,
-		"код длиннее 32":         `{"code":"p` + strings.Repeat("a", 32) + `","kind":"relay","resources":[]}`,
-		"kind panel":             `{"code":"pr3","kind":"panel","resources":[]}`,
-		"kind пустой":            `{"code":"pr3","resources":[]}`,
-		"релей с адресом":        `{"code":"pr3","kind":"relay","address":"203.0.113.9","resources":[]}`,
-		"релей с relay_code":     `{"code":"pr3","kind":"relay","relay_code":"pr1","resources":[]}`,
-		"без resources":          `{"code":"pr3","kind":"relay"}`,
-		"чужой ресурс":           `{"code":"pr3","kind":"relay","resources":["xui.clients"]}`,
-		"ресурс дважды":          `{"code":"pr3","kind":"relay","resources":["telemt.users","telemt.users"]}`,
-		"выход без relay_code":   `{"code":"ps3","kind":"exit","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
-		"релея нет":              `{"code":"ps3","kind":"exit","relay_code":"pr9","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
-		"релей - это выход":      `{"code":"ps3","kind":"exit","relay_code":"ps1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
-		"адрес с мусором":        `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"1.2.3.4;rm","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
-		"адрес IPv6":             `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"2001:db8::1","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
-		"адрес пустой":           `{"code":"ps3","kind":"exit","relay_code":"pr1","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
-		"адрес loopback":         `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"127.0.0.1","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
-		"socks не loopback":      `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"socks5://10.0.0.1:1080","resources":[]}`,
-		"socks порт 0":           `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:0","resources":[]}`,
-		"socks порт 65536":       `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:65536","resources":[]}`,
-		"socks пустой":           `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","resources":[]}`,
-		"socks с мусором":        `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1;id","resources":[]}`,
-		"socks другая схема":     `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"http://127.0.0.1:1080","resources":[]}`,
-		"resources не массив":    `{"code":"pr3","kind":"relay","resources":"telemt.users"}`,
-		"релей с bridge_socks":   `{"code":"pr3","kind":"relay","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
-		"выход с чужим ресурсом": `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":["panel"]}`,
+		"не JSON":                  `{`,
+		"код пустой":               `{"code":"","kind":"relay","resources":[]}`,
+		"код с заглавной":          `{"code":"Pr3","kind":"relay","resources":[]}`,
+		"код из одной буквы":       `{"code":"p","kind":"relay","resources":[]}`,
+		"код с подчёркиванием":     `{"code":"pr_3","kind":"relay","resources":[]}`,
+		"код длиннее 32":           `{"code":"p` + strings.Repeat("a", 32) + `","kind":"relay","resources":[]}`,
+		"kind panel":               `{"code":"pr3","kind":"panel","resources":[]}`,
+		"kind пустой":              `{"code":"pr3","resources":[]}`,
+		"релей с мусорным адресом": `{"code":"pr3","kind":"relay","address":"1.2.3.4;rm","resources":[]}`,
+		"релей с relay_code":       `{"code":"pr3","kind":"relay","relay_code":"pr1","resources":[]}`,
+		"без resources":            `{"code":"pr3","kind":"relay"}`,
+		"чужой ресурс":             `{"code":"pr3","kind":"relay","resources":["xui.clients"]}`,
+		"ресурс дважды":            `{"code":"pr3","kind":"relay","resources":["telemt.users","telemt.users"]}`,
+		"выход без relay_code":     `{"code":"ps3","kind":"exit","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
+		"релея нет":                `{"code":"ps3","kind":"exit","relay_code":"pr9","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
+		"релей - это выход":        `{"code":"ps3","kind":"exit","relay_code":"ps1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
+		"адрес с мусором":          `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"1.2.3.4;rm","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
+		"адрес IPv6":               `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"2001:db8::1","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
+		"адрес пустой":             `{"code":"ps3","kind":"exit","relay_code":"pr1","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
+		"адрес loopback":           `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"127.0.0.1","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
+		"socks не loopback":        `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"socks5://10.0.0.1:1080","resources":[]}`,
+		"socks порт 0":             `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:0","resources":[]}`,
+		"socks порт 65536":         `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:65536","resources":[]}`,
+		"socks пустой":             `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","resources":[]}`,
+		"socks с мусором":          `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1;id","resources":[]}`,
+		"socks другая схема":       `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"http://127.0.0.1:1080","resources":[]}`,
+		"resources не массив":      `{"code":"pr3","kind":"relay","resources":"telemt.users"}`,
+		"релей с bridge_socks":     `{"code":"pr3","kind":"relay","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
+		"выход с чужим ресурсом":   `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":["panel"]}`,
 	}
 	for name, body := range cases {
 		rec := do(s, "POST", "/api/v1/targets", botToken, body)
@@ -447,6 +449,21 @@ func TestJoin_CreateRelayWithoutExits(t *testing.T) {
 	}
 	if rec := do(s, "POST", "/api/v1/targets/pr3/join", botToken, ""); rec.Code != http.StatusConflict {
 		t.Fatalf("join релея без выходов: ждали 409, получили %d", rec.Code)
+	}
+}
+
+// Релею можно задать адрес: он нужен сборке telemt.config (announce_ip, ADR 0006).
+func TestJoin_CreateRelayWithAddress(t *testing.T) {
+	s, fj, fw, _ := defaultJoin(t)
+	rec := do(s, "POST", "/api/v1/targets", botToken, `{"code":"pr3","kind":"relay","address":"203.0.113.9","resources":["telemt.users"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("ждали 201, получили %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := fj.targets["pr3"].Settings; got[store.SettingAddress] != "203.0.113.9" || len(got) != 1 {
+		t.Fatalf("настройки релея: %v", got)
+	}
+	if len(fw.calls) != 0 {
+		t.Fatalf("адрес релея на файрволе мастера не открывается: %v", fw.calls)
 	}
 }
 

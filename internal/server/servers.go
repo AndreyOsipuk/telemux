@@ -1,8 +1,8 @@
 package server
 
-// Серверы - описание того, что видит клиент (ADR 0005, этап B1). Пока справочник:
-// хранится и правится в панели, но ни на что не влияет. Чтение - токен бота или
-// вход в панель, запись - то же и только на мастере.
+// Серверы - описание того, что видит клиент (ADR 0005). Из описания telemux собирает
+// конфиги машин сервера (ADR 0006, render.go). Чтение - токен бота или вход в панель,
+// запись - то же и только на мастере.
 
 import (
 	"context"
@@ -147,6 +147,7 @@ func (s *Server) routesServers() {
 			s.writeStoreErr(w, err)
 			return
 		}
+		s.wakeRender()
 		list := []store.Server{srv}
 		s.fillServerLive(list, time.Now())
 		writeJSONStatus(w, http.StatusCreated, list[0])
@@ -185,6 +186,7 @@ func (s *Server) routesServers() {
 			s.writeStoreErr(w, err)
 			return
 		}
+		s.wakeRender()
 		list := []store.Server{srv}
 		s.fillServerLive(list, time.Now())
 		writeJSON(w, list[0])
@@ -207,6 +209,7 @@ func (s *Server) routesServers() {
 			s.writeStoreErr(w, err)
 			return
 		}
+		s.wakeRender()
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -244,6 +247,7 @@ func (s *Server) routesServers() {
 			s.writeStoreErr(w, err)
 			return
 		}
+		s.wakeRender()
 		writeJSON(w, map[string]int{"inserted": ins, "updated": upd})
 	})
 }

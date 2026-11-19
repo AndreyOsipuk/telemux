@@ -198,12 +198,22 @@ func runServe(args []string) int {
 	} else {
 		certs = st
 	}
-	// Справочник серверов (ADR 0005): ручки - только если применена миграция 0010.
+	// Справочник серверов (ADR 0005) и сборка их конфигов (ADR 0006): ручки и цикл -
+	// только если применены миграции 0010 и 0011.
 	var servers server.ServerStore
+	var renderStore server.RenderStore
 	if err := st.CheckServersSchema(ctx); err != nil {
-		logger.Warn("серверы: /api/v1/servers выключен", "err", err)
+		logger.Warn("серверы: /api/v1/servers и сборка конфигов выключены", "err", err)
 	} else {
-		servers = st
+		servers, renderStore = st, st
+	}
+	// Машины как ноды 3x-ui (ADR 0007): ручки, история нагрузки и тревоги - только
+	// если применены миграции 0010 и 0012.
+	var ops server.MachineOpsStore
+	if err := st.CheckMachineOpsSchema(ctx); err != nil {
+		logger.Warn("машины: PUT/DELETE /api/v1/targets/{code}, проверка связи, метрики и тревоги выключены", "err", err)
+	} else {
+		ops = st
 	}
 	var acmeDeps *server.ACMEDeps
 	if acmeSet != nil {
@@ -239,6 +249,8 @@ func runServe(args []string) int {
 		Panel:          panel,
 		Certs:          certs,
 		Servers:        servers,
+		Render:         renderStore,
+		Ops:            ops,
 		ACME:           acmeDeps,
 		TLSListen:      envOr("TELEMUX_TLS_LISTEN", ""),
 		TLSCertFile:    envOr("TELEMUX_TLS_CERT", "/etc/telemux/tls/cert.pem"),

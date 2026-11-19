@@ -318,8 +318,8 @@ func TestIntegration_Servers_ListNoNPlusOne(t *testing.T) {
 	if total != 12 || len(list) != 12 {
 		t.Fatalf("страница: total %d, строк %d", total, len(list))
 	}
-	if q := counter.n.Load(); q != 4 {
-		t.Fatalf("запросов на страницу %d, ждали 4 (count, серверы, точки входа, живые цифры)", q)
+	if q := counter.n.Load(); q != 5 {
+		t.Fatalf("запросов на страницу %d, ждали 5 (count, серверы, точки входа, живые цифры, сводка сборки)", q)
 	}
 	for _, srv := range list {
 		if len(srv.Endpoints) != 3 {

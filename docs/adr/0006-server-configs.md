@@ -1,6 +1,6 @@
 # ADR 0006. Конфиги telemt и mtg собирает telemux (этап B2)
 
-- Статус: принято
+- Статус: принято, реализовано (этап B2)
 - Дата: 2026-11-19
 - Связано: [ADR 0005](0005-servers.md) - серверы, [ADR 0003](0003-telemt-config.md) - telemt.config
 
@@ -56,3 +56,21 @@ telemux собирает оба конфига из описания серве�
 - Расхождения сборщиков видны до переключения, откат - одна кнопка.
 - Пока бот собирает конфиги серверов на `bot`, сборщики двух систем нужно держать
   одинаковыми; после переключения всех серверов сборку конфигов из бота можно удалить.
+
+## Реализация
+
+- Сборщики - `internal/render` (`TelemtMain`, `MtgConfig`), эталоны - `testdata/*.golden` из
+  кода бота (`testdata/golden.ts` по `testdata/cases.json`), цикл и ручки -
+  `internal/server/render.go`, хранение - `internal/store/server_render.go`.
+- Соответствие входов бота: `settings.port`, `ipv6` - `servers.port`, `telemt_ipv6`;
+  `tls_domain` и `extra_tls_domains` - `tls_domain`, `extra_tls_domains` и
+  `public_tls_domain` бота (его нужно положить в `extra_tls_domains` последним); путь
+  `include` - `/etc/telemt/users.toml` (как у бота при `config_path` по умолчанию). Для mtg
+  ключи `settings` - те же `MTG_<CODE>_*`, `DOMAIN` - `tls_domain`, `WEB_DOMAIN` - первая
+  включённая точка входа `web`, релей есть - если задан `relay_code`.
+- Отличия от бота: значения `listen_backlog`, `max_connections`, `client_mss` и др., которые
+  у бота зашиты в код, берутся из настроек (по умолчанию те же); пользователь с ключом или
+  секретом не по формату в `[secrets]` не попадает (у бота сломал бы TOML); пользователь
+  без срока (у бота срок есть всегда) попадает.
+- Ресурс машины, который собирают несколько серверов, не собирается (`shared_machine`).
+

@@ -108,7 +108,8 @@ paths:
         Только мастер. Код - `^[a-z][a-z0-9-]{1,31}$`, занятый код - 409. Для выхода (`exit`)
         обязательны `relay_code` (существующий релей), `address` (публичный IPv4 выхода) и
         `bridge_socks` (адрес socks-входа на релее, через который релей ходит в этот выход,
-        например `socks5://127.0.0.1:10872`). Ресурсы - из `telemt.users`, `mtg.config`.
+        например `socks5://127.0.0.1:10872`). Релею можно задать `address` - его публичный
+        IPv4 для сборки `telemt.config`. Ресурсы - из `telemt.users`, `mtg.config`.
         Если на мастере настроена цепочка файрвола (`TELEMUX_AGENT_FW_CHAIN`), адрес выхода
         сразу открывается на TLS-порту агентов.
         Новый релей ходит к мастеру через мост своего выхода, а выходов у него ещё нет: машина
@@ -228,7 +229,10 @@ paths:
         мастер-панели 3x-ui (машина вида panel). Новая ревизия создаётся только при изменении
         содержимого. `telemt.config` проверяется до публикации: текст разбирается как TOML,
         в нём нет `[[web.vhosts.profiles]]` и есть `include` на users.toml - иначе 400.
-        `telemt.users` сюда не публикуется: его собирает telemux.
+        `telemt.users` сюда не публикуется: его собирает telemux. Выключенной машине - 409
+        `machine_disabled`. `telemt.config` и `mtg.config` машины, которые собирает сам telemux
+        (сервер с `config_source=telemux`, ADR 0006), - 409 `managed_by_telemux`: бот считает
+        это пропуском.
       operationId: putTargetResource
       parameters:
         - { name: code, in: path, required: true, schema: { type: string } }
@@ -588,8 +592,9 @@ paths:
       summary: Серверы с точками входа и живыми цифрами
       description: |
         Справочник серверов (ADR 0005): «Сервер N» - движок, релей и машина за рубежом,
-        лимиты, настройки движка и точки входа (одна точка входа = одна ссылка). Пока
-        справочное описание: на машины и бота не влияет. По номеру; фильтры `engine`,
+        лимиты, настройки движка и точки входа (одна точка входа = одна ссылка). Из описания
+        telemux собирает конфиги машин (ADR 0006): `config_source` - кто их публикует,
+        `render` - сводка последнего сравнения сборки. По номеру; фильтры `engine`,
         `state`; `paging.total` - с фильтром. `live` - живые цифры машин сервера по
         последнему runtime-отчёту агента (продукт = движок сервера).
       operationId: listServers
@@ -750,6 +755,72 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /api/v1/servers/{no}/render:
+    parameters:
+      - { name: no, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 99 } }
+    get:
+      summary: Сравнение сборки telemux с конфигами машин сервера
+      description: |
+        Последний проход цикла сборки на мастере (раз в минуту и сразу после правки сервера
+        или пользователей): по каждой машине и ресурсу (`telemt.config`, `mtg.config`) - sha
+        кандидата telemux и текущей ревизии, совпадение, ошибка сборки и unified diff
+        «текущий → кандидат». Значения в секциях `[secrets]` и `[access.users]` в diff
+        заменены на `<secret>` (сменённый ключ - `<secret changed>`). Ошибки - строкой
+        `код: текст`: `no_address` (у машины нет `targets.settings.address`), `not_assigned`
+        (ресурс не назначен машине или она выключена - кандидат собран, но не публикуется),
+        `no_tls_domain`, `bad_setting`, `shared_machine` (ресурс машины собирают несколько
+        серверов), `publish_failed`. У сервера не больше двух машин - без пагинации.
+      operationId: getServerRender
+      responses:
+        '200':
+          description: Сравнение по машинам
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ServerRenderItem' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/servers/{no}/config-source:
+    parameters:
+      - { name: no, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 99 } }
+    put:
+      summary: Кто публикует конфиги машин сервера - бот или telemux
+      description: |
+        Только мастер. На `telemux` - только если последнее сравнение есть и совпало по всем
+        машинам сервера, иначе 409 `render_mismatch`; `force: true` переключает и при
+        расхождении. Обратно на `bot` - всегда. При `telemux` цикл сборки сам публикует
+        кандидата (ревизия - только при изменении), а публикация этих ресурсов ботом - 409
+        `managed_by_telemux`.
+      operationId: setServerConfigSource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source]
+              properties:
+                source: { $ref: '#/components/schemas/ConfigSource' }
+                force: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Источник сменён (или уже был таким)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /api/v1/targets/{code}/apply-log:
     get:
       summary: История применений и проверок машины
@@ -777,12 +848,154 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /api/v1/targets/{code}:
+    parameters:
+      - { name: code, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Включить, выключить машину и поправить её настройки
+      description: |
+        Частичное обновление: `enabled` и (или) `settings`, хотя бы одно. Только мастер.
+        `settings` сливаются с текущими: ключ с пустым значением удаляется (можно только
+        `web_domains` и адрес релея). Допустимые ключи - по виду машины, проверка - как при
+        добавлении: выход - `address` (публичный IPv4), `bridge_socks`
+        (`socks5://127.0.0.1:<порт>`); релей - `address` (IP машины) и `web_domains` (домены
+        через запятую); вход панели - `inbound_id`, `node_id`,
+        `port` (целые больше 0) и `node_code`. Чужой или неверный ключ - 400 `bad_setting`,
+        неизвестное поле тела - 400.
+        Выключенной машине не публикуются новые ревизии (публикация ресурса ей - 409
+        `machine_disabled`), её нет в тревогах; агент продолжает отчитываться, а
+        `/v1/desired` отвечает ему 304. При включении мастер публикует `telemt.users`
+        машинам, у которых он устарел; ресурсы бота (`telemt.config`, `mtg.config`) бот
+        публикует сам.
+      operationId: updateTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TargetPatch' }
+      responses:
+        '200':
+          description: Машина после изменения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Target' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Удалить выключенную машину
+      description: |
+        Только мастер. Включённую - 409 `machine_enabled`. На машину ссылаются серверы
+        (`relay_code`, `node_code`), выходы релея или входы панели - 409 `machine_in_use`,
+        в `message` - номера серверов и коды машин. Удаляются токены агента, желаемое и
+        применённое состояние, журнал, runtime и история нагрузки; события тревог остаются.
+      operationId: deleteTarget
+      responses:
+        '204':
+          description: Удалена
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/machines/{code}/check:
+    post:
+      summary: Проверка связи с машиной
+      description: |
+        Только мастер (проверка идёт с него). Свежесть агента (последний отчёт observed или
+        runtime против порога свежести и `silent_after`) и каждая включённая точка входа
+        серверов машины (кроме серверов в `state=disabled`): через релей - точки серверов,
+        где машина - `relay_code`, напрямую - где `node_code`. TCP-подключение к host:port,
+        для `web` - к host:443 и TLS-рукопожатие с SNI=host с проверкой цепочки и имени
+        (срок сертификата - `not_after`, `days_left`). Таймаут 5 с на точку, до 8 точек
+        параллельно, всего не дольше 20 с: до чего не дошла очередь - ошибка в ответе.
+        Ошибки сети - в результате (`ok: false`, `error`), не 5xx. Не больше 200 точек
+        (`truncated: true` - были ещё).
+      operationId: checkMachine
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Результат проверки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MachineCheck' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/machines/{code}/metrics:
+    get:
+      summary: История нагрузки машины
+      description: |
+        Каждый runtime-отчёт агента (раз в минуту) пишет строку истории; хранение 8 дней.
+        Значения усредняются по шагу `step` (границы шагов от 2000-01-01 UTC, не от `from`),
+        шаги без отчётов не возвращаются. По умолчанию - последние 24 часа с шагом 5m.
+        Окно `[from, to)`; `from` не раньше `to` - 400; больше 2000 точек - 400
+        `too_many_points`. Неизвестная машина - 404. `rx_bps`, `tx_bps` - бит/с;
+        нагрузка `null` - агент за шаг не прислал host.
+      operationId: getMachineMetrics
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: step, in: query, schema: { type: string, enum: [1m, 5m, 1h], default: 5m } }
+      responses:
+        '200':
+          description: Точки истории
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MachineMetrics' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/events:
+    get:
+      summary: Лента тревог по машинам (для бота)
+      description: |
+        События после `after_id` по возрастанию `id`. Бот запоминает последний `id` и
+        пересылает новые админу. Мастер раз в 30 с пишет: `down` - включённая машина с
+        агентом молчит дольше `silent_after` (10 мин), `up` - вернулась (по одному событию
+        на переход; машина, где агента ещё не ставили, не молчит); `apply_failed` - агент
+        сообщил провал применения ревизии ресурса (одно событие на ревизию). Выключенные
+        машины в тревогах не участвуют. Хранение - 30 дней. `paging.total` - сколько
+        событий после `after_id`, `paging.offset` всегда 0.
+      operationId: listEvents
+      parameters:
+        - { name: after_id, in: query, schema: { type: integer, format: int64, minimum: 0, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        '200':
+          description: Страница событий
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/MachineEvent' }
+                  paging: { $ref: '#/components/schemas/Paging' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /v1/desired:
     get:
       summary: Желаемое состояние машины (long-poll агента)
       description: |
         Ответ сразу, если есть ревизия новее `rev`; иначе запрос ждёт до `wait`
         (максимум 60 с) и возвращает 304. Токен машины даёт доступ только к её бандлу.
+        Выключенная машина (`enabled: false`) новых ревизий не получает: запрос ждёт
+        до `wait` и возвращает 304; отчёты `/v1/observed` и `/v1/runtime` она шлёт как обычно.
       operationId: getDesired
       security:
         - agentToken: []
@@ -830,6 +1043,8 @@ paths:
         (строки пользователей продукта заменяются, только если API продукта
         ответил - `api_ok: true`), счётчики журнала - 24 часа. Повтор того же
         периода журнала не удваивает счётчики.
+        Каждый отчёт добавляет строку истории нагрузки машины (минута, 8 дней) -
+        `/api/v1/machines/{code}/metrics`.
         Лимиты: до 5000 пользователей в каждом продукте, до 20 адресов на
         пользователя, до 5000 строк журнала - иначе 400; тело больше 2 МБ - 413
         (агент сам урезает отчёт: адреса, затем пользователей с меньшим числом
@@ -1053,7 +1268,7 @@ components:
         code: { type: string, pattern: '^[a-z][a-z0-9-]{1,31}$' }
         kind: { type: string, enum: [exit, relay] }
         relay_code: { type: string, description: "Для выхода - его релей" }
-        address: { type: string, description: "Для выхода - публичный IPv4" }
+        address: { type: string, description: "Публичный IPv4: для выхода обязателен, для релея - по желанию (announce_ip в telemt.config, ADR 0006)" }
         bridge_socks: { type: string, description: "Для выхода - socks-вход на релее к этому выходу, socks5://127.0.0.1:<порт>" }
         resources:
           type: array
@@ -1436,7 +1651,7 @@ components:
       type: object
       required: [no, name, emoji, country, engine, relay_code, node_code, state, relay_only, node_retired,
                  tls_domain, extra_tls_domains, user_max_tcp_conns, user_max_unique_ips, settings, note,
-                 endpoints, created_at, updated_at]
+                 endpoints, config_source, created_at, updated_at]
       properties:
         no: { type: integer }
         name: { type: string }
@@ -1461,9 +1676,37 @@ components:
         endpoints:
           type: array
           items: { $ref: '#/components/schemas/Endpoint' }
+        config_source: { $ref: '#/components/schemas/ConfigSource' }
+        render: { $ref: '#/components/schemas/ServerRenderSummary' }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         live: { $ref: '#/components/schemas/ServerLive' }
+    ConfigSource:
+      type: string
+      enum: [bot, telemux]
+      description: |
+        Кто публикует `telemt.config` / `mtg.config` машин сервера: `bot` (по умолчанию) или
+        сам telemux (ADR 0006). Меняется только `PUT /api/v1/servers/{no}/config-source`.
+    ServerRenderSummary:
+      type: object
+      required: [rows, equal, errors, rendered_at]
+      properties:
+        rows: { type: integer, description: "Ресурсов машин в сравнении" }
+        equal: { type: boolean, description: "Все собраны и совпали с текущими (и есть хоть один)" }
+        errors: { type: integer, description: "Не собрались или не назначены" }
+        rendered_at: { type: string, format: date-time, nullable: true, description: "null - сравнения ещё не было" }
+    ServerRenderItem:
+      type: object
+      required: [target, resource, candidate_sha, current_sha, equal, error, rendered_at, diff]
+      properties:
+        target: { type: string, description: "Код машины" }
+        resource: { type: string, enum: [telemt.config, mtg.config] }
+        candidate_sha: { type: string, nullable: true, description: "null - кандидат не собран" }
+        current_sha: { type: string, nullable: true, description: "null - ревизий ресурса у машины нет" }
+        equal: { type: boolean }
+        error: { type: string, nullable: true, description: "`код: текст`; null - собран и назначен" }
+        rendered_at: { type: string, format: date-time }
+        diff: { type: string, description: "Unified diff текущий → кандидат, секреты замаскированы; пусто - совпадает или кандидата нет" }
     ServerField:
       type: object
       required: [key, engine, group, type, default, apply, danger, title_ru, title_en, hint_ru, hint_en]
@@ -1484,6 +1727,118 @@ components:
         title_en: { type: string }
         hint_ru: { type: string }
         hint_en: { type: string }
+    TargetPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled: { type: boolean }
+        settings:
+          type: object
+          maxProperties: 32
+          additionalProperties: { type: string, maxLength: 4096 }
+          description: Сливаются с текущими; пустое значение удаляет ключ (только web_domains и адрес релея)
+    Target:
+      type: object
+      required: [code, kind, resources, enabled]
+      properties:
+        code: { type: string }
+        kind: { type: string, enum: [exit, relay, panel] }
+        relay_code: { type: string }
+        resources:
+          type: array
+          items: { type: string }
+        enabled: { type: boolean }
+        settings:
+          type: object
+          additionalProperties: { type: string }
+    ProbeResult:
+      type: object
+      required: [ok, ms]
+      properties:
+        ok: { type: boolean }
+        ms: { type: integer, description: Сколько заняла проверка }
+        error: { type: string }
+    TLSProbeResult:
+      type: object
+      required: [ok, ms, not_after, days_left]
+      properties:
+        ok: { type: boolean }
+        ms: { type: integer }
+        error: { type: string }
+        not_after: { type: string, format: date-time, nullable: true }
+        days_left: { type: integer, nullable: true }
+    EndpointCheck:
+      type: object
+      required: [server_no, server_name, endpoint_id, protocol, host, port, via_relay, tcp, tls]
+      properties:
+        server_no: { type: integer }
+        server_name: { type: string }
+        endpoint_id: { type: integer, format: int64 }
+        protocol: { $ref: '#/components/schemas/EndpointProtocol' }
+        host: { type: string }
+        port: { type: integer, description: "Для web - 443" }
+        via_relay: { type: boolean }
+        tcp: { $ref: '#/components/schemas/ProbeResult' }
+        tls:
+          allOf: [{ $ref: '#/components/schemas/TLSProbeResult' }]
+          nullable: true
+          description: Только у web
+    MachineCheck:
+      type: object
+      required: [code, kind, enabled, checked_at, ok, agent, endpoints, truncated]
+      properties:
+        code: { type: string }
+        kind: { type: string, enum: [exit, relay, panel] }
+        enabled: { type: boolean }
+        checked_at: { type: string, format: date-time }
+        ok: { type: boolean, description: "Агент свежий и все точки входа ответили" }
+        agent:
+          type: object
+          required: [seen_at, age_seconds, fresh, silent, stale_after_seconds, silent_after_seconds]
+          properties:
+            seen_at: { type: string, format: date-time, nullable: true }
+            age_seconds: { type: integer, nullable: true }
+            fresh: { type: boolean, description: "Отчёт не старше порога свежести" }
+            silent: { type: boolean, description: "Молчит дольше silent_after или не отчитывался" }
+            stale_after_seconds: { type: integer }
+            silent_after_seconds: { type: integer }
+        endpoints:
+          type: array
+          items: { $ref: '#/components/schemas/EndpointCheck' }
+        truncated: { type: boolean }
+    MetricPoint:
+      type: object
+      required: [at, cpu, mem, disk, load1, rx_bps, tx_bps, connections, users_online]
+      properties:
+        at: { type: string, format: date-time, description: Начало шага }
+        cpu: { type: number, nullable: true }
+        mem: { type: number, nullable: true }
+        disk: { type: number, nullable: true }
+        load1: { type: number, nullable: true }
+        rx_bps: { type: number, nullable: true }
+        tx_bps: { type: number, nullable: true }
+        connections: { type: number }
+        users_online: { type: number }
+    MachineMetrics:
+      type: object
+      required: [code, from, to, step, data]
+      properties:
+        code: { type: string }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        step: { type: string, enum: [1m, 5m, 1h] }
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/MetricPoint' }
+    MachineEvent:
+      type: object
+      required: [id, at, machine, kind, detail]
+      properties:
+        id: { type: integer, format: int64 }
+        at: { type: string, format: date-time }
+        machine: { type: string }
+        kind: { type: string, enum: [down, up, apply_failed] }
+        detail: { type: string }
     Error:
       type: object
       required: [code, message]
@@ -1494,6 +1849,7 @@ components:
           enum: [bad_request, unauthorized, forbidden, not_found, conflict, gone, unprocessable,
                  not_implemented, unavailable, internal, not_master, mass_delete_guard,
                  payload_too_large, unknown_machine, engine_immutable, unknown_setting,
-                 bad_setting, bad_endpoint, batch_too_large]
+                 bad_setting, bad_endpoint, batch_too_large, machine_enabled, machine_in_use,
+                 machine_disabled, too_many_points, render_mismatch, managed_by_telemux]
         message: { type: string }
         error: { type: string, description: Копия message для старой панели }

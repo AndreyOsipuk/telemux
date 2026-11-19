@@ -144,6 +144,12 @@ var storeInputErrs = []struct {
 	{servercfg.ErrUnknownSetting, http.StatusBadRequest, "unknown_setting"},
 	{servercfg.ErrBadSetting, http.StatusBadRequest, "bad_setting"},
 	{servercfg.ErrUnknownEngine, http.StatusBadRequest, "bad_request"},
+	{store.ErrRenderMismatch, http.StatusConflict, "render_mismatch"},
+	{store.ErrBadConfigSource, http.StatusBadRequest, "bad_request"},
+	{store.ErrMachineEnabled, http.StatusConflict, "machine_enabled"},
+	{store.ErrMachineInUse, http.StatusConflict, "machine_in_use"},
+	{store.ErrMachineDisabled, http.StatusConflict, "machine_disabled"},
+	{store.ErrBadSettings, http.StatusBadRequest, "bad_setting"},
 }
 
 // storeInputErr - статус и код ошибки ввода, распознанной хранилищем; ok=false - не она.

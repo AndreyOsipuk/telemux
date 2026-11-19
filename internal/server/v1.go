@@ -209,6 +209,16 @@ func (s *Server) routesV1() {
 			writeErr(w, http.StatusBadRequest, errors.New("нужно непустое содержимое ресурса, не больше 4 МБ"), s.deps.Log)
 			return
 		}
+		// Конфиг движка, который собирает сам telemux (сервер с config_source=telemux),
+		// извне не публикуется: бот считает 409 managed_by_telemux пропуском.
+		if no, managed, err := s.managedByTelemux(r.Context(), r.PathValue("code"), resource); err != nil {
+			s.writeStoreErr(w, err)
+			return
+		} else if managed {
+			writeErr(w, http.StatusConflict, codedErr("managed_by_telemux",
+				fmt.Errorf("%s машины %q собирает telemux (сервер %d, config_source=telemux)", resource, r.PathValue("code"), no)), s.deps.Log)
+			return
+		}
 		if resource == store.ResourceTelemtConfig {
 			if err := telemtcfg.ValidateMainConfig(string(content)); err != nil {
 				writeErr(w, http.StatusBadRequest, fmt.Errorf("telemt.config: %w", err), s.deps.Log)

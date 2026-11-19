@@ -83,6 +83,7 @@ func (f *fakeServers) put(w store.ServerWrite) (store.Server, error) {
 	}
 	now := time.Now().UTC()
 	srv.CreatedAt, srv.UpdatedAt = now, now
+	srv.ConfigSource = store.ConfigSourceBot
 	relay := store.LiveMachine{Code: "pr1", SeenAt: &now, APIOK: true, Connections: 3, UsersOnline: 2}
 	srv.Live = &store.ServerLive{}
 	if srv.RelayCode != nil {

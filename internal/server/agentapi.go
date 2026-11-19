@@ -16,7 +16,9 @@ import (
 
 // AgentStore - машины, их бандлы и отчёты (реализует store.Store).
 type AgentStore interface {
-	TargetByAgentToken(ctx context.Context, token string) (string, error)
+	// AgentTargetByToken - машина токена и включена ли она: агент выключенной
+	// машины отчитывается, но новых ревизий не получает.
+	AgentTargetByToken(ctx context.Context, token string) (code string, enabled bool, err error)
 	MaxRevision(ctx context.Context, target string) (int64, error)
 	DesiredBundle(ctx context.Context, target string) (store.Bundle, error)
 	RecordObserved(ctx context.Context, rep store.ObservedReport) error
@@ -75,28 +77,36 @@ func (w *revisionWatch) bump() {
 
 // agentTarget - машина по Bearer-токену агента; пишет 401 и возвращает "", если токен чужой.
 func (s *Server) agentTarget(w http.ResponseWriter, r *http.Request) string {
+	code, _ := s.agentTargetEnabled(w, r)
+	return code
+}
+
+// agentTargetEnabled - машина по Bearer-токену агента и включена ли она; пишет
+// 401 и возвращает "", если токен чужой.
+func (s *Server) agentTargetEnabled(w http.ResponseWriter, r *http.Request) (string, bool) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || token == "" {
 		writeErr(w, http.StatusUnauthorized, errors.New("нужен токен агента"), s.deps.Log)
-		return ""
+		return "", false
 	}
-	code, err := s.deps.Agents.TargetByAgentToken(r.Context(), token)
+	code, enabled, err := s.deps.Agents.AgentTargetByToken(r.Context(), token)
 	if errors.Is(err, store.ErrBadAgentToken) {
 		writeErr(w, http.StatusUnauthorized, errors.New("неизвестный токен агента"), s.deps.Log)
-		return ""
+		return "", false
 	}
 	if err != nil {
 		s.writeStoreErr(w, err)
-		return ""
+		return "", false
 	}
-	return code
+	return code, enabled
 }
 
 func (s *Server) routesAgents() {
 	// Желаемое состояние машины, long-poll: ответ сразу, если есть ревизия новее rev,
-	// иначе ожидание до wait (максимум 60 с) и 304.
+	// иначе ожидание до wait (максимум 60 с) и 304. Выключенная машина новых
+	// ревизий не получает: всегда ожидание и 304 (агент при этом отчитывается).
 	s.mux.HandleFunc("GET /v1/desired", func(w http.ResponseWriter, r *http.Request) {
-		code := s.agentTarget(w, r)
+		code, enabled := s.agentTargetEnabled(w, r)
 		if code == "" {
 			return
 		}
@@ -122,6 +132,15 @@ func (s *Server) routesAgents() {
 
 		deadline := time.NewTimer(wait)
 		defer deadline.Stop()
+		if !enabled {
+			// Пауза до wait, а не мгновенный 304: иначе агент крутил бы опрос без задержки.
+			select {
+			case <-deadline.C:
+				w.WriteHeader(http.StatusNotModified)
+			case <-r.Context().Done():
+			}
+			return
+		}
 		poll := time.NewTicker(s.deps.DesiredPollInterval)
 		defer poll.Stop()
 		for {

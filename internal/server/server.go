@@ -63,6 +63,17 @@ type Deps struct {
 
 	// Справочник серверов (/api/v1/servers, ADR 0005); nil → выключено.
 	Servers ServerStore
+	// Сборка конфигов серверов (ADR 0006): цикл на мастере, статус и переключение
+	// источника; nil → выключено. Работает вместе с Servers и Revisions.
+	Render RenderStore
+	// Период цикла сборки (0 → минута).
+	RenderInterval time.Duration
+
+	// Машины как ноды 3x-ui (ADR 0007): включение, удаление, проверка связи, история
+	// нагрузки и тревоги; nil → выключено. Работает вместе с Agents.
+	Ops MachineOpsStore
+	// Сетевые проверки точек входа для проверки связи; nil → по сети.
+	Prober EndpointProber
 
 	// Внешний TLS-слушатель для агентов и мостов машин-выходов (только /v1/ и /healthz).
 	// Пусто → выключен. Сертификат самоподписанный, клиенты закрепляют его отпечаток.
@@ -123,6 +134,8 @@ type Server struct {
 
 	revs revisionWatch // будит long-poll агентов после публикации
 
+	renderSt renderState // будильник и сериализация цикла сборки конфигов серверов
+
 	joinBinary func() (string, error) // бинарь для новых машин (подменяется в тестах)
 }
 
@@ -133,6 +146,7 @@ func (s *Server) markDirty() {
 	case s.dirty <- struct{}{}:
 	default:
 	}
+	s.wakeRender() // пользователи изменились - [secrets] mtg тоже
 }
 
 type syncStatus struct {
@@ -209,6 +223,12 @@ func (s *Server) routes() {
 	if s.deps.Servers != nil {
 		s.routesServers()
 	}
+	if s.deps.Servers != nil && s.deps.Render != nil {
+		s.routesRender()
+	}
+	if s.deps.Ops != nil && s.deps.Agents != nil {
+		s.routesMachineOps()
+	}
 	s.mux.HandleFunc("GET /api/openapi.json", s.handleSpec)
 	// Дашборд (встроенный, см. web.go).
 	s.mux.HandleFunc("GET /", s.handleIndex)
@@ -256,8 +276,14 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	if s.deps.Agents != nil {
 		go s.runtimePruneLoop(ctx)
 	}
+	if s.deps.Ops != nil && s.deps.Agents != nil {
+		go s.alertsLoop(ctx)
+	}
 	if s.deps.Panel != nil {
 		go s.panelLoop(ctx)
+	}
+	if s.deps.Render != nil && s.deps.Revisions != nil {
+		go s.renderLoop(ctx)
 	}
 	if s.deps.Certs != nil && s.deps.ACME != nil {
 		go s.certsLoop(ctx)

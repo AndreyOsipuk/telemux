@@ -35,7 +35,8 @@ func setupAll(t *testing.T) *Store {
 		}
 	}
 	if _, err := st.pool.Exec(ctx, `TRUNCATE users, targets, desired_config, observed_state, apply_log, agent_tokens,
-		agent_join_tokens, agent_runtime, runtime_user_conns, runtime_log_errors, servers, server_endpoints`); err != nil {
+		agent_join_tokens, agent_runtime, runtime_user_conns, runtime_log_errors, servers, server_endpoints,
+		agent_state, machine_metrics, machine_events, machine_alert_state, machine_apply_alerts, server_render`); err != nil {
 		t.Fatalf("TRUNCATE: %v", err)
 	}
 	return st

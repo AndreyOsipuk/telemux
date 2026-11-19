@@ -19,12 +19,13 @@ import (
 	"github.com/AndreyOsipuk/telemux/internal/servercfg"
 )
 
-// ServersTables - таблицы миграции 0010; без них ручки серверов не монтируются.
-var ServersTables = []string{"servers", "server_endpoints"}
+// ServersTables - таблицы миграций 0010 и 0011; без них ручки серверов не монтируются.
+var ServersTables = []string{"servers", "server_endpoints", "server_render"}
 
-// CheckServersSchema - применена ли миграция 0010 (серверы и точки входа).
+// CheckServersSchema - применены ли миграции 0010 (серверы и точки входа) и 0011
+// (источник конфигов и сравнение сборки, ADR 0006).
 func (s *Store) CheckServersSchema(ctx context.Context) error {
-	return s.checkTables(ctx, ServersTables, "migrations/0010_servers.sql")
+	return s.checkTables(ctx, ServersTables, "migrations/0010_servers.sql и migrations/0011_server_render.sql")
 }
 
 // Пределы описания сервера.
@@ -115,9 +116,13 @@ type Server struct {
 	Settings         map[string]string `json:"settings"`
 	Note             string            `json:"note"`
 	Endpoints        []Endpoint        `json:"endpoints"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
-	Live             *ServerLive       `json:"live,omitempty"`
+	// ConfigSource - кто публикует telemt.config / mtg.config машин сервера: bot или
+	// telemux (ADR 0006). Меняется только ручкой config-source, не записью сервера.
+	ConfigSource string         `json:"config_source"`
+	Render       *RenderSummary `json:"render,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	Live         *ServerLive    `json:"live,omitempty"`
 }
 
 // EndpointWrite - точка входа в теле записи: пропущенные поля - по умолчанию
@@ -293,14 +298,14 @@ type ServerFilter struct {
 }
 
 const serverCols = `no, name, emoji, country, engine, relay_code, node_code, state, relay_only, node_retired,
-	tls_domain, extra_tls_domains, user_max_tcp_conns, user_max_unique_ips, settings, note, created_at, updated_at`
+	tls_domain, extra_tls_domains, user_max_tcp_conns, user_max_unique_ips, settings, note, config_source, created_at, updated_at`
 
 func scanServer(row pgx.Row) (Server, error) {
 	var srv Server
 	var no int16
 	err := row.Scan(&no, &srv.Name, &srv.Emoji, &srv.Country, &srv.Engine, &srv.RelayCode, &srv.NodeCode, &srv.State,
 		&srv.RelayOnly, &srv.NodeRetired, &srv.TLSDomain, &srv.ExtraTLSDomains, &srv.UserMaxTCPConns, &srv.UserMaxUniqueIPs,
-		&srv.Settings, &srv.Note, &srv.CreatedAt, &srv.UpdatedAt)
+		&srv.Settings, &srv.Note, &srv.ConfigSource, &srv.CreatedAt, &srv.UpdatedAt)
 	srv.No = int(no)
 	if srv.ExtraTLSDomains == nil {
 		srv.ExtraTLSDomains = []string{}
@@ -365,9 +370,23 @@ type querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// fillServers дополняет серверы точками входа и живыми цифрами: по одному
-// запросу на всю страницу.
+// fillServers дополняет серверы точками входа, живыми цифрами и сводкой сравнения
+// сборки: по одному запросу на всю страницу.
 func (s *Store) fillServers(ctx context.Context, q querier, list []Server) error {
+	if len(list) == 0 {
+		return nil
+	}
+	if err := fillEndpoints(ctx, q, list); err != nil {
+		return err
+	}
+	if err := s.fillLive(ctx, q, list); err != nil {
+		return err
+	}
+	return fillRenderSummary(ctx, q, list)
+}
+
+// fillEndpoints - точки входа серверов одним запросом.
+func fillEndpoints(ctx context.Context, q querier, list []Server) error {
 	if len(list) == 0 {
 		return nil
 	}
@@ -400,7 +419,7 @@ func (s *Store) fillServers(ctx context.Context, q querier, list []Server) error
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("server endpoints: %w", err)
 	}
-	return s.fillLive(ctx, q, list)
+	return nil
 }
 
 // fillLive - живые цифры машин сервера (продукт = движок) одним запросом:

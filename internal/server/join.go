@@ -76,8 +76,14 @@ func (b newTargetBody) validate() error {
 			return err
 		}
 	case "relay":
-		if b.RelayCode != "" || b.Address != "" || b.BridgeSocks != "" {
-			return errors.New("relay_code, address и bridge_socks задаются только для выхода (kind=exit)")
+		if b.RelayCode != "" || b.BridgeSocks != "" {
+			return errors.New("relay_code и bridge_socks задаются только для выхода (kind=exit)")
+		}
+		// Адрес релея необязателен: он нужен сборке telemt.config (announce_ip, ADR 0006).
+		if b.Address != "" {
+			if _, err := agentjoin.ParseExitAddress(b.Address); err != nil {
+				return err
+			}
 		}
 	default:
 		return fmt.Errorf("kind %q: допустимы exit и relay", b.Kind)
@@ -260,6 +266,9 @@ func (s *Server) routesJoin() {
 		t := store.Target{Code: body.Code, Kind: body.Kind, RelayCode: body.RelayCode, Resources: body.Resources, Enabled: true}
 		if body.Kind == "exit" {
 			t.Settings = map[string]string{store.SettingAddress: body.Address, store.SettingBridgeSocks: body.BridgeSocks}
+		}
+		if body.Kind == "relay" && body.Address != "" {
+			t.Settings = map[string]string{store.SettingAddress: body.Address}
 		}
 		iss, err := s.deps.Joins.CreateTarget(r.Context(), t, agentjoin.TTL)
 		switch {

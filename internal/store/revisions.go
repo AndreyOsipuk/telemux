@@ -316,7 +316,8 @@ func (s *Store) PanelWork(ctx context.Context) ([]PanelItem, error) {
 var ErrResourceNotAssigned = errors.New("ресурс не назначен машине")
 
 // PublishResource публикует готовое содержимое ресурса одной машины: новая
-// ревизия только если хеш отличается от последнего. Только на primary.
+// ревизия только если хеш отличается от последнего. Выключенной машине -
+// ErrMachineDisabled. Только на primary.
 func (s *Store) PublishResource(ctx context.Context, target, resource string, content []byte) (PublishResult, error) {
 	res := PublishResult{Changed: []string{}}
 	tx, err := s.pool.Begin(ctx)
@@ -327,14 +328,17 @@ func (s *Store) PublishResource(ctx context.Context, target, resource string, co
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, publishLockKey); err != nil {
 		return res, fmt.Errorf("publish lock: %w", err)
 	}
-	var assigned bool
+	var assigned, enabled bool
 	err = tx.QueryRow(ctx,
-		`SELECT $2 = ANY(resources) FROM targets WHERE code = $1 AND enabled`, target, resource).Scan(&assigned)
+		`SELECT $2 = ANY(resources), enabled FROM targets WHERE code = $1`, target, resource).Scan(&assigned, &enabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return res, ErrUnknownTarget
 	}
 	if err != nil {
 		return res, fmt.Errorf("target %q: %w", target, err)
+	}
+	if !enabled {
+		return res, ErrMachineDisabled
 	}
 	if !assigned {
 		return res, ErrResourceNotAssigned
