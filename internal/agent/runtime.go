@@ -174,9 +174,6 @@ func (c *RuntimeCollector) defaults() {
 	if c.MtgStatsURL == "" {
 		c.MtgStatsURL = "http://127.0.0.1:8081/stats"
 	}
-	if c.MtgBin == "" {
-		c.MtgBin = "mtg"
-	}
 	if c.JournalUnit == "" {
 		c.JournalUnit = "telemt"
 	}
@@ -431,7 +428,7 @@ func ParseMtgStats(body []byte) (total int64, users []store.RuntimeUser, err err
 }
 
 func (c *RuntimeCollector) collectMtg(ctx context.Context) *store.RuntimeMtg {
-	m := &store.RuntimeMtg{Version: c.binVersion(ctx, c.MtgBin), APIOK: true}
+	m := &store.RuntimeMtg{Version: c.binVersion(ctx, c.mtgBin()), APIOK: true}
 	var raw json.RawMessage
 	err := c.getJSON(ctx, c.MtgStatsURL, &raw)
 	if err == nil {
@@ -463,6 +460,18 @@ func ParseVersion(out []byte) string {
 }
 
 // binVersion - версия бинаря; `--version` вызывается заново только при смене mtime или размера.
+// mtgBin - бинарь mtg для версии: заданный явно, иначе mtg-multi (так он называется на
+// машинах флота), а если его нет в PATH - mtg.
+func (c *RuntimeCollector) mtgBin() string {
+	if c.MtgBin != "" {
+		return c.MtgBin
+	}
+	if _, err := c.LookPath("mtg-multi"); err == nil {
+		return "mtg-multi"
+	}
+	return "mtg"
+}
+
 func (c *RuntimeCollector) binVersion(ctx context.Context, bin string) string {
 	path, err := c.LookPath(bin)
 	if err != nil {

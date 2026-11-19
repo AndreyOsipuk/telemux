@@ -146,7 +146,7 @@ func runAgent(args []string) int {
 	telemtAPI := fs.String("telemt-api", envOr("TELEMUX_AGENT_TELEMT_API", "http://127.0.0.1:9091"), "API telemt для runtime-отчёта")
 	telemtBin := fs.String("telemt-bin", envOr("TELEMUX_AGENT_TELEMT_BIN", "telemt"), "бинарь telemt (версия через --version)")
 	telemtConfig := fs.String("telemt-config", envOr("TELEMUX_AGENT_TELEMT_CONFIG", "/etc/telemt/telemt.toml"), "telemt.toml для сводки в runtime-отчёте")
-	mtgBin := fs.String("mtg-bin", envOr("TELEMUX_AGENT_MTG_BIN", "mtg"), "бинарь mtg-multi (версия через --version)")
+	mtgBin := fs.String("mtg-bin", envOr("TELEMUX_AGENT_MTG_BIN", ""), "бинарь mtg для версии (--version); пусто - mtg-multi, если есть в PATH, иначе mtg")
 	journalUnit := fs.String("journal-unit", envOr("TELEMUX_AGENT_JOURNAL_UNIT", "telemt"), "юнит telemt для счётчиков ошибок журнала")
 	tlsWeb := fs.Bool("tls-web", envOr("TELEMUX_AGENT_TLS_WEB", "0") == "1", "раскладывать сертификаты WEB-доменов (ресурс tls.web)")
 	tlsDir := fs.String("tls-dir", envOr("TELEMUX_AGENT_TLS_DIR", agent.DefaultTLSDir), "каталог сертификатов nginx: <домен>.pem и <домен>.key")

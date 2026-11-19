@@ -185,7 +185,13 @@ func newCollector(t *testing.T, telemtURL, mtgURL string) (*RuntimeCollector, *f
 		Telemt: true, Mtg: true, TelemtAPI: telemtURL, MtgStatsURL: mtgURL,
 		UsersFile: "/etc/telemt/users.toml", CPUSampleGap: time.Millisecond,
 		Runner: fr, ReadFile: ffs.read, Stat: ffs.stat,
-		LookPath:  func(f string) (string, error) { return "/usr/bin/" + f, nil },
+		// В PATH - только бинари, у которых в фикстуре есть файл.
+		LookPath: func(f string) (string, error) {
+			if _, ok := ffs.mtime["/usr/bin/"+f]; ok {
+				return "/usr/bin/" + f, nil
+			}
+			return "", errors.New("not found")
+		},
 		DiskUsage: func(string) (float64, error) { return 55.04, nil },
 		Now:       func() time.Time { return now },
 	}
@@ -819,5 +825,26 @@ func TestSendRuntime_WorstCaseFitsLimit(t *testing.T) {
 	}
 	if got.LogErrors == nil {
 		t.Fatal("журнал не должен пропасть")
+	}
+}
+
+// На машинах флота бинарь называется mtg-multi: без TELEMUX_AGENT_MTG_BIN агент берёт
+// версию у него, а не пустую строку (раньше искал только mtg, и версия была пустой).
+func TestRuntime_MtgVersionPrefersMtgMulti(t *testing.T) {
+	c, fr, ffs, now := newCollector(t, telemtAPI(t, nil).URL, mtgServer(t, mtgStatsNew).URL)
+	ffs.mtime["/usr/bin/mtg-multi"] = *now
+	fr.out["/usr/bin/mtg-multi"] = "1.15.0-webalias (go1.26.5: 2026-11-19T07:24:35Z on 1cc652fd)\n"
+	if v := c.Collect(context.Background(), time.Minute).Mtg.Version; v != "1.15.0-webalias" {
+		t.Fatalf("версия mtg-multi: %q", v)
+	}
+	if fr.count("/usr/bin/mtg --version") != 0 {
+		t.Fatal("при наличии mtg-multi бинарь mtg не спрашивается")
+	}
+	// Явно заданный бинарь важнее.
+	c2, fr2, _, _ := newCollector(t, telemtAPI(t, nil).URL, mtgServer(t, mtgStatsNew).URL)
+	c2.MtgBin = "mtg"
+	_ = c2.Collect(context.Background(), time.Minute)
+	if fr2.count("/usr/bin/mtg --version") != 1 {
+		t.Fatal("TELEMUX_AGENT_MTG_BIN=mtg не учтён")
 	}
 }
