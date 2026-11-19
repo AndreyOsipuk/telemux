@@ -37,20 +37,22 @@ const (
 
 // Config - настройки агента.
 type Config struct {
-	MasterURLs   []string      // адреса мастера по приоритету; "адрес|прокси" - через свой туннель (socks5://...)
-	MasterPin    string        // sha256 сертификата мастера для https-адресов (закрепление)
-	Token        string        // токен машины
-	Target       string        // код машины
-	Version      string        // версия агента для отчёта
-	Via          string        // через какой мост ходит агент (для отчёта), необязательно
-	UsersFile    string        // путь к users.toml на машине; пусто - telemt.users не ведётся
-	MtgFile      string        // путь к config.toml mtg-multi; пусто - mtg.config не ведётся
-	Mode         string        // ModeCompare или ModeApply
-	Applier      *Applier      // для ModeApply и telemt.users; UsersFile берётся из конфига агента
-	MtgApplier   *MtgApplier   // для ModeApply и mtg.config; MtgFile берётся из конфига агента
-	Wait         time.Duration // сколько мастер держит long-poll; по умолчанию 55 с
-	RecheckEvery time.Duration // как часто перепроверять диск и отчитываться без новой ревизии; по умолчанию 5 мин
-	Checks       []Check       // локальные проверки машины для отчёта (мост и т.п.)
+	MasterURLs   []string          // адреса мастера по приоритету; "адрес|прокси" - через свой туннель (socks5://...)
+	MasterPin    string            // sha256 сертификата мастера для https-адресов (закрепление)
+	Token        string            // токен машины
+	Target       string            // код машины
+	Version      string            // версия агента для отчёта
+	Via          string            // через какой мост ходит агент (для отчёта), необязательно
+	UsersFile    string            // путь к users.toml на машине; пусто - telemt.users не ведётся
+	MtgFile      string            // путь к config.toml mtg-multi; пусто - mtg.config не ведётся
+	Mode         string            // ModeCompare или ModeApply
+	Applier      *Applier          // для ModeApply и telemt.users; UsersFile берётся из конфига агента
+	MtgApplier   *MtgApplier       // для ModeApply и mtg.config; MtgFile берётся из конфига агента
+	Wait         time.Duration     // сколько мастер держит long-poll; по умолчанию 55 с
+	RecheckEvery time.Duration     // как часто перепроверять диск и отчитываться без новой ревизии; по умолчанию 5 мин
+	Checks       []Check           // локальные проверки машины для отчёта (мост и т.п.)
+	Runtime      *RuntimeCollector // сборщик runtime-отчёта; nil - не шлётся
+	RuntimeEvery time.Duration     // период runtime-отчёта; 0 - не шлётся
 	Log          *slog.Logger
 }
 
@@ -161,6 +163,9 @@ func (a *Agent) ForceRecheck() {
 
 // Run крутит циклы до отмены ctx; при недоступности мастеров - с нарастающей паузой.
 func (a *Agent) Run(ctx context.Context) {
+	if a.cfg.Runtime != nil && a.cfg.RuntimeEvery > 0 {
+		go a.runtimeLoop(ctx) // своим тикером: не ждёт long-poll и отчёт observed
+	}
 	backoff := 2 * time.Second
 	for ctx.Err() == nil {
 		if _, err := a.RunOnce(ctx); err != nil {

@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -22,6 +23,7 @@ type fakeMaster struct {
 	rev      int64
 	token    string
 	reports  []store.ObservedReport
+	runtime  []store.RuntimeReport
 	desired  int
 	lastAuth string
 }
@@ -55,6 +57,11 @@ func (m *fakeMaster) server(t *testing.T) *httptest.Server {
 			var rep store.ObservedReport
 			_ = json.NewDecoder(r.Body).Decode(&rep)
 			m.reports = append(m.reports, rep)
+			w.WriteHeader(http.StatusNoContent)
+		case "/v1/runtime":
+			var rep store.RuntimeReport
+			_ = json.NewDecoder(r.Body).Decode(&rep)
+			m.runtime = append(m.runtime, rep)
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}))
@@ -253,5 +260,76 @@ func TestBridge_PinnedMaster(t *testing.T) {
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if rec := get(bad, "relay-tok", "0"); rec.Code == http.StatusOK {
 		t.Fatal("мост принял чужой сертификат мастера")
+	}
+}
+
+// Runtime-отчёт проходит насквозь; при недоступном мастере - 503 без очереди
+// (снимок устареет, агент пришлёт свежий).
+func TestBridge_RuntimePassThroughNoQueue(t *testing.T) {
+	m := &fakeMaster{rev: 3, token: "relay-tok"}
+	b := newBridge(t, m.server(t).URL)
+	send := func() int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/runtime", strings.NewReader(`{"target":"pr2","host":{"cpu_pct":1}}`))
+		req.Header.Set("Authorization", "Bearer relay-tok")
+		b.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := send(); code != http.StatusNoContent || len(m.runtime) != 1 || m.runtime[0].Host.CPUPct != 1 {
+		t.Fatalf("ждали 204 и отчёт у мастера, получили %d %+v", code, m.runtime)
+	}
+	m.setDown(true)
+	if code := send(); code != http.StatusServiceUnavailable {
+		t.Fatalf("мастер недоступен: ждали 503, получили %d", code)
+	}
+	m.setDown(false)
+	b.FlushPending(context.Background())
+	if len(m.runtime) != 1 {
+		t.Fatalf("runtime-отчёт не должен копиться и досылаться, у мастера %d", len(m.runtime))
+	}
+}
+
+// replicaServer - узел-реплика: на запись отвечает 409 not_master, как сервер telemux.
+func replicaServer(t *testing.T, hits *int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		*hits++
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"not_master","error":"not_master","message":"узел в роли replica"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Первый адрес - реплика (409 not_master): мост идёт к следующему мастеру, как агент.
+func TestBridge_NotMasterGoesToNext(t *testing.T) {
+	var replicaHits int
+	m := &fakeMaster{rev: 3, token: "relay-tok"}
+	b := newBridge(t, replicaServer(t, &replicaHits).URL, m.server(t).URL)
+	if rec := post(b, "relay-tok", report); rec.Code != http.StatusNoContent {
+		t.Fatalf("observed: ждали 204 от второго мастера, получили %d: %s", rec.Code, rec.Body.String())
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/runtime", strings.NewReader(`{"target":"pr2","host":{"cpu_pct":1}}`))
+	req.Header.Set("Authorization", "Bearer relay-tok")
+	b.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("runtime: ждали 204 от второго мастера, получили %d: %s", rec.Code, rec.Body.String())
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.reports) != 1 || len(m.runtime) != 1 || replicaHits != 2 {
+		t.Fatalf("отчёты должны дойти до мастера: observed=%d runtime=%d, реплика %d", len(m.reports), len(m.runtime), replicaHits)
+	}
+}
+
+// Все адреса - реплики: агент получает 409 not_master как есть (это не сбой мастера).
+func TestBridge_AllNotMasterPassesConflict(t *testing.T) {
+	var hits int
+	b := newBridge(t, replicaServer(t, &hits).URL, replicaServer(t, &hits).URL)
+	rec := post(b, "relay-tok", report)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not_master") || hits != 2 {
+		t.Fatalf("ждали 409 not_master после обхода обоих адресов, получили %d (%d запросов): %s", rec.Code, hits, rec.Body.String())
 	}
 }

@@ -20,7 +20,16 @@ type AgentStore interface {
 	MaxRevision(ctx context.Context, target string) (int64, error)
 	DesiredBundle(ctx context.Context, target string) (store.Bundle, error)
 	RecordObserved(ctx context.Context, rep store.ObservedReport) error
-	Machines(ctx context.Context, limit, offset int) ([]store.Machine, int, error)
+	Machines(ctx context.Context, f store.MachineFilter, limit, offset int) ([]store.Machine, int, error)
+
+	// Runtime-отчёт агента и ручки бота по нему (runtime.go).
+	RecordRuntime(ctx context.Context, rep store.RuntimeReport) error
+	MachineRuntime(ctx context.Context, code string) (store.MachineRuntime, error)
+	Connections(ctx context.Context, f store.ConnFilter, limit, offset int) ([]store.ConnRow, int, error)
+	ConnectionsSummary(ctx context.Context, limit, offset int) ([]store.ConnSummary, int, error)
+	LogErrors(ctx context.Context, since time.Time, machine string, limit, offset int) ([]store.LogErrorSum, int, error)
+	// PruneLogErrors удаляет счётчики журнала с концом периода раньше before.
+	PruneLogErrors(ctx context.Context, before time.Time) (int64, error)
 }
 
 const (

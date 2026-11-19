@@ -135,6 +135,12 @@ func runAgent(args []string) int {
 	checks := fs.String("checks", envOr("TELEMUX_AGENT_CHECKS", ""), "локальные проверки для отчёта: имя=http://адрес[,...], например bridge=http://127.0.0.1:18480/healthz")
 	wait := fs.Duration("wait", 55*time.Second, "long-poll")
 	recheck := fs.Duration("recheck", 5*time.Minute, "перепроверка диска без новой ревизии")
+	runtimeEvery := fs.Duration("runtime-every", envDuration("TELEMUX_AGENT_RUNTIME_EVERY", 60*time.Second), "период runtime-отчёта (нагрузка, подключения, журнал); 0 - выключить")
+	telemtAPI := fs.String("telemt-api", envOr("TELEMUX_AGENT_TELEMT_API", "http://127.0.0.1:9091"), "API telemt для runtime-отчёта")
+	telemtBin := fs.String("telemt-bin", envOr("TELEMUX_AGENT_TELEMT_BIN", "telemt"), "бинарь telemt (версия через --version)")
+	telemtConfig := fs.String("telemt-config", envOr("TELEMUX_AGENT_TELEMT_CONFIG", "/etc/telemt/telemt.toml"), "telemt.toml для сводки в runtime-отчёте")
+	mtgBin := fs.String("mtg-bin", envOr("TELEMUX_AGENT_MTG_BIN", "mtg"), "бинарь mtg-multi (версия через --version)")
+	journalUnit := fs.String("journal-unit", envOr("TELEMUX_AGENT_JOURNAL_UNIT", "telemt"), "юнит telemt для счётчиков ошибок журнала")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -170,6 +176,12 @@ func runAgent(args []string) int {
 		MasterURLs: splitList(*masters), Token: strings.TrimSpace(string(raw)), Target: *target,
 		Version: version, Via: *via, UsersFile: *usersFile, Mode: *mode,
 		Wait: *wait, RecheckEvery: *recheck, Checks: checkList, Log: logger,
+		RuntimeEvery: *runtimeEvery,
+		Runtime: &agent.RuntimeCollector{
+			Telemt: *usersFile != "", Mtg: *mtgFile != "", UsersFile: *usersFile,
+			TelemtAPI: *telemtAPI, TelemtBin: *telemtBin, TelemtConfig: *telemtConfig,
+			MtgStatsURL: *mtgStats, MtgBin: *mtgBin, JournalUnit: *journalUnit, Log: logger,
+		},
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -249,7 +261,7 @@ func runMachines(args []string) int {
 	defer st.Close()
 	const page = 100
 	for offset := 0; ; offset += page {
-		list, total, err := st.Machines(ctx, page, offset)
+		list, total, err := st.Machines(ctx, store.MachineFilter{}, page, offset)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1

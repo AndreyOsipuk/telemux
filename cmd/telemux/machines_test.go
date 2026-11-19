@@ -28,3 +28,24 @@ func TestFormatMachine(t *testing.T) {
 		t.Fatalf("релей: %q", pr1)
 	}
 }
+
+// Порог устаревания runtime-снимка: три периода отчёта или явная настройка.
+func TestRuntimeStaleAfterEnv(t *testing.T) {
+	t.Setenv("TELEMUX_RUNTIME_EVERY", "")
+	t.Setenv("TELEMUX_RUNTIME_STALE_AFTER", "")
+	if d, err := runtimeStaleAfter(); err != nil || d != 3*time.Minute {
+		t.Fatalf("по умолчанию 3 × 60s: %v %v", d, err)
+	}
+	t.Setenv("TELEMUX_RUNTIME_EVERY", "30s")
+	if d, _ := runtimeStaleAfter(); d != 90*time.Second {
+		t.Fatalf("три периода по 30s: %v", d)
+	}
+	t.Setenv("TELEMUX_RUNTIME_STALE_AFTER", "10m")
+	if d, _ := runtimeStaleAfter(); d != 10*time.Minute {
+		t.Fatalf("явная настройка: %v", d)
+	}
+	t.Setenv("TELEMUX_RUNTIME_STALE_AFTER", "ноль")
+	if _, err := runtimeStaleAfter(); err == nil {
+		t.Fatal("мусор в настройке - ошибка")
+	}
+}

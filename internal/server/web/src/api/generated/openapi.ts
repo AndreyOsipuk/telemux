@@ -47,6 +47,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/targets/{code}/resources/{resource}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Готовый ресурс одной машины от бота
+         * @description Бот публикует ресурс, который собирает сам: `mtg.config` - config.toml
+         *     mtg-multi машины (текст), `xui.clients` - JSON-массив клиентов MTProto-входа
+         *     мастер-панели 3x-ui (машина вида panel). Новая ревизия создаётся только при изменении
+         *     содержимого. `telemt.users` сюда не публикуется: его собирает telemux.
+         */
+        put: operations["putTargetResource"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/revisions/{rev}/status": {
         parameters: {
             query?: never;
@@ -60,6 +83,120 @@ export interface paths {
          *     старее ревизии `rev`. Бот выдаёт ссылку, когда применили нужные машины.
          */
         get: operations["getRevisionStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/machines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Машины флота и последний отчёт их агентов
+         * @description Все машины по коду, включая машины без ресурсов (выходы без telemt и mtg)
+         *     и машины, где агента ещё нет (`seen_at: null`). По каждой - версия агента,
+         *     мост, результат локальных проверок, состояние ресурсов и версии telemt и mtg
+         *     из последнего runtime-отчёта. Фильтры: `resource` - машине назначен ресурс,
+         *     `enabled`, `kind`; `paging.total` считается с фильтром. Неизвестное
+         *     значение фильтра - 400.
+         */
+        get: operations["listMachines"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/machines/{code}/runtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Последний runtime-снимок машины
+         * @description Нагрузка машины, состояние telemt и mtg без списков пользователей.
+         *     `stale: true` - снимок старше порога (по умолчанию три периода отчёта, 180 с)
+         *     или его ещё нет (`seen_at: null`).
+         *     `telemt`/`mtg` - null, если на машине нет продукта или отчёта ещё не было.
+         */
+        get: operations["getMachineRuntime"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Подключения пользователей по последним снимкам машин
+         * @description Строка на машину, продукт и пользователя. Порядок: machine, product, key.
+         *     В снимок попадают только пользователи с подключениями или адресами.
+         */
+        get: operations["listConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connections/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сводка подключений по машинам
+         * @description Строка на машину и продукт, у которых есть runtime-снимок. Порядок machine, product.
+         *     Строка есть и тогда, когда API продукта на машине не ответил: `api_ok: false`,
+         *     причина в `error`, `connections_total` и `users_online` - по последнему удачному
+         *     снимку (или 0). Клиенту в этом случае стоит взять подключения другим путём.
+         */
+        get: operations["getConnectionsSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/log-errors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ошибки журнала telemt за окно
+         * @description Суммы счётчиков из runtime-отчётов за периоды, закончившиеся после `since`.
+         *     Мастер хранит счётчики 24 часа: `since` раньше - 400. Порядок: count по
+         *     убыванию, machine, key, kind. Пустой `key` - строка без пользователя.
+         */
+        get: operations["listLogErrors"];
         put?: never;
         post?: never;
         delete?: never;
@@ -100,6 +237,40 @@ export interface paths {
         put?: never;
         /** Отчёт агента о состоянии машины */
         post: operations["postObserved"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runtime-отчёт агента (раз в минуту)
+         * @description Нагрузка машины, состояние telemt и mtg, подключения пользователей,
+         *     счётчики ошибок журнала. Мастер хранит только последний снимок машины
+         *     (строки пользователей продукта заменяются, только если API продукта
+         *     ответил - `api_ok: true`), счётчики журнала - 24 часа. Повтор того же
+         *     периода журнала не удваивает счётчики.
+         *     Лимиты: до 5000 пользователей в каждом продукте, до 20 адресов на
+         *     пользователя, до 5000 строк журнала - иначе 400; тело больше 2 МБ - 413
+         *     (агент сам урезает отчёт: адреса, затем пользователей с меньшим числом
+         *     подключений, затем журнал - и пишет об этом в `error` продукта).
+         *     Проверки значений (400 с кодом): `host_invalid` - проценты вне 0..100,
+         *     отрицательные или нечисловые значения нагрузки; `log_period_invalid` -
+         *     `period_end` в будущем больше чем на 5 мин, старше часа (+5 мин) или
+         *     период длиннее 65 мин; `log_count_invalid` - счётчик больше 1e9.
+         *     Старый мастер или мост без этой ручки отвечает 404/405 - агент
+         *     увеличивает паузу между попытками до 30 мин.
+         */
+        post: operations["postRuntime"];
         delete?: never;
         options?: never;
         head?: never;
@@ -165,6 +336,7 @@ export interface components {
             agent_version?: string;
             /** @description Через какой мост пришёл отчёт */
             via?: string;
+            /** @description Пусто у машины без ресурсов - отчёт только о самой машине */
             resources: {
                 resource: string;
                 revision: number;
@@ -174,13 +346,204 @@ export interface components {
                 /** @description Причина отказа или описание расхождения (в режиме сравнения) */
                 error?: string;
             }[];
+            checks?: components["schemas"]["ObservedCheck"][];
+        };
+        /** @description Локальная проверка машины (например, мост на машине-выходе) */
+        ObservedCheck: {
+            /** @example bridge */
+            name: string;
+            ok: boolean;
+            error?: string;
+        };
+        Machine: {
+            code: string;
+            /** @enum {string} */
+            kind: "exit" | "relay" | "panel";
+            /** @description Для выхода - релей, к которому он держит туннель */
+            relay_code?: string;
+            enabled: boolean;
+            resources: string[];
+            agent_version?: string;
+            via?: string;
+            /**
+             * Format: date-time
+             * @description Последний отчёт агента; null - агента нет
+             */
+            seen_at: string | null;
+            checks: components["schemas"]["ObservedCheck"][];
+            observed: {
+                resource: string;
+                revision: number;
+                /** @description sha256 ресурса, о котором отчитался агент */
+                sha256?: string;
+                /** @enum {string} */
+                status: "applied" | "failed" | "pending" | "compared";
+                error?: string;
+                /** Format: date-time */
+                seen_at: string;
+                /** @description Последняя желаемая ревизия этого ресурса для машины; null - не публиковалась */
+                desired_revision?: number | null;
+            }[];
+            /** @description Версия telemt из последнего runtime-отчёта */
+            telemt_version?: string;
+            /** @description Версия mtg-multi из последнего runtime-отчёта */
+            mtg_version?: string;
+            /**
+             * Format: date-time
+             * @description Последний runtime-отчёт; null - не было
+             */
+            runtime_seen_at?: string | null;
+        };
+        Paging: {
+            /** @description Всего строк с учётом фильтров */
+            total: number;
+            limit: number;
+            offset: number;
+        };
+        /** @enum {string} */
+        Product: "telemt" | "mtg";
+        RuntimeHost: {
+            /** @description Загрузка CPU между двумя отчётами, % */
+            cpu_pct: number;
+            mem_pct: number;
+            /** @description Занято на корневой ФС, % */
+            disk_pct: number;
+            load1: number;
+            /** @description Интерфейс маршрута по умолчанию, между отчётами */
+            net_rx_mbps: number;
+            net_tx_mbps: number;
+            uptime_s: number;
+        };
+        RuntimeUser: {
+            key: string;
+            connections: number;
+            active_ips?: string[];
+            /** @description Только mtg */
+            bytes_in?: number;
+            /** @description Только mtg */
+            bytes_out?: number;
+            /**
+             * Format: date-time
+             * @description Только mtg
+             */
+            last_seen?: string | null;
+        };
+        RuntimeTelemt: {
+            /** @description `telemt --version`; пусто - бинарь не найден */
+            version: string;
+            /** @description API telemt ответил; false - причина в error */
+            api_ok: boolean;
+            error: string;
+            /** @description Пользователей в telemt без placeholder */
+            users_configured: number;
+            /** @description Из них не истёкших по users.toml */
+            users_effective: number;
+            connections_total: number;
+            /** @description sha256 telemt.toml */
+            config_sha256?: string;
+            keepalive?: number;
+            ack?: number;
+            tls_domain?: string;
+            /** @description Медиана лимитов подключений в users.toml */
+            max_tcp_conns_median?: number;
+            /** @description Только в отчёте агента; в ответах мастера не отдаётся */
+            users?: components["schemas"]["RuntimeUser"][];
+        };
+        RuntimeMtg: {
+            version: string;
+            api_ok: boolean;
+            error: string;
+            connections_total: number;
+            /** @description Только в отчёте агента; в ответах мастера не отдаётся */
+            users?: components["schemas"]["RuntimeUser"][];
+        };
+        /** @enum {string} */
+        LogErrorKind: "limit" | "handshake" | "auth" | "timeout" | "other";
+        RuntimeReport: {
+            target: string;
+            agent_version?: string;
+            host?: components["schemas"]["RuntimeHost"] | null;
+            /** @description null - на машине нет telemt */
+            telemt?: components["schemas"]["RuntimeTelemt"] | null;
+            /** @description null - на машине нет mtg */
+            mtg?: components["schemas"]["RuntimeMtg"] | null;
+            /** @description Счётчики журнала telemt за период с прошлого отчёта; null - нет telemt или журнал не прочитан */
+            log_errors?: {
+                /** Format: date-time */
+                period_start: string;
+                /**
+                 * Format: date-time
+                 * @description Не позже now+5 мин и не раньше now-1 ч-5 мин; период не длиннее 65 мин
+                 */
+                period_end: string;
+                items: {
+                    /** @description user=<key> из строки; пусто - без пользователя */
+                    key: string;
+                    kind: components["schemas"]["LogErrorKind"];
+                    count: number;
+                }[];
+            } | null;
+        };
+        MachineRuntime: {
+            code: string;
+            /** Format: date-time */
+            seen_at: string | null;
+            /** @description Снимок старше порога (по умолчанию 180 с) или его нет */
+            stale: boolean;
+            agent_version: string;
+            host: components["schemas"]["RuntimeHost"] | null;
+            telemt: components["schemas"]["RuntimeTelemt"] | null;
+            mtg: components["schemas"]["RuntimeMtg"] | null;
+        };
+        Connection: {
+            machine: string;
+            product: components["schemas"]["Product"];
+            key: string;
+            connections: number;
+            active_ips: string[];
+            /** @description Только mtg, у telemt 0 */
+            bytes_in: number;
+            bytes_out: number;
+            /** Format: date-time */
+            last_seen: string | null;
+            /**
+             * Format: date-time
+             * @description Когда пришёл снимок
+             */
+            seen_at: string;
+            /** @description Строка старше порога (по умолчанию 180 с): API продукта давно не отвечал или агент молчит */
+            stale: boolean;
+        };
+        ConnectionSummary: {
+            machine: string;
+            product: components["schemas"]["Product"];
+            /** @description При api_ok=false - сумма по последнему удачному снимку (или 0) */
+            connections_total: number;
+            /** @description Пользователей с подключениями; при api_ok=false - по последнему удачному снимку */
+            users_online: number;
+            /**
+             * Format: date-time
+             * @description Когда пришёл последний снимок машины
+             */
+            seen_at: string;
+            stale: boolean;
+            /** @description API продукта ответил в последнем снимке; false - причина в error */
+            api_ok: boolean;
+            /** @description Ошибка продукта из последнего снимка; нет поля - ошибок не было */
+            error?: string;
+        };
+        LogErrorSum: {
+            machine: string;
+            key: string;
+            kind: components["schemas"]["LogErrorKind"];
+            count: number;
         };
         Error: {
             /**
              * @description Машинный код
              * @enum {string}
              */
-            code: "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "gone" | "unprocessable" | "not_implemented" | "unavailable" | "internal" | "not_master" | "mass_delete_guard";
+            code: "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "gone" | "unprocessable" | "not_implemented" | "unavailable" | "internal" | "not_master" | "mass_delete_guard" | "payload_too_large";
             message: string;
             /** @description Копия message для старой панели */
             error?: string;
@@ -198,6 +561,8 @@ export interface components {
         };
     };
     parameters: {
+        Limit: number;
+        Offset: number;
         UserKey: components["schemas"]["Key"];
     };
     requestBodies: never;
@@ -310,6 +675,39 @@ export interface operations {
             503: components["responses"]["Error"];
         };
     };
+    putTargetResource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+                resource: "mtg.config" | "xui.clients";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "text/plain": string;
+            };
+        };
+        responses: {
+            /** @description Опубликовано (или не изменилось) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Publish"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
     getRevisionStatus: {
         parameters: {
             query?: never;
@@ -339,6 +737,160 @@ export interface operations {
             400: components["responses"]["Error"];
             401: components["responses"]["Error"];
             404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listMachines: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                offset?: components["parameters"]["Offset"];
+                resource?: "telemt.users" | "mtg.config" | "xui.clients";
+                enabled?: boolean;
+                kind?: "exit" | "relay" | "panel";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница машин */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Machine"][];
+                        paging: components["schemas"]["Paging"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    getMachineRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Снимок машины */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MachineRuntime"];
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listConnections: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                offset?: components["parameters"]["Offset"];
+                machine?: string;
+                product?: components["schemas"]["Product"];
+                min_connections?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница подключений */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Connection"][];
+                        paging: components["schemas"]["Paging"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    getConnectionsSummary: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                offset?: components["parameters"]["Offset"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница сводки */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ConnectionSummary"][];
+                        paging: components["schemas"]["Paging"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listLogErrors: {
+        parameters: {
+            query: {
+                limit?: components["parameters"]["Limit"];
+                offset?: components["parameters"]["Offset"];
+                since: string;
+                machine?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница сумм */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["LogErrorSum"][];
+                        paging: components["schemas"]["Paging"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
             500: components["responses"]["Error"];
             503: components["responses"]["Error"];
         };
@@ -403,6 +955,35 @@ export interface operations {
             401: components["responses"]["Error"];
             403: components["responses"]["Error"];
             409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    postRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuntimeReport"];
+            };
+        };
+        responses: {
+            /** @description Отчёт принят */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["Error"];
             500: components["responses"]["Error"];
             503: components["responses"]["Error"];
         };

@@ -109,6 +109,17 @@ func runServe(args []string) int {
 		return 1
 	}
 	defer st.Close()
+	// Миграция 0007 (runtime-отчёты агентов) обязана быть применена до мастера:
+	// иначе /api/v1/machines и ручки runtime отвечали бы 500 на каждый запрос.
+	if err := st.CheckRuntimeSchema(ctx); err != nil {
+		logger.Error("схема базы не готова, мастер не запущен", "err", err)
+		return 1
+	}
+	runtimeStale, err := runtimeStaleAfter()
+	if err != nil {
+		logger.Error("настройка runtime-отчётов", "err", err)
+		return 2
+	}
 
 	mode := syncpkg.Shadow
 	if *apply {
@@ -182,6 +193,8 @@ func runServe(args []string) int {
 		Mtg:             mtg, // nil → mtg-ноды не синхронизируются
 		Role:            roleSrc,
 		Peers:           peerMap,
+
+		RuntimeStaleAfter: runtimeStale,
 	})
 	if err := srv.Run(ctx, *listen); err != nil {
 		logger.Error("serve", "err", err)
@@ -293,6 +306,17 @@ func runFence(args []string) int {
 	return 0
 }
 
+// runtimeStaleAfter - через сколько runtime-снимок машины считается устаревшим:
+// TELEMUX_RUNTIME_STALE_AFTER, иначе три периода отчёта агентов
+// (TELEMUX_RUNTIME_EVERY, по умолчанию 60s - как --runtime-every агента).
+func runtimeStaleAfter() (time.Duration, error) {
+	every, err := durEnv("TELEMUX_RUNTIME_EVERY", server.RuntimeEveryDefault)
+	if err != nil {
+		return 0, err
+	}
+	return durEnv("TELEMUX_RUNTIME_STALE_AFTER", 3*every)
+}
+
 func durEnv(key string, def time.Duration) (time.Duration, error) {
 	v := os.Getenv(key)
 	if v == "" {
@@ -318,6 +342,14 @@ func splitList(s string) []string {
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// envDuration - длительность из окружения (например 60s); пусто или мусор - def.
+func envDuration(key string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(key)); err == nil {
+		return d
 	}
 	return def
 }

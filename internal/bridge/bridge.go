@@ -104,6 +104,7 @@ func (b *Bridge) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /v1/desired", b.handleDesired)
 	mux.HandleFunc("POST /v1/observed", b.handleObserved)
+	mux.HandleFunc("POST /v1/runtime", b.handleRuntime)
 	return mux
 }
 
@@ -114,9 +115,23 @@ type upstream struct {
 	body   []byte
 }
 
+// isNotMaster - ответ узла-реплики на запись: 409 с кодом not_master.
+func isNotMaster(status int, body []byte) bool {
+	if status != http.StatusConflict {
+		return false
+	}
+	var e struct {
+		Code string `json:"code"`
+	}
+	return json.Unmarshal(body, &e) == nil && e.Code == "not_master"
+}
+
 // forward отправляет запрос мастерам по очереди. Возвращает первый ответ, который
-// не является сбоем сети или 5xx; nil - ни один мастер не ответил по делу.
+// не является сбоем сети, 5xx или 409 not_master (адрес оказался репликой - идём
+// к следующему, как агент); nil - ни один мастер не ответил по делу. Если все
+// ответившие - реплики, возвращается последний 409: агент сам решит, что делать.
 func (b *Bridge) forward(ctx context.Context, method, pathQuery, token string, body []byte) *upstream {
+	var notMaster *upstream
 	for _, base := range b.cfg.MasterURLs {
 		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+pathQuery, bytes.NewReader(body))
 		if err != nil {
@@ -137,9 +152,15 @@ func (b *Bridge) forward(ctx context.Context, method, pathQuery, token string, b
 			b.cfg.Log.Warn("мост: мастер ответил сбоем", "master", base, "status", resp.StatusCode)
 			continue
 		}
-		return &upstream{status: resp.StatusCode, header: resp.Header, body: data}
+		up := &upstream{status: resp.StatusCode, header: resp.Header, body: data}
+		if isNotMaster(resp.StatusCode, data) {
+			b.cfg.Log.Warn("мост: адрес не мастер, пробуем следующий", "master", base)
+			notMaster = up
+			continue
+		}
+		return up
 	}
-	return nil
+	return notMaster
 }
 
 func (b *Bridge) handleDesired(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +254,35 @@ func (b *Bridge) handleObserved(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// handleRuntime пересылает runtime-отчёт мастеру как есть. В очередь не кладётся:
+// снимок через минуту устареет, агент пришлёт свежий.
+func (b *Bridge) handleRuntime(w http.ResponseWriter, r *http.Request) {
+	token := bearer(r)
+	if token == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "нужен токен агента")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "отчёт не читается")
+		return
+	}
+	if len(body) > 2<<20 {
+		writeError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "отчёт больше 2 МБ")
+		return
+	}
+	up := b.forward(r.Context(), http.MethodPost, "/v1/runtime", token, body)
+	if up == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "мастер недоступен")
+		return
+	}
+	if ct := up.header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.WriteHeader(up.status)
+	_, _ = w.Write(up.body)
+}
+
 // FlushPending досылает отложенные отчёты. Отчёт снимается с очереди при любом
 // ответе мастера, кроме сбоя: 4xx повторять бессмысленно.
 func (b *Bridge) FlushPending(ctx context.Context) {
@@ -244,8 +294,8 @@ func (b *Bridge) FlushPending(ctx context.Context) {
 	b.mu.Unlock()
 	for key, p := range items {
 		up := b.forward(ctx, http.MethodPost, "/v1/observed", p.token, p.body)
-		if up == nil {
-			continue
+		if up == nil || isNotMaster(up.status, up.body) {
+			continue // мастер не найден (идёт смена мастера) - дошлём позже
 		}
 		if up.status >= 300 {
 			b.cfg.Log.Warn("мост: мастер отклонил отложенный отчёт", "status", up.status)

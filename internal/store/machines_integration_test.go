@@ -79,7 +79,7 @@ func TestIntegration_Machines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	list, total, err := st.Machines(ctx, 100, 0)
+	list, total, err := st.Machines(ctx, MachineFilter{}, 100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestIntegration_Machines(t *testing.T) {
 		t.Fatalf("ps3 без агента, а отчёт есть: %+v", m)
 	}
 
-	page, total, err := st.Machines(ctx, 2, 2)
+	page, total, err := st.Machines(ctx, MachineFilter{}, 2, 2)
 	if err != nil || total != 3 || len(page) != 1 {
 		t.Fatalf("вторая страница: total=%d len=%d err=%v", total, len(page), err)
 	}

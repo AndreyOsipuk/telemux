@@ -72,6 +72,9 @@ func (a *auth) isPublic(path string) bool {
 		strings.HasPrefix(path, "/api/v1/revisions/"),
 		strings.HasPrefix(path, "/api/v1/targets/"),
 		path == "/api/v1/machines",
+		strings.HasPrefix(path, "/api/v1/machines/"),
+		strings.HasPrefix(path, "/api/v1/connections"),
+		path == "/api/v1/log-errors",
 		strings.HasPrefix(path, "/join/"): // одноразовый token
 		return true
 	case !strings.HasPrefix(path, "/api/"): // статика SPA (/, /assets/*)

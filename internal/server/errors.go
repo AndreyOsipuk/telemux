@@ -35,6 +35,8 @@ func errCodeFor(status int) string {
 		return "conflict"
 	case http.StatusGone:
 		return "gone"
+	case http.StatusRequestEntityTooLarge:
+		return "payload_too_large"
 	case http.StatusUnprocessableEntity:
 		return "unprocessable"
 	case http.StatusNotImplemented:
@@ -48,6 +50,18 @@ func errCodeFor(status int) string {
 		return "error"
 	}
 }
+
+// codedError - ошибка ввода со своим машинным кодом вместо кода по статусу.
+type codedError struct {
+	code string
+	err  error
+}
+
+func (e *codedError) Error() string { return e.err.Error() }
+func (e *codedError) Unwrap() error { return e.err }
+
+// codedErr оборачивает ошибку ввода машинным кодом (например log_period_invalid).
+func codedErr(code string, err error) error { return &codedError{code: code, err: err} }
 
 // writeErr пишет ошибку в формате {code, message}. Реальная ошибка всегда
 // уходит в лог. Для 4xx клиенту отдаётся текст ошибки (это наши сообщения о
@@ -64,13 +78,45 @@ func writeErr(w http.ResponseWriter, status int, err error, log *slog.Logger) {
 	default:
 		log.Warn("http: ошибка запроса", "code", status, "err", err)
 	}
-	writeJSONStatus(w, status, errorBody{Code: errCodeFor(status), Message: msg, Error: msg})
+	code := errCodeFor(status)
+	var ce *codedError
+	if status < 500 && errors.As(err, &ce) {
+		code = ce.code
+	}
+	writeJSONStatus(w, status, errorBody{Code: code, Message: msg, Error: msg})
 }
 
 // writeStoreErr классифицирует ошибку хранилища: недоступность базы - 503,
 // данные запроса, которые база отвергла, - 4xx, остальное - 500 (баг).
+// Для 4xx клиенту - обезличенный текст: в ошибке базы SQL, имена таблиц и
+// значения ключей; реальная ошибка - только в лог (Warn: это не сбой сервера).
 func (s *Server) writeStoreErr(w http.ResponseWriter, err error) {
-	writeErr(w, storeErrStatus(err), err, s.deps.Log)
+	status := storeErrStatus(err)
+	if status >= 500 {
+		writeErr(w, status, err, s.deps.Log)
+		return
+	}
+	s.deps.Log.Warn("http: база отвергла запрос", "code", status, "err", err)
+	msg := storeClientMsg(err)
+	writeJSONStatus(w, status, errorBody{Code: errCodeFor(status), Message: msg, Error: msg})
+}
+
+// storeClientMsg - текст клиенту для 4xx, вызванного ошибкой базы (без деталей базы).
+func storeClientMsg(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch code := pgErr.Code; {
+		case code == "25006":
+			return "узел принимает только чтение: повторите запрос на мастере"
+		case code == "23505":
+			return "такая запись уже есть"
+		case code == "40P01", code == "40001":
+			return "конфликт параллельных изменений: повторите запрос"
+		case code == "23503":
+			return "запрос ссылается на несуществующую запись"
+		}
+	}
+	return "данные запроса отвергнуты базой: проверьте значения"
 }
 
 func storeErrStatus(err error) int {

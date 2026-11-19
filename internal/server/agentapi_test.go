@@ -23,6 +23,20 @@ type fakeAgents struct {
 
 	machines              []store.Machine
 	lastLimit, lastOffset int
+	lastFilter            store.MachineFilter
+
+	runtime    []store.RuntimeReport
+	runtimeErr error
+	snapshots  map[string]store.MachineRuntime
+	conns      []store.ConnRow
+	summary    []store.ConnSummary
+	logErrors  []store.LogErrorSum
+	lastConn   store.ConnFilter
+	lastSince  time.Time
+	lastMach   string
+
+	pruned       int
+	prunedBefore time.Time
 }
 
 func (f *fakeAgents) TargetByAgentToken(_ context.Context, token string) (string, error) {

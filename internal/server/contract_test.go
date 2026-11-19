@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -170,4 +172,72 @@ func TestContract_SpecServed(t *testing.T) {
 	if got.Info == nil || got.Info.Title != doc.Info.Title || len(got.Paths.Map()) != len(doc.Paths.Map()) {
 		t.Fatal("отдана не та спека")
 	}
+}
+
+// Runtime-отчёт агента и ручки бота по нему совпадают со спекой.
+func TestContract_Runtime(t *testing.T) {
+	_, router := loadSpec(t)
+	s, _, fa := agentServer(false)
+	fresh := time.Now().UTC()
+	r3 := int64(3)
+	fa.machines = []store.Machine{{Code: "pr2", Kind: "relay", Enabled: true, Resources: []string{store.ResourceTelemtUsers},
+		SeenAt: &fresh, Checks: []store.ObservedCheck{}, TelemtVersion: "3.5.17", RuntimeSeenAt: &fresh,
+		Observed: []store.MachineResource{{Resource: store.ResourceTelemtUsers, Revision: 3, SHA256: "ab", Status: "applied",
+			SeenAt: fresh, DesiredRevision: &r3}}}}
+	fa.snapshots = map[string]store.MachineRuntime{
+		"pr2": {Code: "pr2", SeenAt: &fresh, AgentVersion: "v1", Host: &store.RuntimeHost{CPUPct: 1},
+			Telemt: &store.RuntimeTelemt{Version: "3.5.17", APIOK: true}},
+		"vega": {Code: "vega"},
+	}
+	fa.conns = []store.ConnRow{{Machine: "pr2", Product: "telemt", Key: "a_1", Connections: 2, ActiveIPs: []string{"1.2.3.4"}, SeenAt: fresh}}
+	fa.summary = []store.ConnSummary{{Machine: "pr2", Product: "telemt", ConnectionsTotal: 2, UsersOnline: 1, SeenAt: fresh, APIOK: true},
+		{Machine: "pr2", Product: "mtg", ConnectionsTotal: 0, UsersOnline: 0, SeenAt: fresh, APIOK: false, Error: "HTTP 502"}}
+	fa.logErrors = []store.LogErrorSum{{Machine: "pr2", Key: "", Kind: "handshake", Count: 3}}
+	since := url.QueryEscape(time.Now().Add(-time.Hour).UTC().Format(time.RFC3339))
+
+	checkContract(t, router, s, "GET", "/api/v1/machines?resource=telemt.users&enabled=true&kind=relay", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/machines?resource=nope", "", http.StatusBadRequest)
+	checkContract(t, router, s, "GET", "/api/v1/machines/pr2/runtime", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/machines/vega/runtime", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/machines/nobody/runtime", "", http.StatusNotFound)
+	checkContract(t, router, s, "GET", "/api/v1/connections?product=telemt&min_connections=1", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/connections/summary", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/log-errors?since="+since, "", http.StatusOK)
+
+	post := func(token, body string, want int) {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/v1/runtime", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		route, params, err := router.FindRoute(req)
+		if err != nil {
+			t.Fatalf("POST /v1/runtime нет в спеке: %v", err)
+		}
+		in := &openapi3filter.RequestValidationInput{Request: req, PathParams: params, Route: route,
+			Options: &openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc}}
+		if want == http.StatusNoContent {
+			// Тело корректного отчёта должно проходить схему RuntimeReport.
+			if err := openapi3filter.ValidateRequest(context.Background(), in); err != nil {
+				t.Fatalf("тело отчёта не соответствует спеке: %v", err)
+			}
+			req.Body = io.NopCloser(strings.NewReader(body))
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("POST /v1/runtime → ждали %d, получили %d: %s", want, rec.Code, rec.Body.String())
+		}
+		in.Options.ExcludeRequestBody = true
+		res := rec.Result()
+		if err := openapi3filter.ValidateResponse(context.Background(), &openapi3filter.ResponseValidationInput{
+			RequestValidationInput: in, Status: res.StatusCode, Header: res.Header,
+			Body: io.NopCloser(bytes.NewReader(rec.Body.Bytes())),
+		}); err != nil {
+			t.Fatalf("POST /v1/runtime %d не соответствует спеке: %v", rec.Code, err)
+		}
+	}
+	post(pr2Token, runtimeOK, http.StatusNoContent)
+	post("token-ps2", runtimeOK, http.StatusForbidden)
+	post(pr2Token, `{"target":"pr2","telemt":{"users":[`+usersJSON(1, 21)+`]}}`, http.StatusBadRequest)
+	post(pr2Token, `{"target":"pr2","agent_version":"`+strings.Repeat("x", 2<<20)+`"}`, http.StatusRequestEntityTooLarge)
 }

@@ -77,6 +77,10 @@ type Deps struct {
 	// mtg-multi backend (опционально; nil → mtg-ноды не синхронизируются).
 	// Тот же sync-loop, что и telemt, но отдельным проходом по mtg-нодам.
 	Mtg *MtgDeps
+
+	// Через сколько runtime-снимок машины считается устаревшим (stale).
+	// 0 → три периода отчёта агента по умолчанию (runtimeStaleDefault).
+	RuntimeStaleAfter time.Duration
 }
 
 // MtgDeps — зависимости синхронизации mtg-multi нод (store + backend-плагин).
@@ -218,6 +222,9 @@ func (s *Server) runSync(ctx context.Context) syncStatus {
 // Run запускает HTTP-сервер + фоновый sync-loop; блокирует до отмены ctx.
 func (s *Server) Run(ctx context.Context, addr string) error {
 	go s.syncLoop(ctx)
+	if s.deps.Agents != nil {
+		go s.runtimePruneLoop(ctx)
+	}
 	if s.deps.Panel != nil {
 		go s.panelLoop(ctx)
 	}

@@ -167,11 +167,17 @@ paths:
       description: |
         Все машины по коду, включая машины без ресурсов (выходы без telemt и mtg)
         и машины, где агента ещё нет (`seen_at: null`). По каждой - версия агента,
-        мост, результат локальных проверок и состояние ресурсов.
+        мост, результат локальных проверок, состояние ресурсов и версии telemt и mtg
+        из последнего runtime-отчёта. Фильтры: `resource` - машине назначен ресурс,
+        `enabled`, `kind`; `paging.total` считается с фильтром. Неизвестное
+        значение фильтра - 400.
       operationId: listMachines
       parameters:
-        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
-        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - { name: resource, in: query, schema: { type: string, enum: [telemt.users, mtg.config, xui.clients] } }
+        - { name: enabled, in: query, schema: { type: boolean } }
+        - { name: kind, in: query, schema: { type: string, enum: [exit, relay, panel] } }
       responses:
         '200':
           description: Страница машин
@@ -184,13 +190,117 @@ paths:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/Machine' }
-                  paging:
-                    type: object
-                    required: [total, limit, offset]
-                    properties:
-                      total: { type: integer }
-                      limit: { type: integer }
-                      offset: { type: integer }
+                  paging: { $ref: '#/components/schemas/Paging' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/machines/{code}/runtime:
+    get:
+      summary: Последний runtime-снимок машины
+      description: |
+        Нагрузка машины, состояние telemt и mtg без списков пользователей.
+        `stale: true` - снимок старше порога (по умолчанию три периода отчёта, 180 с)
+        или его ещё нет (`seen_at: null`).
+        `telemt`/`mtg` - null, если на машине нет продукта или отчёта ещё не было.
+      operationId: getMachineRuntime
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Снимок машины
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MachineRuntime' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/connections:
+    get:
+      summary: Подключения пользователей по последним снимкам машин
+      description: |
+        Строка на машину, продукт и пользователя. Порядок: machine, product, key.
+        В снимок попадают только пользователи с подключениями или адресами.
+      operationId: listConnections
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - { name: machine, in: query, schema: { type: string } }
+        - { name: product, in: query, schema: { $ref: '#/components/schemas/Product' } }
+        - { name: min_connections, in: query, schema: { type: integer, minimum: 0 } }
+      responses:
+        '200':
+          description: Страница подключений
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Connection' }
+                  paging: { $ref: '#/components/schemas/Paging' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/connections/summary:
+    get:
+      summary: Сводка подключений по машинам
+      description: |
+        Строка на машину и продукт, у которых есть runtime-снимок. Порядок machine, product.
+        Строка есть и тогда, когда API продукта на машине не ответил: `api_ok: false`,
+        причина в `error`, `connections_total` и `users_online` - по последнему удачному
+        снимку (или 0). Клиенту в этом случае стоит взять подключения другим путём.
+      operationId: getConnectionsSummary
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Страница сводки
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ConnectionSummary' }
+                  paging: { $ref: '#/components/schemas/Paging' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/log-errors:
+    get:
+      summary: Ошибки журнала telemt за окно
+      description: |
+        Суммы счётчиков из runtime-отчётов за периоды, закончившиеся после `since`.
+        Мастер хранит счётчики 24 часа: `since` раньше - 400. Порядок: count по
+        убыванию, machine, key, kind. Пустой `key` - строка без пользователя.
+      operationId: listLogErrors
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - { name: since, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: machine, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Страница сумм
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/LogErrorSum' }
+                  paging: { $ref: '#/components/schemas/Paging' }
         '400': { $ref: '#/components/responses/Error' }
         '401': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
@@ -239,6 +349,42 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /v1/runtime:
+    post:
+      summary: Runtime-отчёт агента (раз в минуту)
+      description: |
+        Нагрузка машины, состояние telemt и mtg, подключения пользователей,
+        счётчики ошибок журнала. Мастер хранит только последний снимок машины
+        (строки пользователей продукта заменяются, только если API продукта
+        ответил - `api_ok: true`), счётчики журнала - 24 часа. Повтор того же
+        периода журнала не удваивает счётчики.
+        Лимиты: до 5000 пользователей в каждом продукте, до 20 адресов на
+        пользователя, до 5000 строк журнала - иначе 400; тело больше 2 МБ - 413
+        (агент сам урезает отчёт: адреса, затем пользователей с меньшим числом
+        подключений, затем журнал - и пишет об этом в `error` продукта).
+        Проверки значений (400 с кодом): `host_invalid` - проценты вне 0..100,
+        отрицательные или нечисловые значения нагрузки; `log_period_invalid` -
+        `period_end` в будущем больше чем на 5 мин, старше часа (+5 мин) или
+        период длиннее 65 мин; `log_count_invalid` - счётчик больше 1e9.
+        Старый мастер или мост без этой ручки отвечает 404/405 - агент
+        увеличивает паузу между попытками до 30 мин.
+      operationId: postRuntime
+      security:
+        - agentToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RuntimeReport' }
+      responses:
+        '204': { description: Отчёт принят }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
     botToken:
@@ -254,6 +400,14 @@ components:
       in: cookie
       name: telemux_session
   parameters:
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
     UserKey:
       name: key
       in: path
@@ -392,9 +546,178 @@ components:
             properties:
               resource: { type: string }
               revision: { type: integer }
+              sha256: { type: string, description: "sha256 ресурса, о котором отчитался агент" }
               status: { type: string, enum: [applied, failed, pending, compared] }
               error: { type: string }
               seen_at: { type: string, format: date-time }
+              desired_revision:
+                type: integer
+                nullable: true
+                description: Последняя желаемая ревизия этого ресурса для машины; null - не публиковалась
+        telemt_version: { type: string, description: Версия telemt из последнего runtime-отчёта }
+        mtg_version: { type: string, description: Версия mtg-multi из последнего runtime-отчёта }
+        runtime_seen_at: { type: string, format: date-time, nullable: true, description: "Последний runtime-отчёт; null - не было" }
+    Paging:
+      type: object
+      required: [total, limit, offset]
+      properties:
+        total: { type: integer, description: Всего строк с учётом фильтров }
+        limit: { type: integer }
+        offset: { type: integer }
+    Product:
+      type: string
+      enum: [telemt, mtg]
+    RuntimeHost:
+      type: object
+      required: [cpu_pct, mem_pct, disk_pct, load1, net_rx_mbps, net_tx_mbps, uptime_s]
+      properties:
+        cpu_pct: { type: number, minimum: 0, maximum: 100, description: "Загрузка CPU между двумя отчётами, %" }
+        mem_pct: { type: number, minimum: 0, maximum: 100 }
+        disk_pct: { type: number, minimum: 0, maximum: 100, description: "Занято на корневой ФС, %" }
+        load1: { type: number, minimum: 0 }
+        net_rx_mbps: { type: number, minimum: 0, maximum: 1000000, description: "Интерфейс маршрута по умолчанию, между отчётами" }
+        net_tx_mbps: { type: number, minimum: 0, maximum: 1000000 }
+        uptime_s: { type: integer, minimum: 0 }
+    RuntimeUser:
+      type: object
+      required: [key, connections]
+      properties:
+        key: { type: string, maxLength: 128 }
+        connections: { type: integer, minimum: 0 }
+        active_ips:
+          type: array
+          maxItems: 20
+          items: { type: string, maxLength: 64 }
+        bytes_in: { type: integer, minimum: 0, description: Только mtg }
+        bytes_out: { type: integer, minimum: 0, description: Только mtg }
+        last_seen: { type: string, format: date-time, nullable: true, description: Только mtg }
+    RuntimeTelemt:
+      type: object
+      required: [version, api_ok, error, users_configured, users_effective, connections_total]
+      properties:
+        version: { type: string, description: "`telemt --version`; пусто - бинарь не найден" }
+        api_ok: { type: boolean, description: "API telemt ответил; false - причина в error" }
+        error: { type: string, maxLength: 1024 }
+        users_configured: { type: integer, description: Пользователей в telemt без placeholder }
+        users_effective: { type: integer, description: Из них не истёкших по users.toml }
+        connections_total: { type: integer }
+        config_sha256: { type: string, description: sha256 telemt.toml }
+        keepalive: { type: integer }
+        ack: { type: integer }
+        tls_domain: { type: string }
+        max_tcp_conns_median: { type: integer, description: Медиана лимитов подключений в users.toml }
+        users:
+          type: array
+          description: Только в отчёте агента; в ответах мастера не отдаётся
+          maxItems: 5000
+          items: { $ref: '#/components/schemas/RuntimeUser' }
+    RuntimeMtg:
+      type: object
+      required: [version, api_ok, error, connections_total]
+      properties:
+        version: { type: string }
+        api_ok: { type: boolean }
+        error: { type: string, maxLength: 1024 }
+        connections_total: { type: integer }
+        users:
+          type: array
+          description: Только в отчёте агента; в ответах мастера не отдаётся
+          maxItems: 5000
+          items: { $ref: '#/components/schemas/RuntimeUser' }
+    LogErrorKind:
+      type: string
+      enum: [limit, handshake, auth, timeout, other]
+    RuntimeReport:
+      type: object
+      required: [target]
+      properties:
+        target: { type: string }
+        agent_version: { type: string }
+        host:
+          allOf: [{ $ref: '#/components/schemas/RuntimeHost' }]
+          nullable: true
+        telemt:
+          allOf: [{ $ref: '#/components/schemas/RuntimeTelemt' }]
+          nullable: true
+          description: null - на машине нет telemt
+        mtg:
+          allOf: [{ $ref: '#/components/schemas/RuntimeMtg' }]
+          nullable: true
+          description: null - на машине нет mtg
+        log_errors:
+          type: object
+          nullable: true
+          description: Счётчики журнала telemt за период с прошлого отчёта; null - нет telemt или журнал не прочитан
+          required: [period_start, period_end, items]
+          properties:
+            period_start: { type: string, format: date-time }
+            period_end:
+              type: string
+              format: date-time
+              description: "Не позже now+5 мин и не раньше now-1 ч-5 мин; период не длиннее 65 мин"
+            items:
+              type: array
+              maxItems: 5000
+              items:
+                type: object
+                required: [key, kind, count]
+                properties:
+                  key: { type: string, maxLength: 128, description: "user=<key> из строки; пусто - без пользователя" }
+                  kind: { $ref: '#/components/schemas/LogErrorKind' }
+                  count: { type: integer, minimum: 0, maximum: 1000000000 }
+    MachineRuntime:
+      type: object
+      required: [code, seen_at, stale, agent_version, host, telemt, mtg]
+      properties:
+        code: { type: string }
+        seen_at: { type: string, format: date-time, nullable: true }
+        stale: { type: boolean, description: "Снимок старше порога (по умолчанию 180 с) или его нет" }
+        agent_version: { type: string }
+        host:
+          allOf: [{ $ref: '#/components/schemas/RuntimeHost' }]
+          nullable: true
+        telemt:
+          allOf: [{ $ref: '#/components/schemas/RuntimeTelemt' }]
+          nullable: true
+        mtg:
+          allOf: [{ $ref: '#/components/schemas/RuntimeMtg' }]
+          nullable: true
+    Connection:
+      type: object
+      required: [machine, product, key, connections, active_ips, bytes_in, bytes_out, last_seen, seen_at, stale]
+      properties:
+        machine: { type: string }
+        product: { $ref: '#/components/schemas/Product' }
+        key: { type: string }
+        connections: { type: integer }
+        active_ips:
+          type: array
+          items: { type: string }
+        bytes_in: { type: integer, description: "Только mtg, у telemt 0" }
+        bytes_out: { type: integer }
+        last_seen: { type: string, format: date-time, nullable: true }
+        seen_at: { type: string, format: date-time, description: Когда пришёл снимок }
+        stale: { type: boolean, description: "Строка старше порога (по умолчанию 180 с): API продукта давно не отвечал или агент молчит" }
+    ConnectionSummary:
+      type: object
+      required: [machine, product, connections_total, users_online, seen_at, stale, api_ok]
+      properties:
+        machine: { type: string }
+        product: { $ref: '#/components/schemas/Product' }
+        connections_total: { type: integer, description: "При api_ok=false - сумма по последнему удачному снимку (или 0)" }
+        users_online: { type: integer, description: "Пользователей с подключениями; при api_ok=false - по последнему удачному снимку" }
+        seen_at: { type: string, format: date-time, description: Когда пришёл последний снимок машины }
+        stale: { type: boolean }
+        api_ok: { type: boolean, description: "API продукта ответил в последнем снимке; false - причина в error" }
+        error: { type: string, description: "Ошибка продукта из последнего снимка; нет поля - ошибок не было" }
+    LogErrorSum:
+      type: object
+      required: [machine, key, kind, count]
+      properties:
+        machine: { type: string }
+        key: { type: string }
+        kind: { $ref: '#/components/schemas/LogErrorKind' }
+        count: { type: integer }
     Error:
       type: object
       required: [code, message]
@@ -403,6 +726,7 @@ components:
           type: string
           description: Машинный код
           enum: [bad_request, unauthorized, forbidden, not_found, conflict, gone, unprocessable,
-                 not_implemented, unavailable, internal, not_master, mass_delete_guard]
+                 not_implemented, unavailable, internal, not_master, mass_delete_guard,
+                 payload_too_large]
         message: { type: string }
         error: { type: string, description: Копия message для старой панели }
