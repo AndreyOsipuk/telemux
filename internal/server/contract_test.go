@@ -21,6 +21,7 @@ import (
 	"github.com/getkin/kin-openapi/routers/gorillamux"
 
 	"github.com/AndreyOsipuk/telemux/api"
+	"github.com/AndreyOsipuk/telemux/internal/stack"
 	"github.com/AndreyOsipuk/telemux/internal/store"
 )
 
@@ -390,4 +391,67 @@ func TestContract_Overview(t *testing.T) {
 	plain, fa2 := overviewServer(nil)
 	fa2.machines = []store.Machine{}
 	checkContract(t, router, plain, "GET", "/api/v1/overview", "", http.StatusOK)
+}
+
+// Версии продуктов и обновление машины (ADR 0008): ответы и ошибки совпадают со спекой.
+func TestContract_Stack(t *testing.T) {
+	_, router := loadSpec(t)
+	s, _, _ := stackServer(t, false)
+	checkContract(t, router, s, "GET", "/api/v1/stack", "", http.StatusOK)
+	checkContract(t, router, s, "POST", "/api/v1/stack/check", "", http.StatusOK)
+	checkContract(t, router, s, "POST", "/api/v1/stack/check", "", http.StatusTooManyRequests)
+	checkContract(t, router, s, "GET", "/api/v1/stack?limit=2&offset=1", "", http.StatusOK)
+	checkContractResponse(t, router, s, "/api/v1/stack", "/api/v1/stack?limit=0", http.StatusBadRequest)
+
+	checkContract(t, router, s, "POST", "/api/v1/machines/pr2/update", `{"product":"telemt"}`, http.StatusAccepted)
+	checkContract(t, router, s, "GET", "/api/v1/stack", "", http.StatusOK) // с обновлением pending
+	checkContract(t, router, s, "POST", "/api/v1/machines/pr2/update", `{"product":"telemt"}`, http.StatusConflict)
+	checkContract(t, router, s, "POST", "/api/v1/machines/ps2/update", `{"product":"telemt","version":"9.9.9"}`, http.StatusBadRequest)
+	checkContract(t, router, s, "POST", "/api/v1/machines/nobody/update", `{"product":"telemt"}`, http.StatusNotFound)
+	checkContract(t, router, s, "POST", "/api/v1/machines/ps2/update", `{"product":"mtg"}`, http.StatusConflict)
+	s.deps.Stack.Releases.(*fakeReleases).binErr = errors.New("нет файла")
+	checkContract(t, router, s, "POST", "/api/v1/machines/ps6/update", `{"product":"telemt"}`, http.StatusConflict)
+	s.deps.Stack.Store.(*fakeStack).machines["ps6"] = store.StackMachine{Code: "ps6", Kind: "exit", Enabled: true,
+		Telemt: &store.StackProductInfo{Current: strp("3.5.10")}}
+	s.stackSt.fetchMemo = nil
+	checkContract(t, router, s, "POST", "/api/v1/machines/ps6/update", `{"product":"telemt"}`, http.StatusServiceUnavailable)
+
+	replica, _, _ := stackServer(t, true)
+	checkContract(t, router, replica, "GET", "/api/v1/stack", "", http.StatusOK)
+	checkContract(t, router, replica, "POST", "/api/v1/stack/check", "", http.StatusConflict)
+
+	// Бинарь для агента: токен машины, а не бота.
+	sha := s.deps.Stack.Store.(*fakeStack).content["pr2"]["telemt"].SHA256
+	blob := func(path, token string, want int) {
+		t.Helper()
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		route, params, err := router.FindRoute(req)
+		if err != nil {
+			t.Fatalf("GET %s нет в спеке: %v", path, err)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("GET %s → ждали %d, получили %d: %s", path, want, rec.Code, rec.Body.String())
+		}
+		in := &openapi3filter.RequestValidationInput{Request: req, PathParams: params, Route: route,
+			Options: &openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc, ExcludeRequestBody: true}}
+		res := rec.Result()
+		if err := openapi3filter.ValidateResponse(context.Background(), &openapi3filter.ResponseValidationInput{
+			RequestValidationInput: in, Status: res.StatusCode, Header: res.Header,
+			Body: io.NopCloser(bytes.NewReader(rec.Body.Bytes())),
+		}); err != nil {
+			t.Fatalf("GET %s %d не соответствует спеке: %v", path, rec.Code, err)
+		}
+	}
+	blob("/v1/stack/blobs/"+sha+"?target=pr2", pr2Token, http.StatusOK)
+	blob("/v1/stack/blobs/"+sha+"?target=ps2", "token-ps2", http.StatusNotFound)
+	blob("/v1/stack/blobs/"+sha+"?target=ps2", pr2Token, http.StatusForbidden)
+	blob("/v1/stack/blobs/"+sha+"?target=pr2", "nope", http.StatusUnauthorized)
+	// Реплика без файла - 409 not_master.
+	var rfs *fakeStack
+	s, rfs, _ = stackServer(t, true)
+	rfs.content["pr2"] = stack.Content{"telemt": {Version: "3.5.17", SHA256: sha, Size: 10}}
+	blob("/v1/stack/blobs/"+sha+"?target=pr2", pr2Token, http.StatusConflict)
 }

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/AndreyOsipuk/telemux/internal/agentjoin"
+	"github.com/AndreyOsipuk/telemux/internal/stackrel"
 	"github.com/AndreyOsipuk/telemux/internal/store"
 	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/tlspin"
@@ -270,6 +271,7 @@ func joinServer(t *testing.T, o joinOpts) (*Server, *fakeJoins, *fakeFirewall, s
 		Servers: newFakeServers(),
 		Ops:     newFakeOps(),
 		Render:  &fakeRender{sources: map[int]string{}, rows: map[int][]store.RenderStatus{}},
+		Stack:   &StackDeps{Store: newFakeStack(), Releases: newFakeReleases(), Cache: stackrel.Cache{Dir: t.TempDir()}},
 	})
 	return s, fj, fw, spki
 }

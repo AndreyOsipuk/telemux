@@ -42,7 +42,7 @@ func writePage(w http.ResponseWriter, data any, total, limit, offset int) {
 // machineResources - ресурсы, по которым фильтруется список машин.
 var machineResources = map[string]bool{
 	store.ResourceTelemtUsers: true, store.ResourceMtgConfig: true, store.ResourceXuiClients: true,
-	store.ResourceTelemtConfig: true, store.ResourceTLSWeb: true,
+	store.ResourceTelemtConfig: true, store.ResourceTLSWeb: true, store.ResourceStack: true,
 }
 
 // machineKinds - виды машин.
@@ -53,7 +53,7 @@ func parseMachineFilter(r *http.Request) (store.MachineFilter, error) {
 	q := r.URL.Query()
 	f := store.MachineFilter{Resource: q.Get("resource"), Kind: q.Get("kind")}
 	if f.Resource != "" && !machineResources[f.Resource] {
-		return f, fmt.Errorf("resource %q: допустимы telemt.users, telemt.config, mtg.config, xui.clients, tls.web", f.Resource)
+		return f, fmt.Errorf("resource %q: допустимы telemt.users, telemt.config, mtg.config, xui.clients, tls.web, stack", f.Resource)
 	}
 	if f.Kind != "" && !machineKinds[f.Kind] {
 		return f, fmt.Errorf("kind %q: допустимы exit, relay, panel", f.Kind)

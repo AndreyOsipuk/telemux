@@ -83,6 +83,8 @@ func (a *auth) isPublic(path string) bool {
 		path == "/api/v1/events",  // лента тревог (ADR 0007): Bearer бота или сессия
 		path == "/api/v1/servers", // серверы (ADR 0005): Bearer бота или сессия
 		strings.HasPrefix(path, "/api/v1/servers/"),
+		// Версии продуктов (ADR 0008): Bearer бота или сессия.
+		path == "/api/v1/stack", path == "/api/v1/stack/check",
 		strings.HasPrefix(path, "/join/"): // одноразовый token
 		return true
 	case !strings.HasPrefix(path, "/api/"): // статика SPA (/, /assets/*)

@@ -75,6 +75,10 @@ type Deps struct {
 	// Сетевые проверки точек входа для проверки связи; nil → по сети.
 	Prober EndpointProber
 
+	// Обновление telemt и mtg-multi кнопкой (ADR 0008): релизы, версии машин, ресурс
+	// stack и бинари для агентов; nil → выключено. Работает вместе с Agents.
+	Stack *StackDeps
+
 	// Внешний TLS-слушатель для агентов и мостов машин-выходов (только /v1/ и /healthz).
 	// Пусто → выключен. Сертификат самоподписанный, клиенты закрепляют его отпечаток.
 	TLSListen   string
@@ -135,6 +139,8 @@ type Server struct {
 	revs revisionWatch // будит long-poll агентов после публикации
 
 	renderSt renderState // будильник и сериализация цикла сборки конфигов серверов
+
+	stackSt stackState // частота проверки релизов по кнопке
 
 	joinBinary func() (string, error) // бинарь для новых машин (подменяется в тестах)
 }
@@ -229,6 +235,9 @@ func (s *Server) routes() {
 	if s.deps.Ops != nil && s.deps.Agents != nil {
 		s.routesMachineOps()
 	}
+	if s.deps.Stack != nil && s.deps.Agents != nil {
+		s.routesStack()
+	}
 	s.mux.HandleFunc("GET /api/openapi.json", s.handleSpec)
 	// Дашборд (встроенный, см. web.go).
 	s.mux.HandleFunc("GET /", s.handleIndex)
@@ -278,6 +287,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	}
 	if s.deps.Ops != nil && s.deps.Agents != nil {
 		go s.alertsLoop(ctx)
+	}
+	if s.deps.Stack != nil && s.deps.Agents != nil {
+		go s.stackLoop(ctx)
 	}
 	if s.deps.Panel != nil {
 		go s.panelLoop(ctx)

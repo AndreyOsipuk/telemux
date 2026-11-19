@@ -300,7 +300,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
-        - { name: resource, in: query, schema: { type: string, enum: [telemt.users, telemt.config, mtg.config, xui.clients, tls.web] } }
+        - { name: resource, in: query, schema: { type: string, enum: [telemt.users, telemt.config, mtg.config, xui.clients, tls.web, stack] } }
         - { name: enabled, in: query, schema: { type: boolean } }
         - { name: kind, in: query, schema: { type: string, enum: [exit, relay, panel] } }
       responses:
@@ -956,6 +956,96 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /api/v1/stack:
+    get:
+      summary: Версии telemt и mtg-multi - последние релизы и машины
+      description: |
+        Последние релизы GitHub по продуктам (мастер проверяет раз в 6 часов и по
+        `POST /api/v1/stack/check`) и состояние машин страницей. Версии сравниваются по ядру
+        X.Y.Z, ведущая `v` отбрасывается. Своя сборка (`custom_build`) - версия с суффиксом
+        после ядра (`1.15.0-webalias`) или неразборчивая; для неё `update_available` только
+        если ядро релиза строго больше. Продукта на машине нет (агент его не присылает) -
+        поле продукта `null`. Состояния машин нет на реплике - там `data` пустой.
+      operationId: getStack
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Релизы и машины
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StackStatus' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/stack/check:
+    post:
+      summary: Проверить последние релизы сейчас
+      description: |
+        Только мастер. Запрашивает последний релиз каждого продукта на GitHub и сохраняет
+        результат. Ошибка GitHub по продукту - в его `error`, прошлый результат остаётся
+        (не 5xx). Чаще раза в минуту - 429 `too_many_requests`.
+      operationId: checkStack
+      responses:
+        '200':
+          description: Релизы после проверки
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [products]
+                properties:
+                  products:
+                    type: array
+                    items: { $ref: '#/components/schemas/StackProduct' }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/machines/{code}/update:
+    post:
+      summary: Обновить telemt или mtg-multi на машине
+      description: |
+        Только мастер. Мастер скачивает релиз, сверяет SHA256 по контрольной сумме релиза,
+        кладёт бинарь в кэш и публикует машине ресурс `stack`. Агент в режиме apply заменяет
+        бинарь, перезапускает сервис и проверяет, что он поднялся; не поднялся - возвращает
+        прежний. Результат - в `GET /api/v1/stack` (`update.status`) и в ленте тревог
+        (`apply_failed`). `version` не задана - последний релиз.
+
+        Ресурс `stack` - разовая команда: в ревизии только обновляемый продукт, а после итога
+        (applied, failed, таймаут 30 минут) мастер публикует новую ревизию без него. На машине
+        одновременно идёт не больше одного обновления (по любому продукту).
+
+        Ошибки: 400 `unknown_product`, `unknown_version` (нет такого релиза или его версия не
+        разбирается); 404 - нет машины; 409 `machine_disabled`, `product_missing` (агент этот
+        продукт не присылает), `custom_build` (на машине своя сборка - нужен `force: true`),
+        `not_newer` (версия не новее текущей - нужен `force: true`), `update_in_progress`
+        (обновление на машине ещё идёт), `asset_missing` (в релизе нет файла под архитектуру
+        машины или архитектура не поддерживается); 503 `release_unavailable` (релиз не
+        скачался или сумма не сошлась).
+      operationId: updateMachineProduct
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StackUpdateRequest' }
+      responses:
+        '202':
+          description: Ревизия опубликована, агент применит её
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StackUpdateState' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /api/v1/events:
     get:
       summary: Лента тревог по машинам (для бота)
@@ -986,6 +1076,32 @@ paths:
                   paging: { $ref: '#/components/schemas/Paging' }
         '400': { $ref: '#/components/responses/Error' }
         '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /v1/stack/blobs/{sha256}:
+    get:
+      summary: Бинарь обновления для агента
+      description: |
+        Бинарь из кэша мастера по его SHA256. Токен машины даёт доступ только к бинарям из
+        последней ревизии её ресурса `stack`; чужой или неизвестный - 404. Бинаря нет в кэше
+        этого узла и узел не мастер - 409 `not_master` (идти к следующему адресу).
+      operationId: getStackBlob
+      security:
+        - agentToken: []
+      parameters:
+        - { name: sha256, in: path, required: true, schema: { type: string, pattern: '^[0-9a-f]{64}$' } }
+        - { name: target, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Бинарь
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
   /v1/desired:
@@ -1839,6 +1955,80 @@ components:
         machine: { type: string }
         kind: { type: string, enum: [down, up, apply_failed] }
         detail: { type: string }
+    StackProduct:
+      type: object
+      required: [product, repo, latest, checked_at, error]
+      properties:
+        product: { $ref: '#/components/schemas/Product' }
+        repo: { type: string, example: telemt/telemt }
+        latest:
+          nullable: true
+          description: Последний релиз; null - ещё ни разу не узнали
+          type: object
+          required: [version, tag, published_at]
+          properties:
+            version: { type: string, example: 3.5.17 }
+            tag: { type: string, example: 3.5.17 }
+            published_at: { type: string, format: date-time }
+        checked_at: { type: string, format: date-time, nullable: true }
+        error: { type: string, nullable: true, description: Ошибка последней проверки; прошлый latest остаётся }
+    StackProductState:
+      type: object
+      required: [current, latest, update_available, custom_build, update]
+      properties:
+        current: { type: string, nullable: true, description: "Версия из runtime-отчёта; null - агент её не прислал" }
+        latest: { type: string, nullable: true }
+        update_available: { type: boolean }
+        custom_build: { type: boolean, description: "Своя сборка: суффикс после X.Y.Z или версия не разобрана" }
+        update:
+          allOf: [ { $ref: '#/components/schemas/StackUpdateState' } ]
+          nullable: true
+          description: Последнее обновление через telemux; null - не было
+    StackMachine:
+      type: object
+      required: [code, kind, enabled, telemt, mtg]
+      properties:
+        code: { type: string }
+        kind: { type: string, enum: [relay, exit] }
+        enabled: { type: boolean }
+        telemt:
+          allOf: [ { $ref: '#/components/schemas/StackProductState' } ]
+          nullable: true
+        mtg:
+          allOf: [ { $ref: '#/components/schemas/StackProductState' } ]
+          nullable: true
+    StackStatus:
+      type: object
+      required: [products, data, paging]
+      properties:
+        products:
+          type: array
+          items: { $ref: '#/components/schemas/StackProduct' }
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/StackMachine' }
+        paging: { $ref: '#/components/schemas/Paging' }
+    StackUpdateRequest:
+      type: object
+      required: [product]
+      additionalProperties: false
+      properties:
+        product: { $ref: '#/components/schemas/Product' }
+        version: { type: string, description: "Версия релиза; по умолчанию последний" }
+        force: { type: boolean, default: false, description: "Обновить свою сборку или поставить не более новую версию" }
+    StackUpdateState:
+      type: object
+      required: [code, product, from, to, revision, status, error, requested_at, finished_at]
+      properties:
+        code: { type: string }
+        product: { $ref: '#/components/schemas/Product' }
+        from: { type: string, nullable: true, description: Версия на машине в момент запроса }
+        to: { type: string }
+        revision: { type: integer, description: Ревизия ресурса stack }
+        status: { type: string, enum: [pending, applied, failed] }
+        error: { type: string, nullable: true }
+        requested_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
     Error:
       type: object
       required: [code, message]
@@ -1850,6 +2040,9 @@ components:
                  not_implemented, unavailable, internal, not_master, mass_delete_guard,
                  payload_too_large, unknown_machine, engine_immutable, unknown_setting,
                  bad_setting, bad_endpoint, batch_too_large, machine_enabled, machine_in_use,
-                 machine_disabled, too_many_points, render_mismatch, managed_by_telemux]
+                 machine_disabled, too_many_points, render_mismatch, managed_by_telemux,
+                 too_many_requests, unknown_product, unknown_version, product_missing,
+                 custom_build, not_newer, update_in_progress, release_unavailable,
+                 asset_missing]
         message: { type: string }
         error: { type: string, description: Копия message для старой панели }

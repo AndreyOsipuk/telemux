@@ -42,6 +42,8 @@ func errCodeFor(status int) string {
 		return "payload_too_large"
 	case http.StatusUnprocessableEntity:
 		return "unprocessable"
+	case http.StatusTooManyRequests:
+		return "too_many_requests"
 	case http.StatusNotImplemented:
 		return "not_implemented"
 	case http.StatusServiceUnavailable:
@@ -150,6 +152,7 @@ var storeInputErrs = []struct {
 	{store.ErrMachineInUse, http.StatusConflict, "machine_in_use"},
 	{store.ErrMachineDisabled, http.StatusConflict, "machine_disabled"},
 	{store.ErrBadSettings, http.StatusBadRequest, "bad_setting"},
+	{store.ErrStackUpdateInProgress, http.StatusConflict, "update_in_progress"},
 }
 
 // storeInputErr - статус и код ошибки ввода, распознанной хранилищем; ok=false - не она.

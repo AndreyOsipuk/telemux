@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AndreyOsipuk/telemux/internal/stack"
 	"github.com/AndreyOsipuk/telemux/internal/store"
 	"github.com/AndreyOsipuk/telemux/internal/telemtcfg"
 	"github.com/AndreyOsipuk/telemux/internal/tlspin"
@@ -55,8 +56,10 @@ type Config struct {
 	Applier         *Applier       // для ModeApply и telemt.users; UsersFile берётся из конфига агента
 	MtgApplier      *MtgApplier    // для ModeApply и mtg.config; MtgFile берётся из конфига агента
 	// TLSDir - каталог сертификатов nginx под ресурсом tls.web; пусто - не ведётся.
-	TLSDir       string
-	TLSApplier   *TLSApplier       // для ModeApply и tls.web; Dir берётся из конфига агента
+	TLSDir     string
+	TLSApplier *TLSApplier // для ModeApply и tls.web; Dir берётся из конфига агента
+	// StackApplier - обновление telemt и mtg-multi (ресурс stack) в ModeApply; nil - по умолчанию.
+	StackApplier *StackApplier
 	Wait         time.Duration     // сколько мастер держит long-poll; по умолчанию 55 с
 	RecheckEvery time.Duration     // как часто перепроверять диск и отчитываться без новой ревизии; по умолчанию 5 мин
 	Checks       []Check           // локальные проверки машины для отчёта (мост и т.п.)
@@ -76,6 +79,8 @@ type Agent struct {
 	lastCheck time.Time                 // когда последний раз сверяли диск
 	force     bool                      // перепроверить диск в следующем цикле
 	failed    map[string]failedRev      // отвергнутые ревизии по ресурсам: повторно не применяются
+	versions  *RuntimeCollector         // версии бинарей для ресурса stack (тот же кэш, что у runtime-отчёта)
+	stackDone *stackOutcome             // итог последней ревизии stack, по которой агент запускал обновление
 }
 
 // master - адрес мастера и HTTP-клиент со своим прокси (туннелем).
@@ -103,6 +108,17 @@ func parseMaster(entry string, timeout time.Duration, pin string) (master, error
 	}
 	m.client = &http.Client{Timeout: timeout, Transport: tr}
 	return m, nil
+}
+
+// MasterClient - адрес мастера и HTTP-клиент для одной записи списка мастеров агента
+// («адрес» или «адрес|socks5://...»), с закреплением сертификата для https. Тот же
+// разбор, что у агента: им пользуется stack-apply.
+func MasterClient(entry string, timeout time.Duration, pin string) (string, *http.Client, error) {
+	m, err := parseMaster(entry, timeout, pin)
+	if err != nil {
+		return "", nil, err
+	}
+	return m.base, m.client, nil
 }
 
 type failedRev struct {
@@ -154,7 +170,13 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	a := &Agent{cfg: cfg, desired: map[string]*store.Desired{}, failed: map[string]failedRev{}}
+	if cfg.Mode == ModeApply && cfg.StackApplier == nil {
+		cfg.StackApplier = &StackApplier{}
+	}
+	a := &Agent{cfg: cfg, desired: map[string]*store.Desired{}, failed: map[string]failedRev{}, versions: cfg.Runtime}
+	if a.versions == nil {
+		a.versions = &RuntimeCollector{Log: cfg.Log}
+	}
 	for _, e := range cfg.MasterURLs {
 		m, err := parseMaster(e, cfg.Wait+15*time.Second, cfg.MasterPin)
 		if err != nil {
@@ -176,6 +198,9 @@ func (a *Agent) handles(resource string) bool {
 		return a.cfg.TelemtConfigFile != ""
 	case store.ResourceTLSWeb:
 		return a.cfg.TLSDir != ""
+	case stack.Resource:
+		// Всегда: продукта на машине нет - агент так и ответит (failed), мастер увидит.
+		return true
 	}
 	return false
 }
@@ -292,7 +317,7 @@ func (a *Agent) checkAndReport(ctx context.Context, m master) error {
 	var items []*store.Desired
 	// Порядок важен: сначала пользователи, затем основной конфиг - он собирает
 	// профили из users.toml, который только что лёг на диск.
-	for _, r := range []string{store.ResourceTelemtUsers, store.ResourceTelemtConfig, store.ResourceMtgConfig, store.ResourceTLSWeb} {
+	for _, r := range []string{store.ResourceTelemtUsers, store.ResourceTelemtConfig, store.ResourceMtgConfig, store.ResourceTLSWeb, stack.Resource} {
 		if d := a.desired[r]; d != nil {
 			items = append(items, d)
 		}
@@ -311,7 +336,7 @@ func (a *Agent) checkAndReport(ctx context.Context, m master) error {
 		if a.cfg.Mode == ModeApply {
 			res = a.apply(ctx, d)
 		} else {
-			res = a.compare(d)
+			res = a.compare(ctx, d)
 		}
 		rep.Resources = append(rep.Resources, res)
 		a.cfg.Log.Info("агент: сверка", "resource", d.Resource, "revision", d.Revision, "status", res.Status, "diff", res.Error)
@@ -326,8 +351,10 @@ func (a *Agent) checkAndReport(ctx context.Context, m master) error {
 	return nil
 }
 
-func (a *Agent) compare(d *store.Desired) store.ObservedResource {
+func (a *Agent) compare(ctx context.Context, d *store.Desired) store.ObservedResource {
 	switch d.Resource {
+	case stack.Resource:
+		return a.compareStack(ctx, d)
 	case store.ResourceMtgConfig:
 		return a.compareMtg(d)
 	case store.ResourceTelemtConfig:
@@ -377,6 +404,9 @@ func (a *Agent) compareMtg(d *store.Desired) store.ObservedResource {
 
 // apply применяет ревизию ресурса; отвергнутую ревизию не повторяет - ждёт новую.
 func (a *Agent) apply(ctx context.Context, d *store.Desired) store.ObservedResource {
+	if d.Resource == stack.Resource {
+		return a.applyStackOnce(ctx, d) // разовая команда: свой учёт ревизий, не a.failed
+	}
 	res := store.ObservedResource{Resource: d.Resource, Revision: d.Revision, SHA256: d.SHA256}
 	a.mu.Lock()
 	f, wasFailed := a.failed[d.Resource]

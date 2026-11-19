@@ -118,6 +118,8 @@ func (b *Bridge) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/join/{token}", b.handleJoin(http.MethodGet, ""))
 	mux.HandleFunc("GET /v1/join/{token}/telemux", b.handleJoin(http.MethodGet, "/telemux"))
 	mux.HandleFunc("POST /v1/join/{token}/agent", b.handleJoin(http.MethodPost, "/agent"))
+	// Бинарь обновления telemt / mtg-multi для stack-apply на релее (ADR 0008).
+	mux.HandleFunc("GET /v1/stack/blobs/{sha256}", b.handleStackBlob)
 	return mux
 }
 
@@ -130,7 +132,6 @@ var joinTokenRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // только реплики, клиенту уходит последний 409. Кэша и очереди у join нет.
 func (b *Bridge) handleJoin(method, suffix string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var notMaster *upstream
 		token := r.PathValue("token")
 		if !joinTokenRe.MatchString(token) {
 			writeError(w, http.StatusNotFound, "not_found", "не найдено")
@@ -140,56 +141,89 @@ func (b *Bridge) handleJoin(method, suffix string) http.HandlerFunc {
 		if q := r.URL.Query().Get("format"); q == "env" || q == "json" {
 			pathQuery += "?format=" + q
 		}
-		for _, base := range b.cfg.MasterURLs {
-			req, err := http.NewRequestWithContext(r.Context(), method, strings.TrimRight(base, "/")+pathQuery, nil)
-			if err != nil {
-				continue
-			}
-			resp, err := b.stream.Do(req)
-			if err != nil {
-				b.cfg.Log.Warn("мост: мастер не ответил на join", "master", base, "err", err)
-				continue
-			}
-			if resp.StatusCode >= 500 {
-				_ = resp.Body.Close()
-				b.cfg.Log.Warn("мост: мастер ответил сбоем на join", "master", base, "status", resp.StatusCode)
-				continue
-			}
-			if resp.StatusCode == http.StatusConflict {
-				// 409 - короткий JSON, его можно прочитать целиком и проверить код.
-				data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-				_ = resp.Body.Close()
-				if err != nil {
-					b.cfg.Log.Warn("мост: ответ мастера на join не читается", "master", base, "err", err)
-					continue
-				}
-				up := &upstream{status: resp.StatusCode, header: resp.Header, body: data}
-				if isNotMaster(resp.StatusCode, data) {
-					b.cfg.Log.Warn("мост: адрес не мастер, join идёт к следующему", "master", base)
-					notMaster = up
-					continue
-				}
-				writeUpstream(w, up)
-				return
-			}
-			for _, h := range []string{"Content-Type", "Content-Length", "Cache-Control"} {
-				if v := resp.Header.Get(h); v != "" {
-					w.Header().Set(h, v)
-				}
-			}
-			w.WriteHeader(resp.StatusCode)
-			if _, err := io.Copy(w, resp.Body); err != nil {
-				b.cfg.Log.Warn("мост: join оборвался при передаче", "master", base, "err", err)
-			}
-			_ = resp.Body.Close()
-			return
-		}
-		if notMaster != nil {
-			writeUpstream(w, notMaster)
-			return
-		}
-		writeError(w, http.StatusServiceUnavailable, "unavailable", "мастер недоступен")
+		b.streamProxy(w, r, method, pathQuery, "", "join")
 	}
+}
+
+// stackTargetRe - код машины в запросе бинаря обновления; иное мастеру не пересылается.
+var stackTargetRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// handleStackBlob пересылает мастеру запрос бинаря обновления (ресурс stack, ADR 0008)
+// с токеном агента и отдаёт ответ потоком: бинарь telemt или mtg-multi - десятки МБ.
+// Что машине можно скачать, решает мастер по токену; мост проверяет только формат.
+func (b *Bridge) handleStackBlob(w http.ResponseWriter, r *http.Request) {
+	sha := r.PathValue("sha256")
+	target := r.URL.Query().Get("target")
+	if !joinTokenRe.MatchString(sha) || !stackTargetRe.MatchString(target) {
+		writeError(w, http.StatusNotFound, "not_found", "не найдено")
+		return
+	}
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "нужен токен агента")
+		return
+	}
+	b.streamProxy(w, r, http.MethodGet, "/v1/stack/blobs/"+sha+"?target="+target, auth, "stack")
+}
+
+// streamProxy пересылает запрос мастерам по очереди и отдаёт ответ потоком (бинарь - около
+// 20 МБ, в память целиком не читается). Сбой сети, 5xx или 409 not_master (адрес оказался
+// репликой) - следующий мастер; если ответили только реплики, клиенту уходит последний 409.
+// Кэша и очереди нет. auth - заголовок Authorization для мастера (пусто - без него).
+func (b *Bridge) streamProxy(w http.ResponseWriter, r *http.Request, method, pathQuery, auth, what string) {
+	var notMaster *upstream
+	for _, base := range b.cfg.MasterURLs {
+		req, err := http.NewRequestWithContext(r.Context(), method, strings.TrimRight(base, "/")+pathQuery, nil)
+		if err != nil {
+			continue
+		}
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := b.stream.Do(req)
+		if err != nil {
+			b.cfg.Log.Warn("мост: мастер не ответил", "what", what, "master", base, "err", err)
+			continue
+		}
+		if resp.StatusCode >= 500 {
+			_ = resp.Body.Close()
+			b.cfg.Log.Warn("мост: мастер ответил сбоем", "what", what, "master", base, "status", resp.StatusCode)
+			continue
+		}
+		if resp.StatusCode == http.StatusConflict {
+			// 409 - короткий JSON, его можно прочитать целиком и проверить код.
+			data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+			_ = resp.Body.Close()
+			if err != nil {
+				b.cfg.Log.Warn("мост: ответ мастера не читается", "what", what, "master", base, "err", err)
+				continue
+			}
+			up := &upstream{status: resp.StatusCode, header: resp.Header, body: data}
+			if isNotMaster(resp.StatusCode, data) {
+				b.cfg.Log.Warn("мост: адрес не мастер, запрос идёт к следующему", "what", what, "master", base)
+				notMaster = up
+				continue
+			}
+			writeUpstream(w, up)
+			return
+		}
+		for _, h := range []string{"Content-Type", "Content-Length", "Cache-Control"} {
+			if v := resp.Header.Get(h); v != "" {
+				w.Header().Set(h, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			b.cfg.Log.Warn("мост: ответ оборвался при передаче", "what", what, "master", base, "err", err)
+		}
+		_ = resp.Body.Close()
+		return
+	}
+	if notMaster != nil {
+		writeUpstream(w, notMaster)
+		return
+	}
+	writeError(w, http.StatusServiceUnavailable, "unavailable", "мастер недоступен")
 }
 
 // writeUpstream отдаёт клиенту прочитанный ответ мастера.

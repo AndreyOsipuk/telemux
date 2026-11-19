@@ -179,6 +179,10 @@ volumes: { pgdata: {} }
 | Файл с токеном Cloudflare для DNS-01 | `TELEMUX_ACME_CF_TOKEN_FILE` | пусто = выпуск выключен |
 | Каталог ACME | `TELEMUX_ACME_DIR` | продакшн Let's Encrypt |
 | За сколько до конца продлевать сертификат | `TELEMUX_ACME_RENEW_BEFORE` | `720h` (30 дней) |
+| Репозиторий релизов telemt (обновление кнопкой) | `TELEMUX_STACK_TELEMT_REPO` | `telemt/telemt` |
+| Репозиторий релизов mtg-multi | `TELEMUX_STACK_MTG_REPO` | `dolonet/mtg-multi` |
+| Токен GitHub (только от лимита запросов к API) | `TELEMUX_GITHUB_TOKEN` | пусто = без токена |
+| Кэш бинарей обновлений на мастере | `TELEMUX_STACK_DIR` | `/var/lib/telemux/stack` |
 
 PostgreSQL держать на loopback (`listen_addresses='127.0.0.1'`) + фаервол; наружу не открывать.
 Реплики стримят с primary по TLS + `pg_hba` allowlist.
@@ -198,7 +202,7 @@ API для бота (Bearer `TELEMUX_BOT_TOKEN` или сессия панели
 | `DELETE` | `/api/v1/users/{key}` | удалить пользователя |
 | `GET` | `/api/v1/revisions/{rev}/status` | на каких машинах ревизия уже применена |
 | `GET` | `/api/v1/overview` | обзор для главной страницы панели одним запросом: машины (всего, агент в сети, молчат дольше 10 минут), подключения и уникальные пользователи онлайн, пары с релеем (в порядке / с проблемами), сертификаты (истекают раньше 14 дней, не выпущены; `certs: null` - выпуск выключен) и машины с runtime-полями - не больше 500 (`truncated: true` - флот больше, итоги всё равно по всем) |
-| `GET` | `/api/v1/machines?resource=&enabled=&kind=&limit=&offset=` | машины флота: когда отчитывался агент, его версия, мост, проверки, состояние ресурсов (`sha256`, `desired_revision`), из runtime-отчёта - версии telemt и mtg, нагрузка (`host`), `telemt_api_ok`/`mtg_api_ok`, `connections`, `users_online` и `runtime_status` (`online`, `stale` - отчёт старше 180 с, `degraded` - API telemt или mtg не ответил, `offline` - отчёта нет или агент молчит дольше 10 минут); фильтры `resource` (`telemt.users`, `telemt.config`, `mtg.config`, `xui.clients`, `tls.web`), `enabled`, `kind` (`exit`, `relay`, `panel`), неизвестное значение - 400; `{data, paging}`, `total` с фильтром, `limit` 1-100 (по умолчанию 20) |
+| `GET` | `/api/v1/machines?resource=&enabled=&kind=&limit=&offset=` | машины флота: когда отчитывался агент, его версия, мост, проверки, состояние ресурсов (`sha256`, `desired_revision`), из runtime-отчёта - версии telemt и mtg, нагрузка (`host`), `telemt_api_ok`/`mtg_api_ok`, `connections`, `users_online` и `runtime_status` (`online`, `stale` - отчёт старше 180 с, `degraded` - API telemt или mtg не ответил, `offline` - отчёта нет или агент молчит дольше 10 минут); фильтры `resource` (`telemt.users`, `telemt.config`, `mtg.config`, `xui.clients`, `tls.web`, `stack`), `enabled`, `kind` (`exit`, `relay`, `panel`), неизвестное значение - 400; `{data, paging}`, `total` с фильтром, `limit` 1-100 (по умолчанию 20) |
 | `GET` | `/api/v1/machines/{code}/runtime` | последний runtime-снимок машины: нагрузка, telemt, mtg (без списков пользователей), `stale` |
 | `GET` | `/api/v1/connections?machine=&product=&min_connections=&user=&limit=&offset=` | подключения пользователей по последним снимкам, порядок machine, product, key; `user` - префикс ключа пользователя (`%` и `_` - обычные символы) |
 | `GET` | `/api/v1/connections/by-user?user=a&user=b` | для каждого `user` (1-100) - сумма подключений по всем машинам, число машин с подключениями, `online`; один запрос к базе, порядок ответа - как в запросе |
@@ -215,6 +219,9 @@ API для бота (Bearer `TELEMUX_BOT_TOKEN` или сессия панели
 | `POST` | `/api/v1/machines/{code}/check` | проверка связи (только мастер): свежесть агента, TCP к точкам входа серверов машины, для `web` - TLS с SNI; 5 с на точку, всего до 20 с |
 | `GET` | `/api/v1/machines/{code}/metrics?from=&to=&step=` | история нагрузки (CPU, память, диск, load, сеть, подключения, онлайн), среднее по шагу `1m`/`5m`/`1h`; по умолчанию 24 ч и `5m`; больше 2000 точек - 400 `too_many_points` |
 | `GET` | `/api/v1/events?after_id=&limit=` | лента тревог для бота (`down`, `up`, `apply_failed`) по возрастанию `id`; `limit` 1-500 (по умолчанию 100) |
+| `GET` | `/api/v1/stack?limit=&offset=` | версии telemt и mtg-multi (см. «Обновление telemt и mtg-multi»): последние релизы GitHub (`products`, всегда оба) и релеи с выходами страницей - версия на машине, последняя, `update_available`, `custom_build`, последнее обновление и его статус; на реплике `data` пустой |
+| `POST` | `/api/v1/stack/check` | проверить релизы сейчас (только мастер); ошибка GitHub - в `error` продукта, а не 5xx; чаще раза в минуту - 429 `too_many_requests` |
+| `POST` | `/api/v1/machines/{code}/update` | обновить продукт на машине (только мастер): `{"product": "telemt"\|"mtg", "version"?, "force"?}`, ответ 202 с ревизией |
 | `GET` | `/api/v1/servers?engine=&state=&limit=&offset=` | серверы (см. «Серверы»): описание, точки входа и живые цифры машин сервера (`live.relay`, `live.node`: `seen_at`, `stale`, `api_ok`, `connections`, `users_online` по продукту = движку); фильтры `engine` (`telemt`, `mtg`), `state` |
 | `GET` | `/api/v1/servers/{no}` | один сервер; нет - 404 |
 | `GET` | `/api/v1/servers/fields?engine=` | каталог полей настроек движка: тип, пределы, значение по умолчанию, группа, способ применения, `danger` |
@@ -256,6 +263,7 @@ API агентов на машинах (Bearer-токен машины):
 |---|---|---|
 | `GET` | `/v1/desired?target=&rev=&wait=` | long-poll: бандл сразу, если есть ревизия новее `rev`, иначе ожидание до `wait` (до 60 с) и 304 |
 | `POST` | `/v1/observed` | отчёт агента: ревизия, хеш, статус (`applied`, `failed`, `pending`, `compared`) по ресурсам и локальные проверки машины (`checks`); у машины без ресурсов список ресурсов пустой |
+| `GET` | `/v1/stack/blobs/{sha256}?target=` | бинарь обновления из кэша мастера (`application/octet-stream`); только бинари из последней ревизии ресурса `stack` этой машины, иначе 404; чужой `target` - 403 |
 | `POST` | `/v1/runtime` | runtime-отчёт агента раз в минуту (см. «Runtime-отчёт»); лимиты и неразумные значения - 400 (`host_invalid`, `log_period_invalid`, `log_count_invalid`), тело больше 2 МБ - 413, чужой `target` - 403, ответ 204 |
 
 Токен машины даёт доступ только к её бандлу; в базе хранится только хеш токена.
@@ -511,6 +519,39 @@ telemux tls-cert                       # на мастере: сертифика
 агентов не меняется. Отпечаток проверяется до отправки запроса: чужому серверу токен
 машины не уходит.
 
+### Обновление telemt и mtg-multi (ресурс stack)
+
+Мастер публикует машине ресурс `stack`: какая версия telemt и mtg-multi должна стоять, с
+sha256 и размером бинаря ([ADR 0008](docs/adr/0008-stack-updates.md)). Агент ведёт ресурс
+всегда и сравнивает с версией на машине (`--version`, как в runtime-отчёте; ядро и суффикс
+должны совпасть, ведущая `v` не важна). Продукта на машине нет (`users.toml` или
+`config.toml` mtg - `none`) - статус `failed`.
+
+- compare - только отчёт: `telemt: на машине 3.5.16, нужно 3.5.17`.
+- apply - агент запускает вне своей песочницы (`ProtectSystem=strict`, в `/usr/local/bin`
+  ему писать нельзя) временный юнит:
+  `systemd-run --wait --pipe --collect --quiet --unit=telemux-stack-<продукт>-<ревизия> -p EnvironmentFile=/etc/telemux/agent.env -p RuntimeMaxSec=540 telemux stack-apply ... --bin <путь>`
+  (путь бинаря - тот же, по которому агент берёт версию). Код выхода 0 - `applied`, иначе
+  `failed` с хвостом вывода. Ревизия применяется один раз: перепроверка той же ревизии
+  только сравнивает и повторяет прежний итог (версию, поставленную после этого вручную,
+  агент не откатывает); новая ревизия - новый запуск.
+
+`telemux stack-apply --product telemt|mtg --sha256 <s> --version <v> --size <n>` (от root):
+берёт бинарь у мастера (`GET /v1/stack/blobs/{sha256}`, адреса и мосты из
+`TELEMUX_AGENT_MASTERS`, токен агента; первый ответивший), сверяет размер, sha256 и
+`--version` нового файла, кладёт копию текущего в `<бинарь>.bak`, атомарно заменяет и
+перезапускает юнит (всё обновление - не дольше 8 мин). Если нужная версия уже на диске,
+но сервис не жив (прошлый запуск убили посреди замены) - перезапуск и проверка, при
+провале - откат из `.bak`. Проверка - до 30 с: юнит `active` непрерывно 5 с, systemd не
+перезапускал его сам, API продукта отвечает (telemt - `TELEMUX_AGENT_TELEMT_API` +
+`/v1/health`, mtg - `TELEMUX_AGENT_MTG_STATS_URL`). Не поднялся - `.bak` на место,
+перезапуск, код выхода 1. Успех - строка `telemt: 3.5.16 -> 3.5.17`.
+
+Бинарь и юнит - из того же `agent.env`: `TELEMUX_AGENT_TELEMT_BIN` (`telemt`),
+`TELEMUX_AGENT_TELEMT_UNIT` (`telemt`), `TELEMUX_AGENT_MTG_BIN` (`mtg-multi`),
+`TELEMUX_AGENT_MTG_UNIT` (`mtg-multi`); имя без пути ищется в `PATH`. Путь env-файла для
+временного юнита - `TELEMUX_AGENT_ENV_FILE` (по умолчанию `/etc/telemux/agent.env`).
+
 ## Мост на машине-выходе
 
 Релей ходит к мастеру только через туннель своей пары ([ADR 0001](docs/adr/0001-pull-reconcile.md)).
@@ -683,6 +724,70 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -d '{"source":"bot"}' https://<
 `targets.settings.address`, ресурс назначен машине (`targets.resources`), импорт серверов из
 бота свежий (`telemux servers import`), сравнение без расхождений.
 
+## Обновление telemt и mtg-multi
+
+Версии берутся из релизов GitHub ([ADR 0008](docs/adr/0008-stack-updates.md)), схема -
+`migrations/0013_stack.sql`. Без миграции ручки и цикл выключены (WARN при старте), остальное
+работает.
+
+| Продукт | Репозиторий (env мастера) | Архив релиза | Контрольная сумма |
+|---|---|---|---|
+| `telemt` | `TELEMUX_STACK_TELEMT_REPO`, `telemt/telemt` | `telemt-x86_64-linux-musl.tar.gz` (arm64 - `telemt-aarch64-linux-musl.tar.gz`) | `<архив>.sha256` |
+| `mtg` | `TELEMUX_STACK_MTG_REPO`, `dolonet/mtg-multi` | `mtg-multi-<версия>-linux-<amd64\|arm64>.tar.gz` | `mtg-multi-<версия>-checksums.txt` |
+
+**Проверка релизов.** Мастер при старте и раз в 6 часов узнаёт последний релиз каждого
+продукта (не черновик и не pre-release) и хранит его в `stack_releases`; по кнопке -
+`POST /api/v1/stack/check`, не чаще раза в минуту. GitHub не ответил - прошлый релиз
+остаётся, текст ошибки - в `error`. `TELEMUX_GITHUB_TOKEN` нужен только против лимита
+запросов к API.
+
+**Сравнение версий** - по ядру `X.Y.Z`, ведущая `v` отбрасывается. Своя сборка
+(`custom_build`) - версия с суффиксом после ядра (`1.15.0-webalias`) или неразборчивая;
+`update_available` - ядро релиза строго больше ядра на машине, поэтому `1.15.0-webalias` при
+релизе `1.15.0` обновлением не считается. Продукта на машине нет (агент его не присылает) -
+поле продукта `null`. Архитектура машины - `host.arch` из runtime-отчёта, по умолчанию amd64.
+
+**Обновление** - `POST /api/v1/machines/{code}/update`:
+
+```sh
+# последний релиз telemt
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -d '{"product":"telemt"}' \
+  https://<мастер>/api/v1/machines/pr1/update
+# конкретная версия mtg-multi поверх своей сборки - только явно
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -d '{"product":"mtg","version":"1.15.0","force":true}' \
+  https://<мастер>/api/v1/machines/pr1/update
+```
+
+1. Проверки: 400 `unknown_product`, `unknown_version` (нет такого релиза или его версия не
+   разбирается: тег ищется как есть, с `v` и без); 404 - нет машины; 409 `machine_disabled`,
+   `product_missing` (агент продукт не присылает), `update_in_progress` (на машине ещё идёт
+   обновление любого продукта - одно за раз, `force` не помогает), `asset_missing` (в релизе
+   нет файла под архитектуру машины), `custom_build` и `not_newer` (своя сборка или версия не
+   новее - нужен `"force": true`).
+2. Мастер скачивает архив (до 100 МБ, одна загрузка за раз; уже скачанный архив повторно не
+   качается), сверяет SHA256 с контрольной суммой релиза, достаёт бинарь (по имени, в любом
+   подкаталоге архива) и кладёт его в `TELEMUX_STACK_DIR` под именем = SHA256 бинаря. Не
+   скачалось или сумма не сошлась - 503 `release_unavailable`, причина - в журнале мастера.
+   Подлинность релиза проверяется только контрольной суммой из того же релиза, без подписи.
+3. Мастер публикует машине новую ревизию ресурса `stack` - JSON с одним обновляемым продуктом
+   `{version, sha256, size}` - и назначает ресурс машине (`targets.resources`). Ответ - 202 с
+   `revision` и `status: pending`.
+4. Агент (режим apply) берёт бинарь `GET /v1/stack/blobs/{sha256}?target=<машина>`, заменяет
+   его с копией `.bak`, перезапускает сервис и проверяет его; не поднялся - возвращает прежний.
+
+Статус обновления (`update.status` в `GET /api/v1/stack`): `pending`, пока отчёт агента по
+ресурсу `stack` не дошёл до ревизии обновления; затем `applied` или `failed` с причиной
+агента. `failed` также, если агент в режиме compare (бинарь не меняет) или не сообщил
+результат за 30 минут (например, старый агент без поддержки ресурса). Провал применения
+попадает в ленту тревог как `apply_failed`.
+
+Ресурс `stack` - разовая команда: после итога мастер той же транзакцией публикует новую
+ревизию без этого продукта (продуктов не осталось - `{}`). Агент при перепроверке не ставит
+бинарь снова поверх собранного вручную, а машина, вернувшаяся после таймаута, не применит
+устаревшее обновление. Каталог кэша на мастере создаётся сам; бинарь есть только в кэше
+мастера, который его скачал: реплика на запрос бинаря отвечает 409 `not_master`, новый мастер
+после смены - 404, обновление нужно повторить.
+
 ## Машины: включение, проверка связи, нагрузка, тревоги
 
 Машины ведутся как ноды 3x-ui ([ADR 0007](docs/adr/0007-machines-ops.md)), схема -
@@ -760,6 +865,7 @@ telemux sync  --db "$DATABASE_URL" --api http://127.0.0.1:9091          # shadow
 telemux sync  --db "$DATABASE_URL" --api http://127.0.0.1:9091 --apply  # применить
 telemux target --code pr2 --kind relay --resources telemt.users,tls.web --web-domains web2.example.com  # домены релея
 telemux servers import --db "$DATABASE_URL" servers.json   # импорт серверов (массив, до 100)
+telemux stack-apply --product telemt --sha256 <s> --version 3.5.17 --size <n>  # заменить бинарь (обычно запускает агент)
 ```
 
 `sync` без `--apply` — **shadow**: считает diff (create/patch/delete), но не меняет ноду.

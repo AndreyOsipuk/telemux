@@ -152,6 +152,7 @@ func runAgent(args []string) int {
 	tlsDir := fs.String("tls-dir", envOr("TELEMUX_AGENT_TLS_DIR", agent.DefaultTLSDir), "каталог сертификатов nginx: <домен>.pem и <домен>.key")
 	nginxUnit := fs.String("nginx-unit", envOr("TELEMUX_AGENT_NGINX_UNIT", "nginx"), "юнит systemd nginx (reload)")
 	nginxBin := fs.String("nginx-bin", envOr("TELEMUX_AGENT_NGINX_BIN", "nginx"), "бинарь nginx (nginx -t)")
+	envFile := fs.String("env-file", envOr("TELEMUX_AGENT_ENV_FILE", agent.DefaultAgentEnvFile), "env-файл агента: его же получает stack-apply (обновление telemt и mtg-multi)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -192,7 +193,9 @@ func runAgent(args []string) int {
 	var mtgApplier *agent.MtgApplier
 	var configApplier *agent.ConfigApplier
 	var tlsApplier *agent.TLSApplier
+	var stackApplier *agent.StackApplier
 	if *mode == agent.ModeApply {
+		stackApplier = &agent.StackApplier{EnvFile: *envFile}
 		if certDir != "" {
 			tlsApplier = &agent.TLSApplier{Nginx: agent.SystemdNginx{Unit: *nginxUnit, Bin: *nginxBin}}
 		}
@@ -209,7 +212,7 @@ func runAgent(args []string) int {
 	a, err := agent.New(agent.Config{
 		Applier: applier, MtgApplier: mtgApplier, MtgFile: *mtgFile, MasterPin: *masterPin,
 		TelemtConfigFile: mainFile, TelemtLocalFile: *localConfig, ConfigApplier: configApplier,
-		TLSDir: certDir, TLSApplier: tlsApplier,
+		TLSDir: certDir, TLSApplier: tlsApplier, StackApplier: stackApplier,
 		MasterURLs: splitList(*masters), Token: strings.TrimSpace(string(raw)), Target: *target,
 		Version: version, Via: *via, UsersFile: *usersFile, Mode: *mode,
 		Wait: *wait, RecheckEvery: *recheck, Checks: checkList, Log: logger,

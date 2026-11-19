@@ -75,6 +75,8 @@ func main() {
 		os.Exit(runDesired(os.Args[2:]))
 	case "telemt-local":
 		os.Exit(runTelemtLocal(os.Args[2:]))
+	case "stack-apply":
+		os.Exit(runStackApply(os.Args[2:]))
 	case "-version", "--version", "version":
 		fmt.Printf("telemux %s\n", version)
 	default:
@@ -86,6 +88,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  agent-token --target c                  — выпустить токен агента машины")
 		fmt.Fprintln(os.Stderr, "  publish                                 — опубликовать ревизию users.toml вручную")
 		fmt.Fprintln(os.Stderr, "  agent --master u[,u] --target c [--mode compare|apply] — агент на машине")
+		fmt.Fprintln(os.Stderr, "  stack-apply --product telemt|mtg --sha256 s --version v --size n — заменить бинарь (запускает агент)")
 		fmt.Fprintln(os.Stderr, "  bridge --master u[,u] [--listen 127.0.0.1:18480] — мост для агента релея")
 		fmt.Fprintln(os.Stderr, "  tls-cert [--cert f --key f]             — сертификат мастера для API агентов, печатает отпечаток")
 		fmt.Fprintln(os.Stderr, "  machines                                — машины флота и последний отчёт агентов")
@@ -215,6 +218,12 @@ func runServe(args []string) int {
 	} else {
 		ops = st
 	}
+	// Обновление telemt и mtg-multi кнопкой (ADR 0008): только если применена миграция 0013.
+	stackDeps, err := stackDepsFromEnv(ctx, st, os.Getenv, logger)
+	if err != nil {
+		logger.Error("обновление telemt и mtg-multi", "err", err)
+		return 2
+	}
 	var acmeDeps *server.ACMEDeps
 	if acmeSet != nil {
 		iss, err := acme.NewLego(acme.Config{Email: acmeSet.Email, Directory: acmeSet.Directory,
@@ -251,6 +260,7 @@ func runServe(args []string) int {
 		Servers:        servers,
 		Render:         renderStore,
 		Ops:            ops,
+		Stack:          stackDeps,
 		ACME:           acmeDeps,
 		TLSListen:      envOr("TELEMUX_TLS_LISTEN", ""),
 		TLSCertFile:    envOr("TELEMUX_TLS_CERT", "/etc/telemux/tls/cert.pem"),
