@@ -115,7 +115,7 @@ func runPublish(args []string) int {
 	return 0
 }
 
-// runAgent: агент на машине. Пока только режим сравнения.
+// runAgent: агент на машине.
 func runAgent(args []string) int {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	masters := fs.String("master", envOr("TELEMUX_AGENT_MASTERS", ""), "адреса мастера через запятую по приоритету")
@@ -128,7 +128,10 @@ func runAgent(args []string) int {
 	mtgUnit := fs.String("mtg-unit", envOr("TELEMUX_AGENT_MTG_UNIT", "mtg-multi"), "юнит systemd mtg-multi")
 	mtgHot := fs.Bool("mtg-hot-reload", envOr("TELEMUX_AGENT_MTG_HOT_RELOAD", "1") == "1", "SIGHUP, если изменились только секреты")
 	mode := fs.String("mode", envOr("TELEMUX_AGENT_MODE", agent.ModeCompare), "режим: compare (только сравнить) или apply (применять)")
-	configFile := fs.String("config-file", envOr("TELEMUX_AGENT_CONFIG_FILE", "/etc/telemt/telemt.toml"), "telemt.toml (WEB-профили) для режима apply")
+	configFile := fs.String("config-file", envOr("TELEMUX_AGENT_CONFIG_FILE", "/etc/telemt/telemt.toml"), "telemt.toml (WEB-профили и ресурс telemt.config)")
+	mainConfig := fs.Bool("main-config", envOr("TELEMUX_AGENT_MAIN_CONFIG", "0") == "1", "вести основной telemt.toml (ресурс telemt.config)")
+	localConfig := fs.String("local-config", envOr("TELEMUX_AGENT_LOCAL_CONFIG", "/etc/telemt/telemt.local.toml"), "машинная часть telemt.toml: сильнее telemt.config, файла может не быть")
+	configStateURL := fs.String("config-state-url", envOr("TELEMUX_AGENT_CONFIG_STATE_URL", agent.DefaultConfigStateURL), "API telemt: состояние всего конфига (для telemt.config)")
 	stateURL := fs.String("state-url", envOr("TELEMUX_AGENT_STATE_URL", agent.DefaultStateURL), "API telemt: принят ли конфиг")
 	unit := fs.String("telemt-unit", envOr("TELEMUX_AGENT_TELEMT_UNIT", "telemt"), "юнит systemd telemt (SIGHUP)")
 	via := fs.String("via", envOr("TELEMUX_AGENT_VIA", ""), "через какой мост ходит агент (для отчёта)")
@@ -161,9 +164,21 @@ func runAgent(args []string) int {
 	if *mtgFile == "none" {
 		*mtgFile = ""
 	}
+	mainFile := ""
+	if *mainConfig {
+		if *usersFile == "" {
+			fmt.Fprintln(os.Stderr, "telemt.config ведётся только вместе с users.toml (--users-file)")
+			return 2
+		}
+		mainFile = *configFile
+	}
 	var applier *agent.Applier
 	var mtgApplier *agent.MtgApplier
+	var configApplier *agent.ConfigApplier
 	if *mode == agent.ModeApply {
+		if mainFile != "" {
+			configApplier = &agent.ConfigApplier{StateURL: *configStateURL, Service: agent.SystemdTelemt{Unit: *unit}}
+		}
 		if *usersFile != "" {
 			applier = &agent.Applier{ConfigFile: *configFile, StateURL: *stateURL, Reloader: agent.SystemdReloader{Unit: *unit}}
 		}
@@ -173,6 +188,7 @@ func runAgent(args []string) int {
 	}
 	a, err := agent.New(agent.Config{
 		Applier: applier, MtgApplier: mtgApplier, MtgFile: *mtgFile, MasterPin: *masterPin,
+		TelemtConfigFile: mainFile, TelemtLocalFile: *localConfig, ConfigApplier: configApplier,
 		MasterURLs: splitList(*masters), Token: strings.TrimSpace(string(raw)), Target: *target,
 		Version: version, Via: *via, UsersFile: *usersFile, Mode: *mode,
 		Wait: *wait, RecheckEvery: *recheck, Checks: checkList, Log: logger,

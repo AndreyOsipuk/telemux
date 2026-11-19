@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -374,5 +375,59 @@ func TestIntegration_PanelWork(t *testing.T) {
 	work, _ = st.PanelWork(ctx)
 	if work[0].ObservedRevision == nil || *work[0].ObservedRevision != work[0].Desired.Revision || work[0].ObservedStatus != "applied" || work[0].SeenAt == nil {
 		t.Fatalf("отчёт не попал в выборку: %+v", work[0])
+	}
+}
+
+// Основной конфиг telemt публикуется по машине своими ревизиями и не трогает
+// telemt.users: публикация пользователей не порождает ревизию telemt.config и наоборот.
+func TestIntegration_PublishTelemtConfig(t *testing.T) {
+	st := setupAll(t)
+	defer st.Close()
+	ctx := context.Background()
+	seedTargets(t, st,
+		Target{Code: "pr2", Kind: "relay", Resources: []string{ResourceTelemtUsers, ResourceTelemtConfig}, Enabled: true},
+		Target{Code: "ps2", Kind: "exit", Resources: []string{ResourceTelemtUsers, ResourceTelemtConfig}, Enabled: true},
+		Target{Code: "ps4", Kind: "exit", Resources: []string{ResourceTelemtUsers}, Enabled: true},
+	)
+	if !PublishableResources[ResourceTelemtConfig] {
+		t.Fatal("telemt.config должен публиковаться извне")
+	}
+	if _, err := st.UpsertUser(ctx, ImportRow{Username: "alice_1", Secret: strings.Repeat("a", 32)}); err != nil {
+		t.Fatal(err)
+	}
+	users, err := st.PublishTelemtUsers(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr2 := []byte("[server]\nport = 443\n\n[[server.listeners]]\nannounce_ip = \"198.51.100.2\"\n\n[access]\ninclude = \"/etc/telemt/users.toml\"\n")
+	ps2 := []byte(strings.Replace(string(pr2), "198.51.100.2", "198.51.100.12", 1))
+	r1, err := st.PublishResource(ctx, "pr2", ResourceTelemtConfig, pr2)
+	if err != nil || r1.Revision <= users.Revision {
+		t.Fatalf("публикация pr2: %+v, %v", r1, err)
+	}
+	r2, err := st.PublishResource(ctx, "ps2", ResourceTelemtConfig, ps2)
+	if err != nil || r2.Revision <= r1.Revision || len(r2.Changed) != 1 || r2.Changed[0] != "ps2" {
+		t.Fatalf("публикация ps2 - своя ревизия: %+v, %v", r2, err)
+	}
+	if again, _ := st.PublishResource(ctx, "pr2", ResourceTelemtConfig, pr2); again.Revision != r1.Revision || len(again.Changed) != 0 {
+		t.Fatalf("тот же текст дал новую ревизию: %+v", again)
+	}
+	if _, err := st.PublishResource(ctx, "ps4", ResourceTelemtConfig, ps2); err != ErrResourceNotAssigned {
+		t.Fatalf("машина без telemt.config: ждали ErrResourceNotAssigned, получили %v", err)
+	}
+	// Повторная публикация тех же пользователей не плодит ревизий и не трогает telemt.config.
+	if u2, _ := st.PublishTelemtUsers(ctx, 0); len(u2.Changed) != 0 {
+		t.Fatalf("пользователи не менялись, а ревизия новая: %+v", u2)
+	}
+	b, _ := st.DesiredBundle(ctx, "pr2")
+	got := map[string]Desired{}
+	for _, d := range b.Resources {
+		got[d.Resource] = d
+	}
+	if len(got) != 2 || string(got[ResourceTelemtConfig].Content) != string(pr2) || got[ResourceTelemtUsers].Revision != users.Revision {
+		t.Fatalf("в бандле pr2 ждали оба ресурса со своими ревизиями, получили %+v", b)
+	}
+	if b.Revision != r1.Revision {
+		t.Fatalf("ревизия бандла pr2 - максимальная из его ресурсов: ждали %d, получили %d", r1.Revision, b.Revision)
 	}
 }

@@ -1,9 +1,10 @@
 // Package agent - агент telemux на машине флота (ADR 0001): сам забирает
 // желаемое состояние у мастера по HTTP long-poll и отчитывается о нём.
 //
-// Режимы: compare - сравнить users.toml на диске с желаемым и отчитаться, ничего
-// не меняя; apply - применить (users.toml + WEB-профили, проверка «telemt принял»,
-// откат при отказе, см. apply.go).
+// Режимы: compare - сравнить файлы на диске с желаемым и отчитаться, ничего
+// не меняя; apply - применить (users.toml + WEB-профили, основной telemt.toml,
+// config.toml mtg; проверка «принято», откат при отказе - apply.go,
+// telemtconfig.go, mtg.go).
 package agent
 
 import (
@@ -37,23 +38,28 @@ const (
 
 // Config - настройки агента.
 type Config struct {
-	MasterURLs   []string          // адреса мастера по приоритету; "адрес|прокси" - через свой туннель (socks5://...)
-	MasterPin    string            // sha256 сертификата мастера для https-адресов (закрепление)
-	Token        string            // токен машины
-	Target       string            // код машины
-	Version      string            // версия агента для отчёта
-	Via          string            // через какой мост ходит агент (для отчёта), необязательно
-	UsersFile    string            // путь к users.toml на машине; пусто - telemt.users не ведётся
-	MtgFile      string            // путь к config.toml mtg-multi; пусто - mtg.config не ведётся
-	Mode         string            // ModeCompare или ModeApply
-	Applier      *Applier          // для ModeApply и telemt.users; UsersFile берётся из конфига агента
-	MtgApplier   *MtgApplier       // для ModeApply и mtg.config; MtgFile берётся из конфига агента
-	Wait         time.Duration     // сколько мастер держит long-poll; по умолчанию 55 с
-	RecheckEvery time.Duration     // как часто перепроверять диск и отчитываться без новой ревизии; по умолчанию 5 мин
-	Checks       []Check           // локальные проверки машины для отчёта (мост и т.п.)
-	Runtime      *RuntimeCollector // сборщик runtime-отчёта; nil - не шлётся
-	RuntimeEvery time.Duration     // период runtime-отчёта; 0 - не шлётся
-	Log          *slog.Logger
+	MasterURLs []string // адреса мастера по приоритету; "адрес|прокси" - через свой туннель (socks5://...)
+	MasterPin  string   // sha256 сертификата мастера для https-адресов (закрепление)
+	Token      string   // токен машины
+	Target     string   // код машины
+	Version    string   // версия агента для отчёта
+	Via        string   // через какой мост ходит агент (для отчёта), необязательно
+	UsersFile  string   // путь к users.toml на машине; пусто - telemt.users не ведётся
+	MtgFile    string   // путь к config.toml mtg-multi; пусто - mtg.config не ведётся
+	// TelemtConfigFile - telemt.toml под ресурсом telemt.config; пусто - не ведётся.
+	TelemtConfigFile string
+	// TelemtLocalFile - машинная часть telemt.toml (telemtcfg/compose.go); файла может не быть.
+	TelemtLocalFile string
+	ConfigApplier   *ConfigApplier    // для ModeApply и telemt.config; пути берутся из конфига агента
+	Mode            string            // ModeCompare или ModeApply
+	Applier         *Applier          // для ModeApply и telemt.users; UsersFile берётся из конфига агента
+	MtgApplier      *MtgApplier       // для ModeApply и mtg.config; MtgFile берётся из конфига агента
+	Wait            time.Duration     // сколько мастер держит long-poll; по умолчанию 55 с
+	RecheckEvery    time.Duration     // как часто перепроверять диск и отчитываться без новой ревизии; по умолчанию 5 мин
+	Checks          []Check           // локальные проверки машины для отчёта (мост и т.п.)
+	Runtime         *RuntimeCollector // сборщик runtime-отчёта; nil - не шлётся
+	RuntimeEvery    time.Duration     // период runtime-отчёта; 0 - не шлётся
+	Log             *slog.Logger
 }
 
 // Agent - агент одной машины.
@@ -97,8 +103,9 @@ func parseMaster(entry string, timeout time.Duration, pin string) (master, error
 }
 
 type failedRev struct {
-	rev int64
-	err string
+	rev    int64
+	inputs string // отпечаток машинных входов (telemt.config): изменились - пробуем снова
+	err    string
 }
 
 // New проверяет конфиг и создаёт агента.
@@ -116,12 +123,19 @@ func New(cfg Config) (*Agent, error) {
 		return nil, errors.New("для режима apply с users.toml нужен Applier")
 	case cfg.Mode == ModeApply && cfg.MtgFile != "" && cfg.MtgApplier == nil:
 		return nil, errors.New("для режима apply с mtg нужен MtgApplier")
+	case cfg.Mode == ModeApply && cfg.TelemtConfigFile != "" && cfg.ConfigApplier == nil:
+		return nil, errors.New("для режима apply с telemt.config нужен ConfigApplier")
 	}
 	if cfg.Applier != nil {
 		cfg.Applier.UsersFile = cfg.UsersFile
 	}
 	if cfg.MtgApplier != nil {
 		cfg.MtgApplier.ConfigFile = cfg.MtgFile
+	}
+	if cfg.ConfigApplier != nil {
+		cfg.ConfigApplier.ConfigFile = cfg.TelemtConfigFile
+		cfg.ConfigApplier.LocalFile = cfg.TelemtLocalFile
+		cfg.ConfigApplier.UsersFile = cfg.UsersFile
 	}
 	if cfg.Wait <= 0 {
 		cfg.Wait = 55 * time.Second
@@ -150,6 +164,8 @@ func (a *Agent) handles(resource string) bool {
 		return a.cfg.UsersFile != ""
 	case store.ResourceMtgConfig:
 		return a.cfg.MtgFile != ""
+	case store.ResourceTelemtConfig:
+		return a.cfg.TelemtConfigFile != ""
 	}
 	return false
 }
@@ -264,7 +280,9 @@ func (a *Agent) poll(ctx context.Context, m master, known int64) (store.Bundle, 
 func (a *Agent) checkAndReport(ctx context.Context, m master) error {
 	a.mu.Lock()
 	var items []*store.Desired
-	for _, r := range []string{store.ResourceTelemtUsers, store.ResourceMtgConfig} {
+	// Порядок важен: сначала пользователи, затем основной конфиг - он собирает
+	// профили из users.toml, который только что лёг на диск.
+	for _, r := range []string{store.ResourceTelemtUsers, store.ResourceTelemtConfig, store.ResourceMtgConfig} {
 		if d := a.desired[r]; d != nil {
 			items = append(items, d)
 		}
@@ -299,10 +317,25 @@ func (a *Agent) checkAndReport(ctx context.Context, m master) error {
 }
 
 func (a *Agent) compare(d *store.Desired) store.ObservedResource {
-	if d.Resource == store.ResourceMtgConfig {
+	switch d.Resource {
+	case store.ResourceMtgConfig:
 		return a.compareMtg(d)
+	case store.ResourceTelemtConfig:
+		return a.compareMainConfig(d)
 	}
 	return a.compareUsers(d)
+}
+
+// compareMainConfig - чем telemt.toml на машине отличается от собранного желаемого.
+func (a *Agent) compareMainConfig(d *store.Desired) store.ObservedResource {
+	res := store.ObservedResource{Resource: d.Resource, Revision: d.Revision, SHA256: d.SHA256, Status: "compared"}
+	cur, next, err := buildMainConfig(a.cfg.TelemtConfigFile, a.cfg.TelemtLocalFile, a.cfg.UsersFile, d.Content)
+	if err != nil {
+		res.Status, res.Error = "failed", err.Error()
+		return res
+	}
+	res.Error = telemtcfg.MainConfigDiff(next, cur)
+	return res
 }
 
 func (a *Agent) compareMtg(d *store.Desired) store.ObservedResource {
@@ -336,20 +369,29 @@ func (a *Agent) apply(ctx context.Context, d *store.Desired) store.ObservedResou
 	a.mu.Lock()
 	f, wasFailed := a.failed[d.Resource]
 	a.mu.Unlock()
-	if wasFailed && f.rev == d.Revision {
+	// Основной конфиг зависит и от машинной части с users.toml: человек исправил
+	// telemt.local.toml - та же ревизия пробуется снова.
+	inputs := ""
+	if d.Resource == store.ResourceTelemtConfig {
+		inputs = mainConfigInputs(a.cfg.TelemtLocalFile, a.cfg.UsersFile)
+	}
+	if wasFailed && f.rev == d.Revision && f.inputs == inputs {
 		res.Status, res.Error = "failed", f.err
 		return res
 	}
 	var r ApplyResult
-	if d.Resource == store.ResourceMtgConfig {
+	switch d.Resource {
+	case store.ResourceMtgConfig:
 		r = a.cfg.MtgApplier.Apply(ctx, d.Content)
-	} else {
+	case store.ResourceTelemtConfig:
+		r = a.cfg.ConfigApplier.Apply(ctx, d.Content)
+	default:
 		r = a.cfg.Applier.Apply(ctx, d.Content)
 	}
 	res.Status, res.Error = r.Status, r.Error
 	a.mu.Lock()
 	if r.Status == "failed" {
-		a.failed[d.Resource] = failedRev{rev: d.Revision, err: r.Error}
+		a.failed[d.Resource] = failedRev{rev: d.Revision, inputs: inputs, err: r.Error}
 	} else {
 		delete(a.failed, d.Resource)
 	}

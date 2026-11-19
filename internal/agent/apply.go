@@ -173,36 +173,61 @@ func (a *Applier) Apply(ctx context.Context, desired []byte) ApplyResult {
 			return failed("бэкап %s: %v", c.path, err)
 		}
 	}
+	// Откатываются только файлы этой попытки: бэкап несменённого файла может
+	// остаться от прошлого применения и быть устаревшим. Файл, которого раньше не
+	// было, при откате удаляется, а не поднимается из давнего бэкапа.
+	var paths []rollbackPath
+	for _, c := range changes {
+		paths = append(paths, rollbackPath{path: c.path, existed: c.existedOld})
+	}
 	// Замена одним шагом: оба rename подряд, затем одна перезагрузка.
 	for _, c := range changes {
 		if err := os.Rename(c.path+tmpSuffix, c.path); err != nil {
 			cleanup()
-			return a.rollback(ctx, fmt.Sprintf("замена %s: %v", c.path, err))
+			return a.rollback(ctx, fmt.Sprintf("замена %s: %v", c.path, err), paths)
 		}
 	}
 	if err := a.Reloader.Reload(ctx); err != nil {
-		return a.rollback(ctx, fmt.Sprintf("перезагрузка telemt: %v", err))
+		return a.rollback(ctx, fmt.Sprintf("перезагрузка telemt: %v", err), paths)
 	}
 	state, reason := a.waitConfirm(ctx)
 	switch state {
 	case stateAccepted:
 		return ApplyResult{Status: "applied"}
 	case stateRejected:
-		return a.rollback(ctx, "telemt отверг конфиг: "+reason)
+		return a.rollback(ctx, "telemt отверг конфиг: "+reason, paths)
 	default:
-		return a.rollback(ctx, fmt.Sprintf("telemt не подтвердил применение за %s (%s)", a.ConfirmTimeout, reason))
+		return a.rollback(ctx, fmt.Sprintf("telemt не подтвердил применение за %s (%s)", a.ConfirmTimeout, reason), paths)
 	}
 }
 
-// rollback возвращает оба файла из бэкапов и перезагружает telemt на них.
-func (a *Applier) rollback(ctx context.Context, cause string) ApplyResult {
+// rollbackPath - файл попытки: был ли он до неё.
+type rollbackPath struct {
+	path    string
+	existed bool
+}
+
+// rollbackCtx - контекст отката: он должен дойти до telemt, даже если агента
+// останавливают (SIGTERM отменил ctx посреди применения), иначе на диске прежний
+// файл, а процесс работает на новом.
+func rollbackCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+}
+
+// rollback возвращает изменённые файлы из бэкапов и перезагружает telemt на них.
+func (a *Applier) rollback(ctx context.Context, cause string, paths []rollbackPath) ApplyResult {
+	ctx, cancel := rollbackCtx(ctx)
+	defer cancel()
 	var errs []string
-	for _, p := range []string{a.UsersFile, a.ConfigFile} {
-		if _, err := os.Stat(p + bakSuffix); err != nil {
+	for _, p := range paths {
+		if !p.existed {
+			if err := os.Remove(p.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, fmt.Sprintf("удаление нового %s: %v", p.path, err))
+			}
 			continue
 		}
-		if err := os.Rename(p+bakSuffix, p); err != nil {
-			errs = append(errs, fmt.Sprintf("возврат %s: %v", p, err))
+		if err := os.Rename(p.path+bakSuffix, p.path); err != nil {
+			errs = append(errs, fmt.Sprintf("возврат %s: %v", p.path, err))
 		}
 	}
 	if err := a.Reloader.Reload(ctx); err != nil {
@@ -225,37 +250,49 @@ const (
 
 // waitConfirm спрашивает API telemt, пока тот не подтвердит или не отвергнет конфиг.
 func (a *Applier) waitConfirm(ctx context.Context) (confirmState, string) {
-	deadline := time.Now().Add(a.ConfirmTimeout)
+	st, reason, _ := waitTelemtState(ctx, a.StateURL, a.ConfirmTimeout, a.PollEvery)
+	return st, reason
+}
+
+// waitTelemtState спрашивает /v1/config/state, пока telemt не подтвердит или не
+// отвергнет конфиг на диске. deferred - поля, которые telemt применит только
+// после рестарта процесса (при подтверждении).
+func waitTelemtState(ctx context.Context, url string, timeout, every time.Duration) (confirmState, string, []string) {
+	deadline := time.Now().Add(timeout)
 	last, reason := stateUnknown, "API telemt не ответил"
 	client := &http.Client{Timeout: 5 * time.Second}
 	for {
-		st, msg := a.checkState(ctx, client)
+		st, msg, deferred := probeTelemtState(ctx, client, url)
 		switch st {
 		case stateAccepted, stateRejected:
-			return st, msg
+			return st, msg, deferred
 		case statePending:
 			last, reason = st, "конфиг ещё не применён: "+msg
+		case stateUnknown:
+			if last == stateUnknown {
+				reason = msg
+			}
 		}
 		if time.Now().After(deadline) {
-			return last, reason
+			return last, reason, nil
 		}
 		select {
 		case <-ctx.Done():
-			return last, "прервано: " + ctx.Err().Error()
-		case <-time.After(a.PollEvery):
+			return last, "прервано: " + ctx.Err().Error(), nil
+		case <-time.After(every):
 		}
 	}
 }
 
-// checkState разбирает ответ /v1/config/state (та же логика, что у бота).
-func (a *Applier) checkState(ctx context.Context, client *http.Client) (confirmState, string) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.StateURL, nil)
+// probeTelemtState разбирает ответ /v1/config/state (та же логика, что у бота).
+func probeTelemtState(ctx context.Context, client *http.Client, url string) (confirmState, string, []string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return stateUnknown, err.Error()
+		return stateUnknown, err.Error(), nil
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return stateUnknown, err.Error()
+		return stateUnknown, err.Error(), nil
 	}
 	defer resp.Body.Close()
 	var d struct {
@@ -271,12 +308,14 @@ func (a *Applier) checkState(ctx context.Context, client *http.Client) (confirmS
 			} `json:"watcher"`
 			WatcherMatchesDesired *bool `json:"watcher_matches_desired"`
 			Comparison            struct {
-				Status string `json:"status"`
+				Status                string   `json:"status"`
+				ProcessDeferredPaths  []string `json:"process_deferred_paths"`
+				DeferredProcessFields []string `json:"deferred_process_fields"`
 			} `json:"comparison"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&d); err != nil || !d.OK || d.Data == nil {
-		return stateUnknown, fmt.Sprintf("API ответил %d без данных", resp.StatusCode)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&d); err != nil || !d.OK || d.Data == nil {
+		return stateUnknown, fmt.Sprintf("API ответил %d без данных", resp.StatusCode), nil
 	}
 	x := d.Data
 	switch x.DesiredStatus {
@@ -285,19 +324,20 @@ func (a *Applier) checkState(ctx context.Context, client *http.Client) (confirmS
 		if msg == "" {
 			msg = x.DesiredStatus
 		}
-		return stateRejected, "конфиг на диске не проходит проверку: " + msg
+		return stateRejected, "конфиг на диске не проходит проверку: " + msg, nil
 	case "valid":
 	default:
-		return stateUnknown, "неизвестный desired_status " + x.DesiredStatus
+		return stateUnknown, "неизвестный desired_status " + x.DesiredStatus, nil
 	}
 	matches := x.WatcherMatchesDesired
 	if (x.Watcher.Phase == "rejected" || x.Watcher.Phase == "publication_failed") && matches != nil && *matches {
-		return stateRejected, strings.TrimSpace("перезагрузка отвергнута (" + x.Watcher.Phase + " " + x.Watcher.ErrorCode + ")")
+		return stateRejected, strings.TrimSpace("перезагрузка отвергнута (" + x.Watcher.Phase + " " + x.Watcher.ErrorCode + ")"), nil
 	}
 	if x.Comparison.Status == "pending_publication" || (matches != nil && !*matches) {
-		return statePending, x.Comparison.Status
+		return statePending, x.Comparison.Status, nil
 	}
-	return stateAccepted, x.Comparison.Status
+	deferred := append(append([]string(nil), x.Comparison.ProcessDeferredPaths...), x.Comparison.DeferredProcessFields...)
+	return stateAccepted, x.Comparison.Status, deferred
 }
 
 // writeFileSync пишет файл и сбрасывает его на диск.

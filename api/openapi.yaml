@@ -221,14 +221,18 @@ paths:
     put:
       summary: Готовый ресурс одной машины от бота
       description: |
-        Бот публикует ресурс, который собирает сам: `mtg.config` - config.toml
+        Бот публикует ресурс, который собирает сам: `telemt.config` - основной telemt.toml
+        машины без WEB-профилей (текст; профили агент собирает из `telemt.users`, машинную
+        часть накладывает из `telemt.local.toml` на машине), `mtg.config` - config.toml
         mtg-multi машины (текст), `xui.clients` - JSON-массив клиентов MTProto-входа
         мастер-панели 3x-ui (машина вида panel). Новая ревизия создаётся только при изменении
-        содержимого. `telemt.users` сюда не публикуется: его собирает telemux.
+        содержимого. `telemt.config` проверяется до публикации: текст разбирается как TOML,
+        в нём нет `[[web.vhosts.profiles]]` и есть `include` на users.toml - иначе 400.
+        `telemt.users` сюда не публикуется: его собирает telemux.
       operationId: putTargetResource
       parameters:
         - { name: code, in: path, required: true, schema: { type: string } }
-        - { name: resource, in: path, required: true, schema: { type: string, enum: [mtg.config, xui.clients] } }
+        - { name: resource, in: path, required: true, schema: { type: string, enum: [telemt.config, mtg.config, xui.clients] } }
       requestBody:
         required: true
         content:
@@ -292,7 +296,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
-        - { name: resource, in: query, schema: { type: string, enum: [telemt.users, mtg.config, xui.clients] } }
+        - { name: resource, in: query, schema: { type: string, enum: [telemt.users, telemt.config, mtg.config, xui.clients] } }
         - { name: enabled, in: query, schema: { type: boolean } }
         - { name: kind, in: query, schema: { type: string, enum: [exit, relay, panel] } }
       responses:

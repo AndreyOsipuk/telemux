@@ -193,7 +193,7 @@ API для бота (Bearer `TELEMUX_BOT_TOKEN` или сессия панели
 | `PUT` | `/api/v1/users/{key}` | создать (201) или изменить (200) одного пользователя |
 | `DELETE` | `/api/v1/users/{key}` | удалить пользователя |
 | `GET` | `/api/v1/revisions/{rev}/status` | на каких машинах ревизия уже применена |
-| `GET` | `/api/v1/machines?resource=&enabled=&kind=&limit=&offset=` | машины флота: когда отчитывался агент, его версия, мост, проверки, состояние ресурсов (`sha256`, `desired_revision`), версии telemt и mtg из runtime-отчёта; фильтры `resource` (`telemt.users`, `mtg.config`, `xui.clients`), `enabled`, `kind` (`exit`, `relay`, `panel`), неизвестное значение - 400; `{data, paging}`, `total` с фильтром, `limit` 1-100 (по умолчанию 20) |
+| `GET` | `/api/v1/machines?resource=&enabled=&kind=&limit=&offset=` | машины флота: когда отчитывался агент, его версия, мост, проверки, состояние ресурсов (`sha256`, `desired_revision`), версии telemt и mtg из runtime-отчёта; фильтры `resource` (`telemt.users`, `telemt.config`, `mtg.config`, `xui.clients`), `enabled`, `kind` (`exit`, `relay`, `panel`), неизвестное значение - 400; `{data, paging}`, `total` с фильтром, `limit` 1-100 (по умолчанию 20) |
 | `GET` | `/api/v1/machines/{code}/runtime` | последний runtime-снимок машины: нагрузка, telemt, mtg (без списков пользователей), `stale` |
 | `GET` | `/api/v1/connections?machine=&product=&min_connections=&limit=&offset=` | подключения пользователей по последним снимкам, порядок machine, product, key |
 | `GET` | `/api/v1/connections/summary?limit=&offset=` | по машине и продукту: `connections_total`, `users_online`, `stale`, `api_ok`, `error`; строка есть и при `api_ok=false` (данные - последнего удачного снимка или 0) |
@@ -341,6 +341,60 @@ telemux machines        # код, вид, когда отчитывался аг
 Флаги агента: `--runtime-every`, `--telemt-api` (`http://127.0.0.1:9091`), `--telemt-bin`
 (`telemt`), `--telemt-config` (`/etc/telemt/telemt.toml`), `--mtg-bin` (`mtg`),
 `--journal-unit` (`telemt`); переменные - в [deploy/agent.env.example](deploy/agent.env.example).
+
+### Основной telemt.toml (ресурс telemt.config)
+
+Бот готовит основной `telemt.toml` каждой машины (общая статика, `announce_ip` из своей
+базы, `include` на users.toml) и публикует его в telemux:
+`PUT /api/v1/targets/{code}/resources/telemt.config`. Ревизии у каждой машины свои.
+
+В одном файле три хозяина, поэтому агент файл **собирает**, а не кладёт как есть:
+
+| Часть | Хозяин | Что внутри |
+|---|---|---|
+| база | ресурс `telemt.config` (бот) | всё общее: таймауты, censorship, `announce_ip`, `include` |
+| машинная часть | файл на машине `/etc/telemt/telemt.local.toml` (человек) | WEB-режим (`[web]`, `[[web.vhosts]]`), локальный listener и порт (8443, 8453), `mask_port`, свои каталоги `/var/lib/...`, `public_addr` - всё, что правится руками при переездах |
+| WEB-профили `[[web.vhosts.profiles]]` | ресурс `telemt.users` | собираются из users.toml машины, параметры (`secret_mode`, лимиты) - из текущих профилей машины |
+
+Машинная часть сильнее базы: ключ `[таблицы]` заменяет одноимённый ключ базы на его
+месте (новый - дописывается в конец таблицы), `[[массив]]` заменяет группу базы целиком
+(например, все `[[server.listeners]]`), таблица, которой в базе нет, - дописывается в
+конец. Удалять ключи базы машинная часть не умеет. Профилей нет ни в базе (мастер
+отвечает 400), ни в машинной части (агент не применяет). `telemt.users` трогает только
+блок профилей, поэтому оба ресурса сходятся к одному тексту и не перетирают друг друга.
+
+Применение: сборка и проверки (WEB-режим на машине не теряется, `include` ведёт на
+users.toml агента, API telemt не выключен) → место → временный файл со сверкой → бэкап
+`telemt.toml.telemux-cfg-bak` → замена → SIGHUP → telemt сам проверяет и принимает конфиг
+(`/v1/config/state`). Если часть полей telemt применит только рестартом
+(`process_deferred_paths`: порт, listener) - рестарт, затем проверка, что API подтвердил
+конфиг, юнит активен и systemd не перезапускал его ~8 с. Рестарт делается только после
+того, как telemt признал конфиг валидным. Любой сбой - возврат прежнего файла (после
+рестарта - рестартом). Отвергнутая ревизия не повторяется, ждётся новая.
+
+Включение на машине (только вместе с `telemt.users`):
+
+```sh
+telemux target --code pr3 --kind relay --resources telemt.users,telemt.config,mtg.config
+# agent.env: TELEMUX_AGENT_MAIN_CONFIG=1 (сначала в режиме compare)
+```
+
+Перевод машины с ручными правками - сначала вывести машинную часть:
+
+```sh
+telemux desired --target pr3 > /tmp/base.toml          # на мастере: опубликованная база
+telemux telemt-local --base /tmp/base.toml > telemt.local.toml   # на машине, по /etc/telemt/telemt.toml
+```
+
+Код 1 и предупреждения - на машине удалены ключи или секции базы, машинной частью это не
+выразить: правку надо перенести в генератор бота. В режиме compare агент в отчёте
+называет секции, которыми собранный конфиг отличается от файла на машине; пустое
+расхождение - можно включать apply.
+
+Переменные агента: `TELEMUX_AGENT_MAIN_CONFIG` (`1` - вести, по умолчанию выключено),
+`TELEMUX_AGENT_CONFIG_FILE` (`/etc/telemt/telemt.toml`), `TELEMUX_AGENT_LOCAL_CONFIG`
+(`/etc/telemt/telemt.local.toml`, файла может не быть), `TELEMUX_AGENT_CONFIG_STATE_URL`
+(`http://127.0.0.1:9091/v1/config/state`).
 
 ### mtg-multi
 

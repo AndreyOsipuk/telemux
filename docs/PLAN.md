@@ -148,6 +148,8 @@
 
 **Этап 6. mtg.** Готово: агент ведёт `mtg.config` напрямую (`internal/agent/mtg.go`), мастер ведёт входы мастер-панели 3x-ui (`internal/xui`, `internal/server/panel.go`, миграция `0005_panel_targets.sql`); ручка публикации ресурса машины ботом. Исходная формулировка: (модуль агента, конфиг mtg-сервера, релеи local-mtg); решение по 3x-ui.
 
+**Основной telemt.toml.** Готово: ресурс `telemt.config` (ADR 0003) - база от бота, машинная часть `telemt.local.toml` на машине, WEB-профили из `telemt.users`; агент собирает, применяет SIGHUP или рестартом с откатом (`internal/telemtcfg/compose.go`, `internal/agent/telemtconfig.go`).
+
 **Этап 7. Бинари и канарейки** (`artifacts`, `rollouts`, каналы, режим разработчика, CI-сборки).
 
 **Этап 8. Панель** - экраны по разделу 3, по мере готовности API (можно параллельно с этапами 2-7).

@@ -175,10 +175,14 @@ export interface paths {
         get?: never;
         /**
          * Готовый ресурс одной машины от бота
-         * @description Бот публикует ресурс, который собирает сам: `mtg.config` - config.toml
+         * @description Бот публикует ресурс, который собирает сам: `telemt.config` - основной telemt.toml
+         *     машины без WEB-профилей (текст; профили агент собирает из `telemt.users`, машинную
+         *     часть накладывает из `telemt.local.toml` на машине), `mtg.config` - config.toml
          *     mtg-multi машины (текст), `xui.clients` - JSON-массив клиентов MTProto-входа
          *     мастер-панели 3x-ui (машина вида panel). Новая ревизия создаётся только при изменении
-         *     содержимого. `telemt.users` сюда не публикуется: его собирает telemux.
+         *     содержимого. `telemt.config` проверяется до публикации: текст разбирается как TOML,
+         *     в нём нет `[[web.vhosts.profiles]]` и есть `include` на users.toml - иначе 400.
+         *     `telemt.users` сюда не публикуется: его собирает telemux.
          */
         put: operations["putTargetResource"];
         post?: never;
@@ -1077,7 +1081,7 @@ export interface operations {
             header?: never;
             path: {
                 code: string;
-                resource: "mtg.config" | "xui.clients";
+                resource: "telemt.config" | "mtg.config" | "xui.clients";
             };
             cookie?: never;
         };
@@ -1142,7 +1146,7 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["Limit"];
                 offset?: components["parameters"]["Offset"];
-                resource?: "telemt.users" | "mtg.config" | "xui.clients";
+                resource?: "telemt.users" | "telemt.config" | "mtg.config" | "xui.clients";
                 enabled?: boolean;
                 kind?: "exit" | "relay" | "panel";
             };

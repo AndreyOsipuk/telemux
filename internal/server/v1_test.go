@@ -296,3 +296,30 @@ func TestV1_PutTargetResource(t *testing.T) {
 		t.Fatalf("на реплике → ждали 409, получили %d", rec.Code)
 	}
 }
+
+// Основной конфиг telemt от бота: проверяется до публикации - без WEB-профилей
+// (их собирает агент из telemt.users), с include на users.toml, разбирается.
+func TestV1_PutTargetResource_TelemtConfig(t *testing.T) {
+	s, fr := v1Server(false, 0)
+	cfg := "[server]\nport = 443\n\n[access]\ninclude = \"/etc/telemt/users.toml\"\n"
+	rec := do(s, "PUT", "/api/v1/targets/pr2/resources/telemt.config", botToken, cfg)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ждали 200, получили %d: %s", rec.Code, rec.Body.String())
+	}
+	if fr.lastContent != cfg {
+		t.Fatalf("содержимое не дошло: %q", fr.lastContent)
+	}
+	for name, bad := range map[string]string{
+		"профили":     cfg + "\n[[web.vhosts]]\nhost = \"x\"\n\n[[web.vhosts.profiles]]\nuser = \"a\"\n",
+		"без include": "[server]\nport = 443\n",
+		"битый TOML":  cfg + "[server\n",
+	} {
+		before := fr.published
+		if rec := do(s, "PUT", "/api/v1/targets/pr2/resources/telemt.config", botToken, bad); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: ждали 400, получили %d", name, rec.Code)
+		}
+		if fr.published != before {
+			t.Errorf("%s: отвергнутый конфиг опубликован", name)
+		}
+	}
+}

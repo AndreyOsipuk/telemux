@@ -111,7 +111,7 @@ func TestV1_MachinesFilters(t *testing.T) {
 	}
 	add("pr1", "relay", true, store.ResourceTelemtUsers)
 	add("pr2", "relay", false, store.ResourceTelemtUsers)
-	add("ps1", "exit", true, store.ResourceTelemtUsers, store.ResourceMtgConfig)
+	add("ps1", "exit", true, store.ResourceTelemtUsers, store.ResourceMtgConfig, store.ResourceTelemtConfig)
 	add("ps5", "exit", true, store.ResourceMtgConfig)
 	add("vega", "exit", true)
 	add("xui7", "panel", true, store.ResourceXuiClients)
@@ -125,6 +125,7 @@ func TestV1_MachinesFilters(t *testing.T) {
 		{"resource=telemt.users&enabled=true", 2, "pr1"},
 		{"resource=telemt.users&enabled=true&kind=exit", 1, "ps1"},
 		{"resource=mtg.config&limit=1&offset=1", 2, "ps5"},
+		{"resource=telemt.config", 1, "ps1"},
 		{"enabled=false", 1, "pr2"},
 		{"kind=panel", 1, "xui7"},
 	}

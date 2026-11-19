@@ -66,6 +66,10 @@ func main() {
 		os.Exit(runTLSCert(os.Args[2:]))
 	case "machines":
 		os.Exit(runMachines(os.Args[2:]))
+	case "desired":
+		os.Exit(runDesired(os.Args[2:]))
+	case "telemt-local":
+		os.Exit(runTelemtLocal(os.Args[2:]))
 	case "-version", "--version", "version":
 		fmt.Printf("telemux %s\n", version)
 	default:
@@ -73,13 +77,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "команды:")
 		fmt.Fprintln(os.Stderr, "  probe --api <url> [--auth h]            — проверить связь с telemt-API")
 		fmt.Fprintln(os.Stderr, "  role  --db <dsn>                        — роль ноды (master/replica) из локального PG")
-		fmt.Fprintln(os.Stderr, "  target --code c --kind exit|relay [--resources telemt.users] — машина флота")
+		fmt.Fprintln(os.Stderr, "  target --code c --kind exit|relay [--resources telemt.users,telemt.config] — машина флота")
 		fmt.Fprintln(os.Stderr, "  agent-token --target c                  — выпустить токен агента машины")
 		fmt.Fprintln(os.Stderr, "  publish                                 — опубликовать ревизию users.toml вручную")
 		fmt.Fprintln(os.Stderr, "  agent --master u[,u] --target c [--mode compare|apply] — агент на машине")
 		fmt.Fprintln(os.Stderr, "  bridge --master u[,u] [--listen 127.0.0.1:18480] — мост для агента релея")
 		fmt.Fprintln(os.Stderr, "  tls-cert [--cert f --key f]             — сертификат мастера для API агентов, печатает отпечаток")
 		fmt.Fprintln(os.Stderr, "  machines                                — машины флота и последний отчёт агентов")
+		fmt.Fprintln(os.Stderr, "  desired --target c [--resource r]       — последняя ревизия ресурса машины (по умолчанию telemt.config)")
+		fmt.Fprintln(os.Stderr, "  telemt-local --base f [--current f]     — машинная часть telemt.toml: чем машина отличается от telemt.config")
 		fmt.Fprintln(os.Stderr, "  sync  --db <dsn> --api <url> [--apply]  — синхронизировать локальный telemt (shadow по умолч.)")
 		fmt.Fprintln(os.Stderr, "  import-toml --db <dsn> --file users.toml — импорт существующих юзеров С СЕКРЕТАМИ (обратная совместимость)")
 		fmt.Fprintln(os.Stderr, "  update [--owner o --repo r]             — обновить бинарь до последнего релиза (checksum+swap)")

@@ -341,3 +341,46 @@ func bundleOf(rev int64, content []byte) store.Bundle {
 		{Resource: store.ResourceTelemtUsers, Revision: rev, SHA256: telemtcfg.SHA256(content), Content: content},
 	}}
 }
+
+// Откат возвращает только файлы, которые менялись в этой попытке. Раньше откат
+// поднимал и бэкап telemt.toml, оставшийся от прошлого успешного применения: при
+// смене одного секрета (профили не меняются) на машину возвращались профили
+// старого списка, а с ресурсом telemt.config - и старый основной конфиг.
+func TestApply_RollbackRestoresOnlyChangedFiles(t *testing.T) {
+	dir, ft, ap := setupMachine(t)
+	bob := render(telemtcfg.RenderUser{Key: "bob_2", Secret: sec2})
+	if r := ap.Apply(context.Background(), bob); r.Status != "applied" {
+		t.Fatalf("первое применение: %+v", r)
+	}
+	cfgAfter := readFile(t, filepath.Join(dir, "telemt.toml"))
+	if !strings.Contains(cfgAfter, `user = "bob_2"`) {
+		t.Fatal("профили не пересобраны")
+	}
+	// Тот же ключ, другой секрет: меняется только users.toml; telemt отвергает.
+	ft.accept = func(string, string) bool { return false }
+	if r := ap.Apply(context.Background(), render(telemtcfg.RenderUser{Key: "bob_2", Secret: sec1})); r.Status != "failed" {
+		t.Fatalf("ждали failed: %+v", r)
+	}
+	if got := readFile(t, filepath.Join(dir, "telemt.toml")); got != cfgAfter {
+		t.Fatalf("откат вернул устаревший telemt.toml из бэкапа прошлого применения:\n%s", got)
+	}
+	if readFile(t, filepath.Join(dir, "users.toml")) != string(bob) {
+		t.Fatal("users.toml не возвращён")
+	}
+}
+
+// users.toml не было: откат удаляет новый файл, а не поднимает давний бэкап.
+func TestApply_RollbackRemovesNewFile(t *testing.T) {
+	dir, ft, ap := setupMachine(t)
+	users := filepath.Join(dir, "users.toml")
+	stale := "# давний бэкап\n"
+	_ = os.WriteFile(users+bakSuffix, []byte(stale), 0o600)
+	_ = os.Remove(users)
+	ft.accept = func(string, string) bool { return false }
+	if r := ap.Apply(context.Background(), render(telemtcfg.RenderUser{Key: "alice_1", Secret: sec2})); r.Status != "failed" {
+		t.Fatalf("ждали failed: %+v", r)
+	}
+	if b, err := os.ReadFile(users); err == nil {
+		t.Fatalf("откат поднял давний бэкап вместо удаления нового файла: %q", b)
+	}
+}

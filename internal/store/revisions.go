@@ -262,11 +262,14 @@ const (
 	ResourceMtgConfig = "mtg.config"
 	// ResourceXuiClients - желаемые клиенты MTProto-входа мастер-панели 3x-ui (JSON).
 	ResourceXuiClients = "xui.clients"
+	// ResourceTelemtConfig - основной telemt.toml машины без WEB-профилей; текст
+	// готовит бот, машинную часть и профили накладывает агент (telemtcfg/compose.go).
+	ResourceTelemtConfig = "telemt.config"
 )
 
 // PublishableResources - ресурсы, которые публикует внешний источник готовыми.
 // telemt.users сюда не входит: его собирает сам telemux.
-var PublishableResources = map[string]bool{ResourceMtgConfig: true, ResourceXuiClients: true}
+var PublishableResources = map[string]bool{ResourceMtgConfig: true, ResourceXuiClients: true, ResourceTelemtConfig: true}
 
 // PanelItem - работа синхронизатора панели по одному входу.
 type PanelItem struct {

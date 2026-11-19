@@ -193,20 +193,27 @@ func (s *Server) routesV1() {
 		writeJSON(w, map[string]any{"revision": pub.Revision, "changed": pub.Changed})
 	})
 
-	// Готовый ресурс одной машины от бота (config.toml mtg-multi): тело - текст файла.
+	// Готовый ресурс одной машины от бота (telemt.toml без профилей, config.toml mtg-multi,
+	// клиенты панели): тело - текст файла.
 	s.mux.HandleFunc("PUT /api/v1/targets/{code}/resources/{resource}", func(w http.ResponseWriter, r *http.Request) {
 		if !s.requireBotOrSession(w, r) || !s.requireMaster(w, r) {
 			return
 		}
 		resource := r.PathValue("resource")
 		if !store.PublishableResources[resource] {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("ресурс %q не публикуется извне (допустимы: %s, %s)", resource, store.ResourceMtgConfig, store.ResourceXuiClients), s.deps.Log)
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("ресурс %q не публикуется извне (допустимы: %s, %s, %s)", resource, store.ResourceTelemtConfig, store.ResourceMtgConfig, store.ResourceXuiClients), s.deps.Log)
 			return
 		}
 		content, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
 		if err != nil || len(bytes.TrimSpace(content)) == 0 {
 			writeErr(w, http.StatusBadRequest, errors.New("нужно непустое содержимое ресурса, не больше 4 МБ"), s.deps.Log)
 			return
+		}
+		if resource == store.ResourceTelemtConfig {
+			if err := telemtcfg.ValidateMainConfig(string(content)); err != nil {
+				writeErr(w, http.StatusBadRequest, fmt.Errorf("telemt.config: %w", err), s.deps.Log)
+				return
+			}
 		}
 		if resource == store.ResourceXuiClients {
 			var clients []xui.Client

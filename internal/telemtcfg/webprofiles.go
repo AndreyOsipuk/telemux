@@ -41,14 +41,18 @@ var (
 	webModeRe     = regexp.MustCompile(`(?m)^\s*\[\[web\.vhosts\]\]`)
 	maxProfilesRe = regexp.MustCompile(`(?m)^\s*max_profiles\s*=\s*(\d+)`)
 	secretModeRe  = regexp.MustCompile(`(?m)^secret_mode\s*=\s*"([^"]+)"`)
+	// profileHeaderRe - строка, где после пробелов ровно заголовок профиля.
+	profileHeaderRe = regexp.MustCompile(`(?m)^[ \t]*\[\[web\.vhosts\.profiles\]\][ \t]*\r?$`)
 )
 
 func readTemplate(config string) profileTemplate {
 	tpl := profileTemplate{secretMode: "dd", maxSessions: 8, maxStreams: 512, maxStreamsPerSession: 64}
-	idx := strings.Index(config, profileHeader)
-	if idx < 0 {
+	// Настоящий заголовок блока, а не упоминание в комментарии.
+	loc := profileHeaderRe.FindStringIndex(config)
+	if loc == nil {
 		return tpl
 	}
+	idx := loc[0]
 	block := config[idx:min(len(config), idx+400)]
 	num := func(key string, def int) int {
 		m := regexp.MustCompile(`(?m)^` + key + `\s*=\s*(\d+)`).FindStringSubmatch(block)
