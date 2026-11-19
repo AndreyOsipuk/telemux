@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AndreyOsipuk/telemux/internal/acme"
 	"github.com/AndreyOsipuk/telemux/internal/agentjoin"
 	"github.com/AndreyOsipuk/telemux/internal/backend/mtgmulti"
 	"github.com/AndreyOsipuk/telemux/internal/patroni"
@@ -177,6 +178,36 @@ func runServe(args []string) int {
 		logger.Info("синхронизатор панели 3x-ui включён")
 	}
 
+	// Сертификаты WEB-доменов релеев (ADR 0004): список - если применена миграция 0009,
+	// выпуск и продление - только с настройками TELEMUX_ACME_*.
+	acmeSet, err := acmeSettingsFromEnv(os.Getenv)
+	if err != nil {
+		logger.Error("выпуск сертификатов", "err", err)
+		return 2
+	}
+	var certs server.CertStore
+	if err := st.CheckTLSSchema(ctx); err != nil {
+		if acmeSet != nil {
+			logger.Error("схема базы не готова, мастер не запущен", "err", err)
+			return 1
+		}
+		logger.Warn("сертификаты WEB: /api/v1/certs выключен", "err", err)
+	} else {
+		certs = st
+	}
+	var acmeDeps *server.ACMEDeps
+	if acmeSet != nil {
+		iss, err := acme.NewLego(acme.Config{Email: acmeSet.Email, Directory: acmeSet.Directory,
+			CFToken: acmeSet.Token, Accounts: st, Log: logger})
+		if err != nil {
+			logger.Error("выпуск сертификатов", "err", err)
+			return 2
+		}
+		acmeDeps = &server.ACMEDeps{Issuer: iss, RenewBefore: acmeSet.RenewBefore}
+		logger.Info("выпуск сертификатов WEB включён", "directory", acmeSet.Directory,
+			"renew_before", acmeSet.RenewBefore.String(), "token_file", acmeSet.TokenFile)
+	}
+
 	// Добавление машины одной командой: внешний адрес API агентов и цепочка файрвола.
 	agentPublicURL := envOr("TELEMUX_AGENT_PUBLIC_URL", "")
 	if agentPublicURL != "" {
@@ -196,6 +227,8 @@ func runServe(args []string) int {
 		AgentFWChain:   fwChain,
 		Firewall:       agentjoin.IPTables{},
 		Panel:          panel,
+		Certs:          certs,
+		ACME:           acmeDeps,
 		TLSListen:      envOr("TELEMUX_TLS_LISTEN", ""),
 		TLSCertFile:    envOr("TELEMUX_TLS_CERT", "/etc/telemux/tls/cert.pem"),
 		TLSKeyFile:     envOr("TELEMUX_TLS_KEY", "/etc/telemux/tls/key.pem"),

@@ -175,6 +175,10 @@ volumes: { pgdata: {} }
 | Роли приложений для PG-fence | `TELEMUX_PG_FENCE_ROLES` | пусто = PG-fence выключен |
 | Внешний https-адрес API агентов для команды установки | `TELEMUX_AGENT_PUBLIC_URL` (`https://<адрес мастера>:18443`) | пусто = добавление машины отвечает 409 |
 | Цепочка iptables для адресов выходов | `TELEMUX_AGENT_FW_CHAIN` | пусто = файрвол не трогается |
+| Почта аккаунта ACME (сертификаты WEB) | `TELEMUX_ACME_EMAIL` | пусто = выпуск выключен |
+| Файл с токеном Cloudflare для DNS-01 | `TELEMUX_ACME_CF_TOKEN_FILE` | пусто = выпуск выключен |
+| Каталог ACME | `TELEMUX_ACME_DIR` | продакшн Let's Encrypt |
+| За сколько до конца продлевать сертификат | `TELEMUX_ACME_RENEW_BEFORE` | `720h` (30 дней) |
 
 PostgreSQL держать на loopback (`listen_addresses='127.0.0.1'`) + фаервол; наружу не открывать.
 Реплики стримят с primary по TLS + `pg_hba` allowlist.
@@ -193,7 +197,7 @@ API для бота (Bearer `TELEMUX_BOT_TOKEN` или сессия панели
 | `PUT` | `/api/v1/users/{key}` | создать (201) или изменить (200) одного пользователя |
 | `DELETE` | `/api/v1/users/{key}` | удалить пользователя |
 | `GET` | `/api/v1/revisions/{rev}/status` | на каких машинах ревизия уже применена |
-| `GET` | `/api/v1/machines?resource=&enabled=&kind=&limit=&offset=` | машины флота: когда отчитывался агент, его версия, мост, проверки, состояние ресурсов (`sha256`, `desired_revision`), версии telemt и mtg из runtime-отчёта; фильтры `resource` (`telemt.users`, `telemt.config`, `mtg.config`, `xui.clients`), `enabled`, `kind` (`exit`, `relay`, `panel`), неизвестное значение - 400; `{data, paging}`, `total` с фильтром, `limit` 1-100 (по умолчанию 20) |
+| `GET` | `/api/v1/machines?resource=&enabled=&kind=&limit=&offset=` | машины флота: когда отчитывался агент, его версия, мост, проверки, состояние ресурсов (`sha256`, `desired_revision`), версии telemt и mtg из runtime-отчёта; фильтры `resource` (`telemt.users`, `telemt.config`, `mtg.config`, `xui.clients`, `tls.web`), `enabled`, `kind` (`exit`, `relay`, `panel`), неизвестное значение - 400; `{data, paging}`, `total` с фильтром, `limit` 1-100 (по умолчанию 20) |
 | `GET` | `/api/v1/machines/{code}/runtime` | последний runtime-снимок машины: нагрузка, telemt, mtg (без списков пользователей), `stale` |
 | `GET` | `/api/v1/connections?machine=&product=&min_connections=&limit=&offset=` | подключения пользователей по последним снимкам, порядок machine, product, key |
 | `GET` | `/api/v1/connections/summary?limit=&offset=` | по машине и продукту: `connections_total`, `users_online`, `stale`, `api_ok`, `error`; строка есть и при `api_ok=false` (данные - последнего удачного снимка или 0) |
@@ -201,12 +205,13 @@ API для бота (Bearer `TELEMUX_BOT_TOKEN` или сессия панели
 | `GET` | `/api/v1/pairs?limit=&offset=` | пары флота: релей и его выходы, у каждой машины желаемые ревизии и сводный статус; машины вне пар - в псевдо-паре `relay: null` в конце |
 | `GET` | `/api/v1/drift?threshold=&limit=&offset=` | расхождения применённого с желаемым дольше порога (`threshold` 0-86400 с, по умолчанию 600): `behind`, `failed`, `silent` |
 | `GET` | `/api/v1/targets/{code}/apply-log?limit=&offset=` | журнал применений и проверок машины, новые первыми; неизвестная машина - 404 |
+| `GET` | `/api/v1/certs?limit=&offset=` | сертификаты WEB-доменов: строка на (релей, домен) - `assigned` (назначен `tls.web`), `not_after`, `issued_at`, `last_try_at`, `last_error`; сертификаты и ключи не отдаются |
 | `POST` | `/api/v1/targets` | добавить машину (`exit` или `relay`) и сразу получить команду установки агента (201); занятый код - 409 |
 | `POST` | `/api/v1/targets/{code}/join` | новая одноразовая команда установки (прежняя сгорает); релей без выходов - 409 |
 
 Все списки - `limit` 1-100 (по умолчанию 20, больше - 400), `offset` >= 0, ответ
 `{data, paging{total, limit, offset}}`; мусор в параметрах - 400. Ручки панели
-`pairs`, `drift`, `apply-log` только читают и работают на любом узле, включая реплику.
+`pairs`, `drift`, `apply-log`, `certs` только читают и работают на любом узле, включая реплику.
 `stale: true` - снимок старше порога (`TELEMUX_RUNTIME_STALE_AFTER`, по умолчанию 180 с)
 или его нет. Если база отвергла данные запроса (4xx), клиенту уходит обезличенный текст,
 подробности - в лог мастера.
@@ -413,6 +418,69 @@ telemux target --code xui-ps7 --kind panel --resources xui.clients \
 
 и переменные `TELEMUX_XUI_URL`, `TELEMUX_XUI_TOKEN`, `TELEMUX_XUI_CERT_SHA256` у `serve`.
 
+### Сертификаты WEB (ресурс tls.web)
+
+TLS доменов `webN` (WEB-режим telemt и mtg) на релеях держит nginx. Сертификаты
+выпускает и продлевает **мастер** по ACME DNS-01 через Cloudflare, токен Cloudflare есть
+только у мастера; агент релея кладёт файлы и перезагружает nginx
+([ADR 0004](docs/adr/0004-tls-web.md)).
+
+Список доменов релея - `targets.settings.web_domains`, через запятую. Только имена
+(буквы, цифры, дефис), без звёздочек и IP; регистр и повторы нормализуются, мусор -
+ошибка при записи машины. Домен на двух релеях выпускается один раз.
+
+Мастер (переменные `TELEMUX_ACME_*`, см. «Конфигурация» и
+[deploy/telemux.env.example](deploy/telemux.env.example)) раз в час проходит по доменам
+включённых релеев и выпускает сертификат, если его нет или до конца меньше
+`TELEMUX_ACME_RENEW_BEFORE` (по умолчанию 30 дней). Неудача - `last_error` в `tls_certs`
+и WARN в лог; домен пробуется снова не раньше чем через 6 часов (лимиты Let's Encrypt).
+Затем каждой машине с назначенным `tls.web` публикуется ресурс - JSON
+`{"<домен>": {"cert": "...", "key": "..."}}` со всеми её доменами, у которых есть
+сертификат; новая ревизия - только при изменении содержимого. Аккаунт ACME (ключ) хранится
+в базе (`acme_account`, свой на каждый каталог ACME), выпуск - только на мастере. Без
+`TELEMUX_ACME_EMAIL` и `TELEMUX_ACME_CF_TOKEN_FILE` выпуск выключен, остальное работает
+как раньше. Нужна миграция [migrations/0009_tls_certs.sql](migrations/0009_tls_certs.sql):
+с включённым выпуском без неё мастер не стартует.
+
+Агент (`TELEMUX_AGENT_TLS_WEB=1`, каталог `TELEMUX_AGENT_TLS_DIR`, по умолчанию
+`/etc/nginx/certs`): для каждого домена ресурса - `<каталог>/<домен>.pem` (полная цепочка)
+и `<каталог>/<домен>.key` (0600). До записи проверяет имя домена, что сертификат и ключ -
+пара и что сертификат выписан на этот домен. Меняются только отличающиеся файлы: временный
+файл со сверкой → бэкап `.telemux-bak` → замена → `nginx -t` → `systemctl reload nginx`.
+Провал `nginx -t` или перезагрузки - прежние файлы возвращаются (новые домены удаляются),
+статус `failed` с причиной. Домены, которых нет в ресурсе, агент не трогает и не удаляет.
+В режиме compare отчёт называет домены, чей сертификат или ключ отличается (по sha256)
+или отсутствует; файлы не меняются.
+
+Юнит агента ([deploy/telemux-agent.service](deploy/telemux-agent.service)) - с
+`ProtectSystem=strict`: писать можно только в `ReadWritePaths`. Там `/etc/nginx/certs`
+(сертификаты) и `/var/log/nginx` (`nginx -t` открывает журналы nginx на запись). Каталог
+сертификатов должен существовать до старта юнита (скрипт установки агента создаёт его, если
+есть `/etc/nginx`); другой `TELEMUX_AGENT_TLS_DIR` - добавить в `ReadWritePaths` через
+`systemctl edit telemux-agent`.
+
+Перевод релея:
+
+```sh
+# 1. На мастере: назначить ресурс и задать домены (--resources - полный список ресурсов машины)
+telemux target --code pr2 --kind relay --resources telemt.users,tls.web \
+  --web-domains web2.example.com,web6.example.com
+# 2. Дождаться выпуска: GET /api/v1/certs - not_after заполнен, last_error пуст
+# 3. На релее: ссылки nginx на новые файлы, проверить конфиг
+#    ssl_certificate     /etc/nginx/certs/web2.example.com.pem;
+#    ssl_certificate_key /etc/nginx/certs/web2.example.com.key;
+# 4. agent.env: TELEMUX_AGENT_TLS_WEB=1 в режиме compare, systemctl restart telemux-agent;
+#    в отчёте (observed_state, панель) - какие домены отличаются
+# 5. TELEMUX_AGENT_MODE=apply, systemctl restart telemux-agent: файлы на месте, nginx перезагружен
+# 6. Выключить старый выпуск на релее: certbot (systemctl disable --now certbot.timer,
+#    удалить renewal-конфиги доменов) или acme.sh (acme.sh --remove -d <домен>, крон);
+#    токен Cloudflare с релея удалить
+```
+
+Пока nginx ссылается на старые файлы certbot или acme.sh, новые сертификаты лежат рядом
+без эффекта - шаг 3 можно делать до или после включения агента, но до выключения старого
+выпуска.
+
 ### Мастер для машин-выходов по HTTPS
 
 Машины-выходы видят мастера напрямую, но в бандлах секреты пользователей, поэтому их
@@ -556,6 +624,7 @@ telemux role  --db "$DATABASE_URL"               # роль ноды: master/rep
 telemux fence --db "$DATABASE_URL" status        # PG-fence: включён ли read-only (аварийно: off)
 telemux sync  --db "$DATABASE_URL" --api http://127.0.0.1:9091          # shadow: показать diff
 telemux sync  --db "$DATABASE_URL" --api http://127.0.0.1:9091 --apply  # применить
+telemux target --code pr2 --kind relay --resources telemt.users,tls.web --web-domains web2.example.com  # домены релея
 ```
 
 `sync` без `--apply` — **shadow**: считает diff (create/patch/delete), но не меняет ноду.

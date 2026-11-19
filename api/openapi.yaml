@@ -296,7 +296,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
-        - { name: resource, in: query, schema: { type: string, enum: [telemt.users, telemt.config, mtg.config, xui.clients] } }
+        - { name: resource, in: query, schema: { type: string, enum: [telemt.users, telemt.config, mtg.config, xui.clients, tls.web] } }
         - { name: enabled, in: query, schema: { type: boolean } }
         - { name: kind, in: query, schema: { type: string, enum: [exit, relay, panel] } }
       responses:
@@ -487,6 +487,36 @@ paths:
                     items: { $ref: '#/components/schemas/DriftItem' }
                   paging: { $ref: '#/components/schemas/Paging' }
                   threshold_seconds: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/certs:
+    get:
+      summary: Сертификаты WEB-доменов релеев
+      description: |
+        Строка на пару (включённый релей, домен из его `settings.web_domains`), по коду
+        машины и домену. Состояние выпуска на мастере: срок сертификата, когда он выпущен,
+        последняя попытка и её ошибка. Домен без сертификата - `not_after: null`.
+        `assigned` - машине назначен ресурс `tls.web` (сертификаты до неё доходят).
+        Сами сертификаты и ключи эта ручка не отдаёт никогда.
+      operationId: listCerts
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Страница сертификатов
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/CertInfo' }
+                  paging: { $ref: '#/components/schemas/Paging' }
         '400': { $ref: '#/components/responses/Error' }
         '401': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
@@ -998,6 +1028,17 @@ components:
         since: { type: string, format: date-time }
         seen_at: { type: string, format: date-time, nullable: true }
         error: { type: string }
+    CertInfo:
+      type: object
+      required: [machine, domain, assigned, not_after, issued_at, last_try_at]
+      properties:
+        machine: { type: string, description: "Код релея" }
+        domain: { type: string }
+        assigned: { type: boolean, description: "Машине назначен ресурс tls.web" }
+        not_after: { type: string, format: date-time, nullable: true, description: "Конец срока; null - сертификата ещё нет" }
+        issued_at: { type: string, format: date-time, nullable: true }
+        last_try_at: { type: string, format: date-time, nullable: true, description: "Последняя попытка выпуска (удачная или нет)" }
+        last_error: { type: string, description: "Ошибка последней попытки; нет поля - последняя удалась" }
     ApplyLogEntry:
       type: object
       required: [at, resource, status]

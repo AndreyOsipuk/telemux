@@ -8,11 +8,14 @@ EnvironmentFile=/etc/telemux/agent.env
 ExecStart=/usr/local/bin/telemux agent
 Restart=always
 RestartSec=5
-# Система только для чтения, кроме конфигов telemt и mtg-multi: в режиме apply агент
-# заменяет users.toml, telemt.toml и config.toml mtg (рядом - .telemux-bak). В режиме
-# compare он их только читает.
+# Система только для чтения, кроме конфигов telemt и mtg-multi и сертификатов nginx:
+# в режиме apply агент заменяет users.toml, telemt.toml, config.toml mtg и файлы
+# /etc/nginx/certs/<домен>.pem|.key (рядом - .telemux-bak). nginx -t открывает свои
+# журналы на запись - отсюда /var/log/nginx. В режиме compare агент только читает.
+# Каталога нет при старте юнита - systemd его пропускает («-»): создайте каталог
+# сертификатов до перезапуска агента.
 ProtectSystem=strict
-ReadWritePaths=-/etc/telemt -/etc/mtg-multi
+ReadWritePaths=-/etc/telemt -/etc/mtg-multi -/etc/nginx/certs -/var/log/nginx
 ProtectHome=true
 NoNewPrivileges=true
 

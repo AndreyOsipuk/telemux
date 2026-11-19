@@ -364,6 +364,12 @@ chmod 600 /etc/telemux/agent.token.new /etc/telemux/agent.env.new
 mv -f /etc/telemux/agent.token.new /etc/telemux/agent.token
 mv -f /etc/telemux/agent.env.new /etc/telemux/agent.env
 
+# Каталог сертификатов nginx (ресурс tls.web): должен быть до старта юнита, иначе
+# ReadWritePaths его пропустит и агент не сможет туда писать.
+if [ -d /etc/nginx ]; then
+	install -d -m 0755 /etc/nginx/certs
+fi
+
 # 4. Юнит telemux-agent.
 cat > /etc/systemd/system/telemux-agent.service.new <<'TELEMUX_UNIT'
 {{.Unit}}

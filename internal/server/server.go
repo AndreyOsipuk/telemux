@@ -56,6 +56,11 @@ type Deps struct {
 	// Синхронизатор входов мастер-панели 3x-ui (mtg через панель); nil → выключен.
 	Panel *PanelDeps
 
+	// Сертификаты WEB-доменов релеев: список (/api/v1/certs); nil → выключено.
+	Certs CertStore
+	// Выпуск и продление сертификатов на мастере (ACME); nil → выключен.
+	ACME *ACMEDeps
+
 	// Внешний TLS-слушатель для агентов и мостов машин-выходов (только /v1/ и /healthz).
 	// Пусто → выключен. Сертификат самоподписанный, клиенты закрепляют его отпечаток.
 	TLSListen   string
@@ -195,6 +200,9 @@ func (s *Server) routes() {
 	if s.deps.Joins != nil {
 		s.routesJoin()
 	}
+	if s.deps.Certs != nil {
+		s.routesCerts()
+	}
 	s.mux.HandleFunc("GET /api/openapi.json", s.handleSpec)
 	// Дашборд (встроенный, см. web.go).
 	s.mux.HandleFunc("GET /", s.handleIndex)
@@ -244,6 +252,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	}
 	if s.deps.Panel != nil {
 		go s.panelLoop(ctx)
+	}
+	if s.deps.Certs != nil && s.deps.ACME != nil {
+		go s.certsLoop(ctx)
 	}
 	srv := &http.Server{Addr: addr, Handler: s.Handler()}
 	go func() {

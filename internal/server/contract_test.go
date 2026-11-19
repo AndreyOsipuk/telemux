@@ -341,3 +341,19 @@ func TestContract_Join(t *testing.T) {
 	replica, _, _, _ := joinServer(t, joinOpts{publicURL: publicURL, inRecovery: true})
 	checkContract(t, router, replica, "POST", "/api/v1/targets", exitBody, http.StatusConflict)
 }
+
+func TestContract_Certs(t *testing.T) {
+	_, router := loadSpec(t)
+	fc := newFakeCerts()
+	na := time.Now().Add(50 * 24 * time.Hour).UTC()
+	tried := time.Now().UTC()
+	fc.list = []store.CertInfo{
+		{Machine: "pr1", Domain: "web1.example.com", Assigned: true, NotAfter: &na, IssuedAt: &tried, LastTryAt: &tried},
+		{Machine: "pr2", Domain: "web2.example.com", LastError: "нет зоны", LastTryAt: &tried},
+		{Machine: "pr2", Domain: "web6.example.com"},
+	}
+	s, _, _ := certsServer(false, fc)
+	checkContract(t, router, s, "GET", "/api/v1/certs?limit=2&offset=0", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/certs?offset=2", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/certs?limit=0", "", http.StatusBadRequest)
+}

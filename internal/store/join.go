@@ -143,6 +143,9 @@ func (s *Store) CreateTarget(ctx context.Context, t Target, ttl time.Duration) (
 	if t.Settings == nil {
 		t.Settings = map[string]string{}
 	}
+	if err := normalizeSettings(t.Kind, t.Settings); err != nil {
+		return res, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return res, fmt.Errorf("begin create target: %w", err)

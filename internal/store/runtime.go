@@ -102,33 +102,39 @@ var RuntimeTables = []string{"agent_runtime", "runtime_user_conns", "runtime_log
 // (current_schema(), а не любой схеме базы): иначе /api/v1/machines и ручки
 // runtime падали бы 500 (42P01) на каждом запросе.
 func (s *Store) CheckRuntimeSchema(ctx context.Context) error {
+	return s.checkTables(ctx, RuntimeTables, "migrations/0007_agent_runtime.sql")
+}
+
+// checkTables - есть ли в текущей схеме все таблицы tables; нет - ошибка с
+// подсказкой, какую миграцию применить.
+func (s *Store) checkTables(ctx context.Context, tables []string, migration string) error {
 	rows, err := s.pool.Query(ctx,
 		`SELECT table_name FROM information_schema.tables
-		  WHERE table_schema = current_schema() AND table_name = ANY($1)`, RuntimeTables)
+		  WHERE table_schema = current_schema() AND table_name = ANY($1)`, tables)
 	if err != nil {
-		return fmt.Errorf("проверка схемы runtime: %w", err)
+		return fmt.Errorf("проверка схемы: %w", err)
 	}
 	defer rows.Close()
 	have := map[string]bool{}
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("проверка схемы runtime: %w", err)
+			return fmt.Errorf("проверка схемы: %w", err)
 		}
 		have[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("проверка схемы runtime: %w", err)
+		return fmt.Errorf("проверка схемы: %w", err)
 	}
 	var missing []string
-	for _, t := range RuntimeTables {
+	for _, t := range tables {
 		if !have[t] {
 			missing = append(missing, t)
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("в схеме базы нет таблиц %s: примените migrations/0007_agent_runtime.sql до запуска мастера",
-			strings.Join(missing, ", "))
+		return fmt.Errorf("в схеме базы нет таблиц %s: примените %s до запуска мастера",
+			strings.Join(missing, ", "), migration)
 	}
 	return nil
 }

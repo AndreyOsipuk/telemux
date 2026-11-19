@@ -71,7 +71,7 @@ func TestAuth_EveryV1RouteRequiresToken(t *testing.T) {
 		t.Fatalf("нашлось подозрительно мало маршрутов /api/v1: %v", routes)
 	}
 	param := regexp.MustCompile(`\{[^}]+\}`)
-	// Сервер со всеми группами маршрутов: агенты, машины и добавление машины (Joins).
+	// Сервер со всеми группами маршрутов: агенты, машины, добавление машины (Joins), сертификаты.
 	s, _, _, _ := defaultJoin(t)
 	for _, rt := range routes {
 		path := param.ReplaceAllString(rt[1], "x1")

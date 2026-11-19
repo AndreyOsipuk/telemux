@@ -28,6 +28,7 @@ func runTarget(args []string) int {
 	kind := fs.String("kind", "", "exit | relay | panel")
 	settings := fs.String("settings", "", "настройки через запятую key=value (для panel: inbound_id, node_id, port, node_code)")
 	relay := fs.String("relay", "", "для выхода: релей, к которому он держит туннель")
+	webDomains := fs.String("web-domains", "", "для релея: WEB-домены через запятую (сертификаты tls.web выпускает мастер)")
 	resources := fs.String("resources", "", "ресурсы через запятую, например telemt.users")
 	disabled := fs.Bool("disabled", false, "машина выключена (ревизий не получает)")
 	if err := fs.Parse(args); err != nil {
@@ -45,6 +46,9 @@ func runTarget(args []string) int {
 			return 2
 		}
 		kv[k] = v
+	}
+	if *webDomains != "" {
+		kv[store.SettingWebDomains] = *webDomains
 	}
 	ctx := context.Background()
 	st, err := store.Open(ctx, *dsn)
@@ -144,6 +148,10 @@ func runAgent(args []string) int {
 	telemtConfig := fs.String("telemt-config", envOr("TELEMUX_AGENT_TELEMT_CONFIG", "/etc/telemt/telemt.toml"), "telemt.toml для сводки в runtime-отчёте")
 	mtgBin := fs.String("mtg-bin", envOr("TELEMUX_AGENT_MTG_BIN", "mtg"), "бинарь mtg-multi (версия через --version)")
 	journalUnit := fs.String("journal-unit", envOr("TELEMUX_AGENT_JOURNAL_UNIT", "telemt"), "юнит telemt для счётчиков ошибок журнала")
+	tlsWeb := fs.Bool("tls-web", envOr("TELEMUX_AGENT_TLS_WEB", "0") == "1", "раскладывать сертификаты WEB-доменов (ресурс tls.web)")
+	tlsDir := fs.String("tls-dir", envOr("TELEMUX_AGENT_TLS_DIR", agent.DefaultTLSDir), "каталог сертификатов nginx: <домен>.pem и <домен>.key")
+	nginxUnit := fs.String("nginx-unit", envOr("TELEMUX_AGENT_NGINX_UNIT", "nginx"), "юнит systemd nginx (reload)")
+	nginxBin := fs.String("nginx-bin", envOr("TELEMUX_AGENT_NGINX_BIN", "nginx"), "бинарь nginx (nginx -t)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -172,10 +180,22 @@ func runAgent(args []string) int {
 		}
 		mainFile = *configFile
 	}
+	certDir := ""
+	if *tlsWeb {
+		if *tlsDir == "" {
+			fmt.Fprintln(os.Stderr, "для tls.web нужен каталог сертификатов (--tls-dir)")
+			return 2
+		}
+		certDir = *tlsDir
+	}
 	var applier *agent.Applier
 	var mtgApplier *agent.MtgApplier
 	var configApplier *agent.ConfigApplier
+	var tlsApplier *agent.TLSApplier
 	if *mode == agent.ModeApply {
+		if certDir != "" {
+			tlsApplier = &agent.TLSApplier{Nginx: agent.SystemdNginx{Unit: *nginxUnit, Bin: *nginxBin}}
+		}
 		if mainFile != "" {
 			configApplier = &agent.ConfigApplier{StateURL: *configStateURL, Service: agent.SystemdTelemt{Unit: *unit}}
 		}
@@ -189,6 +209,7 @@ func runAgent(args []string) int {
 	a, err := agent.New(agent.Config{
 		Applier: applier, MtgApplier: mtgApplier, MtgFile: *mtgFile, MasterPin: *masterPin,
 		TelemtConfigFile: mainFile, TelemtLocalFile: *localConfig, ConfigApplier: configApplier,
+		TLSDir: certDir, TLSApplier: tlsApplier,
 		MasterURLs: splitList(*masters), Token: strings.TrimSpace(string(raw)), Target: *target,
 		Version: version, Via: *via, UsersFile: *usersFile, Mode: *mode,
 		Wait: *wait, RecheckEvery: *recheck, Checks: checkList, Log: logger,

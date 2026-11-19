@@ -266,6 +266,7 @@ func joinServer(t *testing.T, o joinOpts) (*Server, *fakeJoins, *fakeFirewall, s
 		BotToken: botToken, AdminUser: "admin", AdminPassword: "pw",
 		Joins: fj, AgentPublicURL: o.publicURL, AgentFWChain: o.chain, Firewall: fw,
 		TLSListen: "0.0.0.0:18443", TLSCertFile: cert,
+		Certs: newFakeCerts(),
 	})
 	return s, fj, fw, spki
 }

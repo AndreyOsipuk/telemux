@@ -3,8 +3,8 @@
 //
 // Режимы: compare - сравнить файлы на диске с желаемым и отчитаться, ничего
 // не меняя; apply - применить (users.toml + WEB-профили, основной telemt.toml,
-// config.toml mtg; проверка «принято», откат при отказе - apply.go,
-// telemtconfig.go, mtg.go).
+// config.toml mtg, сертификаты nginx; проверка «принято», откат при отказе -
+// apply.go, telemtconfig.go, mtg.go, tlsweb.go).
 package agent
 
 import (
@@ -50,16 +50,19 @@ type Config struct {
 	TelemtConfigFile string
 	// TelemtLocalFile - машинная часть telemt.toml (telemtcfg/compose.go); файла может не быть.
 	TelemtLocalFile string
-	ConfigApplier   *ConfigApplier    // для ModeApply и telemt.config; пути берутся из конфига агента
-	Mode            string            // ModeCompare или ModeApply
-	Applier         *Applier          // для ModeApply и telemt.users; UsersFile берётся из конфига агента
-	MtgApplier      *MtgApplier       // для ModeApply и mtg.config; MtgFile берётся из конфига агента
-	Wait            time.Duration     // сколько мастер держит long-poll; по умолчанию 55 с
-	RecheckEvery    time.Duration     // как часто перепроверять диск и отчитываться без новой ревизии; по умолчанию 5 мин
-	Checks          []Check           // локальные проверки машины для отчёта (мост и т.п.)
-	Runtime         *RuntimeCollector // сборщик runtime-отчёта; nil - не шлётся
-	RuntimeEvery    time.Duration     // период runtime-отчёта; 0 - не шлётся
-	Log             *slog.Logger
+	ConfigApplier   *ConfigApplier // для ModeApply и telemt.config; пути берутся из конфига агента
+	Mode            string         // ModeCompare или ModeApply
+	Applier         *Applier       // для ModeApply и telemt.users; UsersFile берётся из конфига агента
+	MtgApplier      *MtgApplier    // для ModeApply и mtg.config; MtgFile берётся из конфига агента
+	// TLSDir - каталог сертификатов nginx под ресурсом tls.web; пусто - не ведётся.
+	TLSDir       string
+	TLSApplier   *TLSApplier       // для ModeApply и tls.web; Dir берётся из конфига агента
+	Wait         time.Duration     // сколько мастер держит long-poll; по умолчанию 55 с
+	RecheckEvery time.Duration     // как часто перепроверять диск и отчитываться без новой ревизии; по умолчанию 5 мин
+	Checks       []Check           // локальные проверки машины для отчёта (мост и т.п.)
+	Runtime      *RuntimeCollector // сборщик runtime-отчёта; nil - не шлётся
+	RuntimeEvery time.Duration     // период runtime-отчёта; 0 - не шлётся
+	Log          *slog.Logger
 }
 
 // Agent - агент одной машины.
@@ -125,6 +128,11 @@ func New(cfg Config) (*Agent, error) {
 		return nil, errors.New("для режима apply с mtg нужен MtgApplier")
 	case cfg.Mode == ModeApply && cfg.TelemtConfigFile != "" && cfg.ConfigApplier == nil:
 		return nil, errors.New("для режима apply с telemt.config нужен ConfigApplier")
+	case cfg.Mode == ModeApply && cfg.TLSDir != "" && cfg.TLSApplier == nil:
+		return nil, errNoTLSApplier
+	}
+	if cfg.TLSApplier != nil {
+		cfg.TLSApplier.Dir = cfg.TLSDir
 	}
 	if cfg.Applier != nil {
 		cfg.Applier.UsersFile = cfg.UsersFile
@@ -166,6 +174,8 @@ func (a *Agent) handles(resource string) bool {
 		return a.cfg.MtgFile != ""
 	case store.ResourceTelemtConfig:
 		return a.cfg.TelemtConfigFile != ""
+	case store.ResourceTLSWeb:
+		return a.cfg.TLSDir != ""
 	}
 	return false
 }
@@ -282,7 +292,7 @@ func (a *Agent) checkAndReport(ctx context.Context, m master) error {
 	var items []*store.Desired
 	// Порядок важен: сначала пользователи, затем основной конфиг - он собирает
 	// профили из users.toml, который только что лёг на диск.
-	for _, r := range []string{store.ResourceTelemtUsers, store.ResourceTelemtConfig, store.ResourceMtgConfig} {
+	for _, r := range []string{store.ResourceTelemtUsers, store.ResourceTelemtConfig, store.ResourceMtgConfig, store.ResourceTLSWeb} {
 		if d := a.desired[r]; d != nil {
 			items = append(items, d)
 		}
@@ -322,6 +332,8 @@ func (a *Agent) compare(d *store.Desired) store.ObservedResource {
 		return a.compareMtg(d)
 	case store.ResourceTelemtConfig:
 		return a.compareMainConfig(d)
+	case store.ResourceTLSWeb:
+		return a.compareTLSWeb(d)
 	}
 	return a.compareUsers(d)
 }
@@ -385,6 +397,8 @@ func (a *Agent) apply(ctx context.Context, d *store.Desired) store.ObservedResou
 		r = a.cfg.MtgApplier.Apply(ctx, d.Content)
 	case store.ResourceTelemtConfig:
 		r = a.cfg.ConfigApplier.Apply(ctx, d.Content)
+	case store.ResourceTLSWeb:
+		r = a.cfg.TLSApplier.Apply(ctx, d.Content)
 	default:
 		r = a.cfg.Applier.Apply(ctx, d.Content)
 	}

@@ -378,6 +378,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/certs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сертификаты WEB-доменов релеев
+         * @description Строка на пару (включённый релей, домен из его `settings.web_domains`), по коду
+         *     машины и домену. Состояние выпуска на мастере: срок сертификата, когда он выпущен,
+         *     последняя попытка и её ошибка. Домен без сертификата - `not_after: null`.
+         *     `assigned` - машине назначен ресурс `tls.web` (сертификаты до неё доходят).
+         *     Сами сертификаты и ключи эта ручка не отдаёт никогда.
+         */
+        get: operations["listCerts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/targets/{code}/apply-log": {
         parameters: {
             query?: never;
@@ -792,6 +816,27 @@ export interface components {
             seen_at?: string | null;
             error?: string;
         };
+        CertInfo: {
+            /** @description Код релея */
+            machine: string;
+            domain: string;
+            /** @description Машине назначен ресурс tls.web */
+            assigned: boolean;
+            /**
+             * Format: date-time
+             * @description Конец срока; null - сертификата ещё нет
+             */
+            not_after: string | null;
+            /** Format: date-time */
+            issued_at: string | null;
+            /**
+             * Format: date-time
+             * @description Последняя попытка выпуска (удачная или нет)
+             */
+            last_try_at: string | null;
+            /** @description Ошибка последней попытки; нет поля - последняя удалась */
+            last_error?: string;
+        };
         ApplyLogEntry: {
             /** Format: date-time */
             at: string;
@@ -1146,7 +1191,7 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["Limit"];
                 offset?: components["parameters"]["Offset"];
-                resource?: "telemt.users" | "telemt.config" | "mtg.config" | "xui.clients";
+                resource?: "telemt.users" | "telemt.config" | "mtg.config" | "xui.clients" | "tls.web";
                 enabled?: boolean;
                 kind?: "exit" | "relay" | "panel";
             };
@@ -1349,6 +1394,36 @@ export interface operations {
                         data: components["schemas"]["DriftItem"][];
                         paging: components["schemas"]["Paging"];
                         threshold_seconds: number;
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listCerts: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                offset?: components["parameters"]["Offset"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница сертификатов */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CertInfo"][];
+                        paging: components["schemas"]["Paging"];
                     };
                 };
             };

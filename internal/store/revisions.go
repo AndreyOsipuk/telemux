@@ -32,7 +32,7 @@ type Target struct {
 	RelayCode string            `json:"relay_code,omitempty"`
 	Resources []string          `json:"resources"`
 	Enabled   bool              `json:"enabled"`
-	Settings  map[string]string `json:"settings,omitempty"` // для panel: inbound_id, node_id, port, node_code
+	Settings  map[string]string `json:"settings,omitempty"` // panel: inbound_id, node_id, port, node_code; exit: address, bridge_socks; relay: web_domains
 }
 
 // UpsertTarget добавляет машину или обновляет её описание.
@@ -42,6 +42,9 @@ func (s *Store) UpsertTarget(ctx context.Context, t Target) error {
 	}
 	if t.Settings == nil {
 		t.Settings = map[string]string{}
+	}
+	if err := normalizeSettings(t.Kind, t.Settings); err != nil {
+		return err
 	}
 	var relay *string
 	if t.RelayCode != "" {
@@ -336,10 +339,24 @@ func (s *Store) PublishResource(ctx context.Context, target, resource string, co
 	if !assigned {
 		return res, ErrResourceNotAssigned
 	}
+	if res, err = publishLocked(ctx, tx, target, resource, content); err != nil {
+		return res, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return res, fmt.Errorf("commit publish resource: %w", err)
+	}
+	return res, nil
+}
+
+// publishLocked пишет новую ревизию ресурса машины, если хеш содержимого
+// отличается от последней. Вызывается в транзакции под publishLockKey, после
+// проверки, что машина есть и ресурс ей назначен.
+func publishLocked(ctx context.Context, tx pgx.Tx, target, resource string, content []byte) (PublishResult, error) {
+	res := PublishResult{Changed: []string{}}
 	sha := telemtcfg.SHA256(content)
 	var lastSHA string
 	var lastRev int64
-	err = tx.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		`SELECT sha256, revision FROM desired_config WHERE target = $1 AND resource = $2
 		  ORDER BY revision DESC LIMIT 1`, target, resource).Scan(&lastSHA, &lastRev)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -357,9 +374,6 @@ func (s *Store) PublishResource(ctx context.Context, target, resource string, co
 		`INSERT INTO desired_config (target, resource, revision, sha256, content) VALUES ($1, $2, $3, $4, $5)`,
 		target, resource, rev, sha, content); err != nil {
 		return res, fmt.Errorf("insert desired: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return res, fmt.Errorf("commit publish resource: %w", err)
 	}
 	res.Revision, res.Changed = rev, []string{target}
 	return res, nil
