@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -653,8 +654,9 @@ func TestSendRuntime_JournalWindowMovesOnlyOn2xx(t *testing.T) {
 func TestExecRunner_RunLines(t *testing.T) {
 	long := strings.Repeat("x", 300<<10)
 	var lines []string
+	// Длинную строку строит сам sh: аргумент в 300 КБ Linux не пропускает (MAX_ARG_STRLEN 128 КБ).
 	err := ExecRunner{}.RunLines(context.Background(), func(line []byte) { lines = append(lines, string(line)) },
-		"sh", "-c", "printf 'user=a_1 limit exceeded\\n"+long+"\\nhandshake closed\\n'")
+		"sh", "-c", "printf 'user=a_1 limit exceeded\\n'; head -c "+strconv.Itoa(len(long))+" /dev/zero | tr '\\000' x; printf '\\nhandshake closed\\n'")
 	if err != nil {
 		t.Fatal(err)
 	}
