@@ -2,10 +2,13 @@
 // прямых точек входа), справа - машины за рубежом, линии - серверы: сервер N идёт от
 // своего релея (или напрямую) к своей машине. Связи строятся из серверов, а не из
 // targets.relay_code: одна машина бывает за разными релеями у разных серверов.
-// Цвет линии - состояние сервера, пунктир - все точки этого пути выключены.
-// Клик по машине открывает её карточку, по подписи линии - форму сервера.
+// Средняя колонка - серверы строго по номеру (путь «через релей» и «напрямую» - отдельные
+// строки), релеи и машины за рубежом - напротив своих серверов. Цвет линии - состояние
+// сервера, пунктир - все точки этого пути выключены. Наведение на машину или сервер
+// подсвечивает его пути, остальное затемняется. Клик по машине - карточка, по серверу - форма.
 
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Button, Card, Empty, Space, Tag, Tooltip, Typography, theme } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
@@ -30,10 +33,21 @@ export interface MapEdge {
   servers: { server: Server; enabled: boolean }[];
 }
 
+// Путь одного сервера: от релея (или напрямую) к машине за рубежом.
+export interface MapPath {
+  id: string;
+  server: Server;
+  from: string;
+  to: string;
+  enabled: boolean;
+}
+
 export interface MapModel {
   relays: string[];
   exits: string[];
   edges: MapEdge[];
+  // Пути по номеру сервера, через релей раньше прямого.
+  paths: MapPath[];
   // Серверы на машине-релее (relay_code) - подпись узла: «telemt 1 · mtg 5».
   relayServers: Record<string, Server[]>;
 }
@@ -78,43 +92,36 @@ export function buildMap(servers: Server[]): MapModel {
     }
   }
   for (const list of Object.values(relayServers)) list.sort((a, b) => a.no - b.no);
-  const sorted = (xs: Set<string>) => [...xs].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  const rs = sorted(relays).filter((r) => r !== DIRECT);
-  if (relays.has(DIRECT)) rs.push(DIRECT);
-  // Машины за рубежом - напротив своих релеев (средний номер релея в колонке), при
-  // равенстве - по наименьшему номеру сервера: так линии почти не пересекаются.
-  const relayIdx = new Map(rs.map((r, i) => [r, i]));
-  relayIdx.set(DIRECT, rs.length);
-  const exitKey = new Map<string, { pos: number; no: number }>();
-  for (const x of exits) {
-    const es = [...edges.values()].filter((e) => e.to === x);
-    const pos = es.reduce((a, e) => a + (relayIdx.get(e.from) ?? rs.length), 0) / Math.max(es.length, 1);
-    const no = Math.min(...es.flatMap((e) => e.servers.map((v) => v.server.no)));
-    exitKey.set(x, { pos, no });
-  }
-  const xs = [...exits]
-    .filter((x) => x !== RETIRED)
-    .sort((a, b) => {
-      const ka = exitKey.get(a)!;
-      const kb = exitKey.get(b)!;
-      return ka.pos - kb.pos || ka.no - kb.no || a.localeCompare(b, undefined, { numeric: true });
-    });
-  if (exits.has(RETIRED)) xs.push(RETIRED);
   for (const e of edges.values()) e.servers.sort((a, b) => a.server.no - b.server.no);
-  return { relays: rs, exits: xs, edges: [...edges.values()], relayServers };
+  const paths: MapPath[] = [...edges.values()]
+    .flatMap((e) => e.servers.map(({ server, enabled }) => ({ id: `${server.no}:${e.from}:${e.to}`, server, from: e.from, to: e.to, enabled })))
+    .sort((a, b) => a.server.no - b.server.no || Number(a.from === DIRECT) - Number(b.from === DIRECT));
+  // Релеи и машины за рубежом - по наименьшему номеру своего сервера, так узлы стоят
+  // напротив своих серверов; «напрямую» и «выход выведен» - в конце колонки.
+  const firstNo = (code: string, side: 'from' | 'to') => Math.min(...paths.filter((p) => p[side] === code).map((p) => p.server.no));
+  const order = (xs: Set<string>, side: 'from' | 'to', last: string) => {
+    const out = [...xs].filter((x) => x !== last).sort((a, b) => firstNo(a, side) - firstNo(b, side) || a.localeCompare(b, undefined, { numeric: true }));
+    if (xs.has(last)) out.push(last);
+    return out;
+  };
+  const rs = order(relays, 'from', DIRECT);
+  const xs = order(exits, 'to', RETIRED);
+  return { relays: rs, exits: xs, edges: [...edges.values()], paths, relayServers };
 }
 
 const NODE_H = 60;
-const GAP = 18;
+const GAP = 14;
 const PAD = 12;
 const LABEL_H = 24;
+const ROW = 40; // шаг строк серверов в средней колонке
 
-// Вертикальные центры узлов колонки; короткая колонка - по центру.
-function column(n: number, total: number): number[] {
-  const h = total - 2 * PAD;
-  const used = n * NODE_H + (n - 1) * GAP;
-  const top = PAD + Math.max(0, (h - used) / 2);
-  return Array.from({ length: n }, (_, i) => top + i * (NODE_H + GAP) + NODE_H / 2);
+// Центры узлов колонки: каждый узел - на среднем уровне своих серверов, без наложений.
+function nodeYs(codes: string[], paths: MapPath[], labelY: Map<string, number>, side: 'from' | 'to'): number[] {
+  const want = codes.map((c) => {
+    const ys = paths.filter((p) => p[side] === c).map((p) => labelY.get(p.id)!);
+    return ys.reduce((a, y) => a + y, 0) / Math.max(ys.length, 1);
+  });
+  return spread(want.map((y) => Math.max(y, PAD + NODE_H / 2)), NODE_H + GAP);
 }
 
 // Подписи по середине линий без наложений: сдвигаем вниз, если наезжают.
@@ -149,7 +156,7 @@ function MachineNode({
   onOpen?: () => void;
   direct?: boolean;
   serversOn?: Server[];
-}) {
+}): ReactNode {
   const { t } = useTranslation();
   if (code === RETIRED)
     return (
@@ -229,16 +236,22 @@ export default function MapPage() {
   const model = useMemo(() => buildMap(list), [list]);
   const machines = useMemo(() => new Map((overview.data?.data ?? []).map((m) => [m.code, m])), [overview.data]);
 
-  const rows = Math.max(model.relays.length, model.exits.length, 1);
-  const height = rows * NODE_H + (rows - 1) * GAP + 2 * PAD;
-  const ry = column(model.relays.length, height);
-  const ey = column(model.exits.length, height);
+  // Наведение: машина (код) или путь сервера (id) - его линии и узлы ярче, остальное темнее.
+  const [hover, setHover] = useState<{ node?: string; path?: string } | null>(null);
+  const pathOn = (p: MapPath) => !hover || hover.path === p.id || hover.node === p.from || hover.node === p.to;
+  const lit = new Set(model.paths.filter(pathOn).flatMap((p) => [p.from, p.to, p.id]));
+  const dim = (key: string) => (hover && !lit.has(key) ? 'map-dim' : '');
+
+  const labelY = new Map(model.paths.map((p, i) => [p.id, PAD + LABEL_H / 2 + i * ROW]));
+  const ry = nodeYs(model.relays, model.paths, labelY, 'from');
+  const ey = nodeYs(model.exits, model.paths, labelY, 'to');
+  const height = Math.max(PAD * 2 + LABEL_H + (model.paths.length - 1) * ROW, ...ry.map((y) => y + NODE_H / 2 + PAD), ...ey.map((y) => y + NODE_H / 2 + PAD), NODE_H);
   const yOf = (list: string[], ys: number[], code: string) => ys[list.indexOf(code)];
-  const nodeW = Math.min(220, Math.max(140, width * 0.24));
+  const nodeW = Math.min(220, Math.max(140, width * 0.22));
   const x1 = nodeW;
   const x2 = width - nodeW;
-  const midY = model.edges.map((e) => (yOf(model.relays, ry, e.from) + yOf(model.exits, ey, e.to)) / 2);
-  const labelY = spread(midY, LABEL_H + 4);
+  const cx = width / 2;
+  const labelW = Math.min(220, width * 0.2);
   const unplaced = (overview.data?.data ?? []).filter((m) => m.kind === 'exit' && !model.exits.includes(m.code));
 
   return (
@@ -264,33 +277,43 @@ export default function MapPage() {
           <Typography.Text type="secondary">{t('map.servers')}</Typography.Text>
           <Typography.Text type="secondary">{t('map.exits')}</Typography.Text>
         </div>
-        {servers.isSuccess && model.edges.length === 0 ? (
+        {servers.isSuccess && model.paths.length === 0 ? (
           <Empty description={t('map.empty')} />
         ) : (
           <div ref={boxRef} className="map-box" style={{ height }} data-testid="map">
             <svg width={width} height={height} className="map-svg" aria-hidden>
-              {model.edges.map((e, i) => {
-                const ya = yOf(model.relays, ry, e.from);
-                const yb = yOf(model.exits, ey, e.to);
-                const on = e.servers.some((s) => s.enabled);
-                const state = e.servers.find((s) => s.enabled)?.server.state ?? 'disabled';
-                const color = token[STATE_COLOR[state]];
-                const cx = (x1 + x2) / 2;
+              {model.paths.map((p) => {
+                const ya = yOf(model.relays, ry, p.from);
+                const yb = yOf(model.exits, ey, p.to);
+                const ly = labelY.get(p.id)!;
+                const color = token[STATE_COLOR[p.enabled ? p.server.state : 'disabled']];
+                const la = cx - labelW / 2;
+                const lb = cx + labelW / 2;
+                const ma = (x1 + la) / 2;
+                const mb = (lb + x2) / 2;
                 return (
                   <path
-                    key={`${e.from}-${e.to}`}
-                    d={`M ${x1} ${ya} C ${cx} ${ya}, ${cx} ${labelY[i]}, ${cx} ${labelY[i]} S ${cx} ${yb}, ${x2} ${yb}`}
+                    key={p.id}
+                    className={dim(p.id)}
+                    d={`M ${x1} ${ya} C ${ma} ${ya}, ${ma} ${ly}, ${la} ${ly} L ${lb} ${ly} C ${mb} ${ly}, ${mb} ${yb}, ${x2} ${yb}`}
                     fill="none"
                     stroke={color}
-                    strokeWidth={on ? 2 : 1.5}
-                    strokeDasharray={on ? undefined : '5 5'}
-                    opacity={on ? 0.9 : 0.6}
+                    strokeWidth={hover && lit.has(p.id) ? 3 : p.enabled ? 2 : 1.5}
+                    strokeDasharray={p.enabled ? undefined : '5 5'}
+                    opacity={p.enabled ? 0.9 : 0.6}
+                    data-testid={`map-path-${p.id}`}
                   />
                 );
               })}
             </svg>
             {model.relays.map((r, i) => (
-              <div key={r} className="map-slot" style={{ left: 0, top: ry[i] - NODE_H / 2, width: nodeW, height: NODE_H }}>
+              <div
+                key={r}
+                className={`map-slot ${dim(r)}`}
+                style={{ left: 0, top: ry[i] - NODE_H / 2, width: nodeW, height: NODE_H }}
+                onMouseEnter={() => setHover({ node: r })}
+                onMouseLeave={() => setHover(null)}
+              >
                 {r === DIRECT ? (
                   <MachineNode code={r} direct />
                 ) : (
@@ -304,44 +327,51 @@ export default function MapPage() {
               </div>
             ))}
             {model.exits.map((x, i) => (
-              <div key={x} className="map-slot" style={{ left: x2, top: ey[i] - NODE_H / 2, width: nodeW, height: NODE_H }}>
+              <div
+                key={x}
+                className={`map-slot ${dim(x)}`}
+                style={{ left: x2, top: ey[i] - NODE_H / 2, width: nodeW, height: NODE_H }}
+                onMouseEnter={() => setHover({ node: x })}
+                onMouseLeave={() => setHover(null)}
+              >
                 <MachineNode code={x} m={machines.get(x)} onOpen={machines.get(x) ? () => setOpened(machines.get(x)!) : undefined} />
               </div>
             ))}
-            {model.edges.map((e, i) => (
-              <div
-                key={`label-${e.from}-${e.to}`}
-                className="map-label"
-                style={{ left: (x1 + x2) / 2, top: labelY[i] - LABEL_H / 2, height: LABEL_H }}
-                data-testid={`map-edge-${e.from === DIRECT ? 'direct' : e.from}-${e.to}`}
-              >
-                {e.servers.map(({ server: s, enabled }) => (
+            {model.paths.map((p) => {
+              const s = p.server;
+              return (
+                <div
+                  key={`label-${p.id}`}
+                  className={`map-label ${dim(p.id)}`}
+                  style={{ left: cx, top: labelY.get(p.id)! - LABEL_H / 2, height: LABEL_H, width: labelW }}
+                  data-testid={`map-edge-${p.from === DIRECT ? 'direct' : p.from}-${p.to}`}
+                  onMouseEnter={() => setHover({ path: p.id })}
+                  onMouseLeave={() => setHover(null)}
+                >
                   <Tooltip
-                    key={s.no}
                     title={
                       <div>
-                        <div>
-                          {t('map.serverTip', { no: s.no, name: s.name, engine: productName(s.engine) })}
-                        </div>
+                        <div>{t('map.serverTip', { no: s.no, name: s.name, engine: productName(s.engine) })}</div>
                         <div>{t(`servers.states.${s.state}`)}</div>
                         {relayDomain(s) && <div>{t('map.domainTip', { domain: relayDomain(s) })}</div>}
-                        {!enabled && <div>{t('map.pathOff')}</div>}
+                        {!p.enabled && <div>{t('map.pathOff')}</div>}
                       </div>
                     }
                   >
                     <Tag
                       className="map-tag"
-                      color={enabled ? (s.engine === 'mtg' ? 'purple' : 'blue') : undefined}
-                      style={enabled ? undefined : { opacity: 0.6 }}
+                      color={p.enabled ? (s.engine === 'mtg' ? 'purple' : 'blue') : undefined}
+                      style={p.enabled ? undefined : { opacity: 0.6 }}
                       onClick={() => setEditing(s)}
                     >
                       {s.emoji ? `${s.emoji} ` : ''}
                       {s.no} · {productName(s.engine)}
+                      {p.from === DIRECT ? ` · ${t('map.directShort')}` : ''}
                     </Tag>
                   </Tooltip>
-                ))}
-              </div>
-            ))}
+                </div>
+              );
+            })}
           </div>
         )}
         {unplaced.length > 0 && (

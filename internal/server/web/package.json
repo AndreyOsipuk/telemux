@@ -6,6 +6,7 @@
   "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "vite",
+    "dev:preview": "../../../scripts/preview/panel-dev.sh",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

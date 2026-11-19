@@ -710,7 +710,8 @@
     "retired": "Exit retired",
     "retiredHint": "machine abroad retired",
     "relayServerTip": "Server {{no}} ({{engine}}) - {{name}}",
-    "domainTip": "relay domain in links: {{domain}}"
+    "domainTip": "relay domain in links: {{domain}}",
+    "directShort": "direct"
   },
   "stack": {
     "title": "Versions and updates",

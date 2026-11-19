@@ -56,8 +56,18 @@
   transform: translateX(-50%);
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   white-space: nowrap;
+}
+/* Наведение: всё, что не на подсвеченном пути, приглушено. */
+.map-slot,
+.map-label,
+.map-svg path {
+  transition: opacity 0.15s;
+}
+.map-dim {
+  opacity: 0.15 !important;
 }
 .map-tag {
   cursor: pointer;

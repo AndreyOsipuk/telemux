@@ -105,8 +105,10 @@ describe('buildMap', () => {
     const s5 = server(5, { engine: 'mtg', relay_code: 'pr1', node_code: 'ps5', endpoints: [endpoint('dd'), endpoint('ee')] });
     const m = buildMap([s6, s1, s5]);
     expect(m.relays).toEqual(['pr1', 'pr2', DIRECT]);
-    // ps1 - за pr1 и pr2 (в среднем ниже), ps5 - только за pr1: ps5 выше.
-    expect(m.exits).toEqual(['ps5', 'ps1']);
+    // По наименьшему номеру своего сервера: ps1 (сервер 1) выше ps5 (сервер 5).
+    expect(m.exits).toEqual(['ps1', 'ps5']);
+    // Средняя колонка - строго по номеру сервера, путь через релей раньше прямого.
+    expect(m.paths.map((p) => `${p.server.no}:${p.from === DIRECT ? 'direct' : p.from}`)).toEqual(['1:pr1', '1:direct', '5:pr1', '6:pr2']);
     const edge = (from: string, to: string) => m.edges.find((e) => e.from === from && e.to === to);
     expect(edge('pr1', 'ps1')?.servers.map((s) => [s.server.no, s.enabled])).toEqual([[1, true]]);
     expect(edge('pr2', 'ps1')?.servers.map((s) => s.server.no)).toEqual([6]);
@@ -152,11 +154,12 @@ describe('buildMap', () => {
     expect(majorityVersion([null, ''])).toBeUndefined();
   });
 
-  it('сортировка: машины за рубежом напротив своих релеев, затем по номеру сервера', () => {
+  it('сортировка: релеи и машины - по наименьшему номеру своего сервера', () => {
     const mk = (no: number, relay: string, node: string) => server(no, { relay_code: relay, node_code: node, endpoints: [endpoint('ee')] });
-    const m = buildMap([mk(1, 'pr1', 'ps9'), mk(2, 'pr2', 'ps1'), mk(5, 'pr1', 'ps5'), mk(4, 'pr4', 'ps2')]);
+    const m = buildMap([mk(5, 'pr1', 'ps5'), mk(4, 'pr4', 'ps2'), mk(2, 'pr2', 'ps1'), mk(1, 'pr1', 'ps9')]);
+    expect(m.paths.map((p) => p.server.no)).toEqual([1, 2, 4, 5]);
     expect(m.relays).toEqual(['pr1', 'pr2', 'pr4']);
-    expect(m.exits).toEqual(['ps9', 'ps5', 'ps1', 'ps2']);
+    expect(m.exits).toEqual(['ps9', 'ps1', 'ps2', 'ps5']);
   });
 
   it('spread разводит подписи без наложения', () => {
@@ -170,8 +173,11 @@ describe('MapPage', () => {
       if (urlPath(url) === '/api/v1/servers')
         return {
           body: {
-            data: [server(1, { relay_code: 'pr1', node_code: 'ps1', endpoints: [endpoint('ee')] })],
-            paging: { total: 1, limit: 100, offset: 0 },
+            data: [
+              server(1, { relay_code: 'pr1', node_code: 'ps1', endpoints: [endpoint('ee')] }),
+              server(2, { relay_code: 'pr2', node_code: 'ps2', endpoints: [endpoint('ee')] }),
+            ],
+            paging: { total: 2, limit: 100, offset: 0 },
           },
         };
       if (url === '/api/v1/overview')
@@ -183,6 +189,12 @@ describe('MapPage', () => {
     expect(screen.getByTestId('map-node-ps1')).toBeInTheDocument();
     expect(within(screen.getByTestId('map-edge-pr1-ps1')).getByText(/1 · telemt/)).toBeInTheDocument();
     expect(screen.getByTestId('map-relay-servers-pr1')).toHaveTextContent('telemt 1');
+    // Наведение на машину: её путь ярче, чужие узлы приглушены.
+    await userEvent.setup().hover(screen.getByTestId('map-node-ps1'));
+    expect(screen.getByTestId('map-node-pr1').parentElement).not.toHaveClass('map-dim');
+    expect(screen.getByTestId('map-path-1:pr1:ps1')).not.toHaveClass('map-dim');
+    expect(screen.getByTestId('map-path-2:pr2:ps2')).toHaveClass('map-dim');
+    expect(screen.getByTestId('map-node-pr2').parentElement).toHaveClass('map-dim');
     expect(await screen.findByText('vega')).toBeInTheDocument();
     expect(screen.getByText(ru.map.unplaced)).toBeInTheDocument();
   });

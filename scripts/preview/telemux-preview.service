@@ -1,0 +1,13 @@
+[Unit]
+Description=telemux preview - копия панели на снимке базы, без связи с флотом
+After=network.target postgresql.service
+
+[Service]
+EnvironmentFile=/etc/telemux/preview.env
+ExecStart=/opt/telemux-preview/telemux serve --interval 1h
+Restart=on-failure
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -736,7 +736,8 @@
     "retired": "Выход выведен",
     "retiredHint": "машина за рубежом выведена",
     "relayServerTip": "Сервер {{no}} ({{engine}}) - {{name}}",
-    "domainTip": "домен релея в ссылках: {{domain}}"
+    "domainTip": "домен релея в ссылках: {{domain}}",
+    "directShort": "напрямую"
   },
   "stack": {
     "title": "Версии и обновления",

@@ -1,0 +1,6 @@
+[Unit]
+Description=telemux preview - копия отчётов агентов из прод-базы (только чтение прода)
+After=postgresql.service
+[Service]
+Type=oneshot
+ExecStart=/opt/telemux-preview/live-sync.sh
