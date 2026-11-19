@@ -4,10 +4,12 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -220,6 +222,15 @@ func runServe(args []string) int {
 
 		RuntimeStaleAfter: runtimeStale,
 	})
+	// Разрешения выходов на файрволе мастера, добавленные при добавлении машины, живут
+	// до перезагрузки - их возвращает этот цикл (при старте и раз в 10 минут).
+	if fwChain != "" {
+		if port, err := tlsListenPort(envOr("TELEMUX_TLS_LISTEN", "")); err != nil {
+			logger.Warn("файрвол: восстановление адресов выходов выключено", "err", err)
+		} else {
+			go agentjoin.RestoreLoop(ctx, st, agentjoin.IPTables{}, fwChain, port, 10*time.Minute, logger)
+		}
+	}
 	if err := srv.Run(ctx, *listen); err != nil {
 		logger.Error("serve", "err", err)
 		return 1
@@ -575,4 +586,20 @@ func runSync(args []string) int {
 		}
 	}
 	return 0
+}
+
+// tlsListenPort - порт из TELEMUX_TLS_LISTEN (host:port).
+func tlsListenPort(listen string) (int, error) {
+	if listen == "" {
+		return 0, errors.New("TELEMUX_TLS_LISTEN не задан")
+	}
+	_, p, err := net.SplitHostPort(listen)
+	if err != nil {
+		return 0, fmt.Errorf("TELEMUX_TLS_LISTEN %q: %w", listen, err)
+	}
+	port, err := strconv.Atoi(p)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("TELEMUX_TLS_LISTEN %q: порт от 1 до 65535", listen)
+	}
+	return port, nil
 }

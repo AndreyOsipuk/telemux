@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -237,5 +238,35 @@ func TestIntegration_ExchangeJoin(t *testing.T) {
 	}
 	if n := liveJoinTokens(t, st, "pr1"); n != 0 {
 		t.Fatalf("токены удалённой машины остались: %d", n)
+	}
+}
+
+// Адреса для восстановления файрвола мастера: только включённые выходы с адресом;
+// релеи, выключенные выходы, выходы без адреса и с мусором в адресе - нет.
+func TestIntegration_ExitAddresses(t *testing.T) {
+	st := setupAll(t)
+	defer st.Close()
+	ctx := context.Background()
+	off := exitTarget("ps9", "pr1", "203.0.113.9", "socks5://127.0.0.1:10879")
+	off.Enabled = false
+	bad := exitTarget("ps8", "pr1", "1.2.3.4;rm", "socks5://127.0.0.1:10878")
+	noAddr := Target{Code: "ps7", Kind: "exit", RelayCode: "pr1", Resources: []string{}, Enabled: true}
+	seedTargets(t, st,
+		Target{Code: "pr1", Kind: "relay", Resources: []string{}, Enabled: true,
+			Settings: map[string]string{SettingAddress: "198.51.100.1"}},
+		exitTarget("ps1", "pr1", "203.0.113.5", "socks5://127.0.0.1:10872"),
+		exitTarget("ps2", "pr1", "203.0.113.6", "socks5://127.0.0.1:10873"),
+		off, bad, noAddr,
+	)
+	got, err := st.ExitAddresses(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s []string
+	for _, a := range got {
+		s = append(s, a.String())
+	}
+	if strings.Join(s, ",") != "203.0.113.5,203.0.113.6" {
+		t.Fatalf("ждали адреса двух включённых выходов, получили %v", s)
 	}
 }

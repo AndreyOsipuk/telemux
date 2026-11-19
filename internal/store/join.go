@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -294,4 +295,29 @@ func (s *Store) ExchangeJoin(ctx context.Context, token string) (JoinExchange, e
 		return ex, fmt.Errorf("commit exchange: %w", err)
 	}
 	return ex, nil
+}
+
+// ExitAddresses - публичные IPv4 включённых машин-выходов из settings.address
+// (для восстановления разрешений на файрволе мастера). Значение, которое не
+// разбирается как IPv4, пропускается.
+func (s *Store) ExitAddresses(ctx context.Context) ([]netip.Addr, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT settings->>'address' FROM targets
+		  WHERE kind = 'exit' AND enabled AND COALESCE(settings->>'address', '') <> ''
+		  ORDER BY code`)
+	if err != nil {
+		return nil, fmt.Errorf("exit addresses: %w", err)
+	}
+	defer rows.Close()
+	var out []netip.Addr
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("scan exit address: %w", err)
+		}
+		if a, err := netip.ParseAddr(raw); err == nil && a.Is4() && !a.IsUnspecified() {
+			out = append(out, a)
+		}
+	}
+	return out, rows.Err()
 }
