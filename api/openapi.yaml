@@ -100,6 +100,123 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
+  /api/v1/targets:
+    post:
+      summary: Добавить машину (кнопка «Добавить машину» в панели)
+      description: |
+        Заводит машину и сразу выдаёт одноразовую команду установки агента (как POST .../join).
+        Только мастер. Код - `^[a-z][a-z0-9-]{1,31}$`, занятый код - 409. Для выхода (`exit`)
+        обязательны `relay_code` (существующий релей), `address` (публичный IPv4 выхода) и
+        `bridge_socks` (адрес socks-входа на релее, через который релей ходит в этот выход,
+        например `socks5://127.0.0.1:10872`). Ресурсы - из `telemt.users`, `mtg.config`.
+        Если на мастере настроена цепочка файрвола (`TELEMUX_AGENT_FW_CHAIN`), адрес выхода
+        сразу открывается на TLS-порту агентов.
+        Новый релей ходит к мастеру через мост своего выхода, а выходов у него ещё нет: машина
+        заводится, `command` пустая, токен не выпускается - добавьте выход и вызовите POST .../join.
+        Не задан `TELEMUX_AGENT_PUBLIC_URL` или нет сертификата API агентов - 409 до создания машины.
+      operationId: createTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewTarget' }
+      responses:
+        '201':
+          description: Машина заведена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JoinCommand' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/targets/{code}/join:
+    post:
+      summary: Новая одноразовая команда установки агента
+      description: |
+        Выдаёт свежий одноразовый токен (живёт 1 час) и команду для новой машины. Прежний
+        неиспользованный токен этой машины сгорает. Только мастер. Неизвестная машина - 404.
+        Выход идёт на мастер напрямую по TLS с проверкой ключа сертификата (`--pinnedpubkey`);
+        релей - через мост первого своего выхода (`-x <bridge_socks> http://<address выхода>:18480`).
+        Релей без выходов с адресом и socks - 409 с объяснением.
+      operationId: createJoin
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Команда установки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JoinCommand' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /v1/join/{token}:
+    get:
+      summary: Скрипт установки агента (выполняется на новой машине)
+      description: |
+        bash-скрипт: скачивает бинарь (`/v1/join/{token}/telemux`), меняет токен на токен агента
+        (`POST /v1/join/{token}/agent`), пишет /etc/telemux/agent.env, agent.token и юнит
+        telemux-agent, запускает агента в режиме compare. Токен не тратится, пока не вызван
+        обмен. Просроченный, использованный или неизвестный токен - 404 (без подробностей).
+        Доступен на TLS-слушателе агентов и через мост выхода.
+      operationId: getJoinScript
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Скрипт
+          content:
+            text/x-shellscript:
+              schema: { type: string }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /v1/join/{token}/telemux:
+    get:
+      summary: Бинарь telemux для новой машины (linux/amd64)
+      description: |
+        Бинарь самого мастера. Токен не тратится. Мастер собран не под linux/amd64 - 503.
+      operationId: getJoinBinary
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Бинарь
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /v1/join/{token}/agent:
+    post:
+      summary: Обмен одноразового токена на токен агента
+      description: |
+        Одноразово - второй вызов 404. Возвращает токен и содержимое agent.env. Только мастер.
+        `format=env` - для скрипта без jq: text/plain, первая строка - токен агента, дальше agent.env.
+      operationId: exchangeJoin
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+        - { name: format, in: query, required: false, schema: { type: string, enum: [json, env] } }
+      responses:
+        '200':
+          description: Токен агента
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [target, agent_token, agent_env]
+                properties:
+                  target: { type: string }
+                  agent_token: { type: string }
+                  agent_env: { type: string, description: "Готовое содержимое /etc/telemux/agent.env" }
+            text/plain:
+              schema: { type: string }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /api/v1/targets/{code}/resources/{resource}:
     put:
       summary: Готовый ресурс одной машины от бота
@@ -303,6 +420,98 @@ paths:
                   paging: { $ref: '#/components/schemas/Paging' }
         '400': { $ref: '#/components/responses/Error' }
         '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/pairs:
+    get:
+      summary: Пары флота - релей и его выходы
+      description: |
+        Пара - релей (kind=relay) и выходы, у которых relay_code указывает на него.
+        Страница идёт по релеям, отсортированным по коду. Выходы без релея и машины
+        вида panel попадают в отдельную псевдо-пару с `relay: null` в конце списка
+        (её не бывает, если таких машин нет).
+      operationId: listPairs
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Страница пар
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Pair' }
+                  paging: { $ref: '#/components/schemas/Paging' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/drift:
+    get:
+      summary: Машины, где применённое расходится с желаемым
+      description: |
+        Строка на (машина, ресурс) с проблемой, которая держится дольше порога:
+        - `behind` - применённая ревизия меньше желаемой, `since` - время создания желаемой;
+        - `failed` - агент сообщил status=failed (resource - ресурс) или не прошла локальная
+          проверка (resource - `check:<имя>`, desired_revision 0); `since` - последняя смена
+          состояния в apply_log, без записи - seen_at;
+        - `silent` - агент не отчитывался дольше порога (одна строка на машину, resource пустой).
+        Машина без агента не silent, но её назначенные ресурсы попадают в `behind` с
+        `observed_revision: null`.
+        Выключенные машины (enabled=false) не попадают.
+      operationId: listDrift
+      parameters:
+        - { name: threshold, in: query, description: "Порог в секундах", schema: { type: integer, minimum: 0, maximum: 86400, default: 600 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Страница расхождений
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging, threshold_seconds]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/DriftItem' }
+                  paging: { $ref: '#/components/schemas/Paging' }
+                  threshold_seconds: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '500': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/targets/{code}/apply-log:
+    get:
+      summary: История применений и проверок машины
+      description: Записи apply_log машины, новые первыми. Неизвестная машина - 404.
+      operationId: getApplyLog
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Страница журнала
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, paging]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ApplyLogEntry' }
+                  paging: { $ref: '#/components/schemas/Paging' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
   /v1/desired:
@@ -557,6 +766,26 @@ components:
         telemt_version: { type: string, description: Версия telemt из последнего runtime-отчёта }
         mtg_version: { type: string, description: Версия mtg-multi из последнего runtime-отчёта }
         runtime_seen_at: { type: string, format: date-time, nullable: true, description: "Последний runtime-отчёт; null - не было" }
+    NewTarget:
+      type: object
+      required: [code, kind, resources]
+      properties:
+        code: { type: string, pattern: '^[a-z][a-z0-9-]{1,31}$' }
+        kind: { type: string, enum: [exit, relay] }
+        relay_code: { type: string, description: "Для выхода - его релей" }
+        address: { type: string, description: "Для выхода - публичный IPv4" }
+        bridge_socks: { type: string, description: "Для выхода - socks-вход на релее к этому выходу, socks5://127.0.0.1:<порт>" }
+        resources:
+          type: array
+          items: { type: string, enum: [telemt.users, mtg.config] }
+    JoinCommand:
+      type: object
+      required: [target, command, expires_at]
+      properties:
+        target: { type: string }
+        command: { type: string, description: "Одна строка для root на новой машине; пусто - у нового релея ещё нет выходов" }
+        expires_at: { type: string, format: date-time }
+        firewall: { type: string, enum: [opened, not_configured, failed, not_needed], description: "Открыт ли адрес выхода на мастере" }
     Paging:
       type: object
       required: [total, limit, offset]
@@ -718,6 +947,62 @@ components:
         key: { type: string }
         kind: { $ref: '#/components/schemas/LogErrorKind' }
         count: { type: integer }
+    PairMachine:
+      description: Машина в паре - то же, что Machine, плюс желаемая ревизия по ресурсам и сводный статус.
+      allOf:
+        - $ref: '#/components/schemas/Machine'
+        - type: object
+          required: [status, desired]
+          properties:
+            status:
+              type: string
+              enum: [ok, behind, failed, silent, no_agent, disabled]
+              description: |
+                disabled - enabled=false; no_agent - агент ни разу не отчитывался; silent - отчёт
+                старше 10 минут; failed - хоть один ресурс failed или проверка не пройдена;
+                behind - хоть один ресурс отстаёт от желаемой ревизии; иначе ok.
+            desired:
+              type: array
+              items:
+                type: object
+                required: [resource, revision]
+                properties:
+                  resource: { type: string }
+                  revision: { type: integer }
+    Pair:
+      type: object
+      required: [relay, exits]
+      properties:
+        relay:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/PairMachine' }]
+          description: null - псевдо-пара «без релея» (выходы без relay_code и машины panel)
+        exits:
+          type: array
+          items: { $ref: '#/components/schemas/PairMachine' }
+    DriftItem:
+      type: object
+      required: [target, kind, reason, resource, desired_revision, since]
+      properties:
+        target: { type: string }
+        kind: { type: string, enum: [exit, relay, panel] }
+        relay_code: { type: string }
+        reason: { type: string, enum: [behind, failed, silent] }
+        resource: { type: string, description: "Пусто для silent" }
+        desired_revision: { type: integer, description: "0 для silent" }
+        observed_revision: { type: integer, nullable: true }
+        since: { type: string, format: date-time }
+        seen_at: { type: string, format: date-time, nullable: true }
+        error: { type: string }
+    ApplyLogEntry:
+      type: object
+      required: [at, resource, status]
+      properties:
+        at: { type: string, format: date-time }
+        resource: { type: string, description: "Ресурс или check:<имя> для локальной проверки" }
+        revision: { type: integer, nullable: true }
+        status: { type: string }
+        error: { type: string }
     Error:
       type: object
       required: [code, message]

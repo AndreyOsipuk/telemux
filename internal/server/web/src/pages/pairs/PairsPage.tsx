@@ -1,156 +1,124 @@
-// «Пары» - главный экран (docs/PLAN.md, раздел 3): релей, два его сервера, два выхода;
-// желаемое против применённого, версии и канарейки. Мультивыбор машин с общим действием
-// «применить сейчас» - как bulk-обновление нод в NodesPage форка 3x-ui.
+// «Пары» - главный экран (docs/PLAN.md, раздел 3): релей и его выходы; у каждой
+// машины сводный статус, желаемое против применённого по ресурсам, версия агента,
+// мост и проверки. Клик по машине - история применений. Данные - /api/v1/pairs,
+// постранично по релеям; псевдо-пара «без релея» (relay: null) - в конце списка.
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { App, Button, Card, Empty, Space, Tag, Typography } from 'antd';
-import { CheckCircleOutlined, ReloadOutlined, ThunderboltOutlined, WarningOutlined } from '@ant-design/icons';
+import { Button, Card, Drawer, Empty, Pagination, Space, Tag, Typography } from 'antd';
+import { CheckCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 
-import { api, USES_MOCKS } from '@/api/client';
-import { describeError } from '@/api/errors';
-import { qk, useIsMaster, usePairs } from '@/api/queries';
-import type { Pair, Target } from '@/api/types';
+import { usePairs } from '@/api/queries';
+import type { Pair, PairMachine, PairStatus } from '@/api/types';
 import ErrorAlert from '@/components/ErrorAlert';
-import MockBanner from '@/components/MockBanner';
-import PairTable, { isDrifting, pairRows } from './PairTable';
+import { usePaging } from '@/hooks/usePaging';
+import PairTable, { pairKey, pairMachines } from './PairTable';
+import TargetHistory from './TargetHistory';
+
+const SUMMARY_COLOR: Record<Exclude<PairStatus, 'ok'>, string> = {
+  behind: 'processing',
+  failed: 'error',
+  silent: 'warning',
+  no_agent: 'default',
+  disabled: 'default',
+};
+
+// Сколько машин пары в каждом статусе, кроме ok.
+export function statusCounts(p: Pair): Partial<Record<PairStatus, number>> {
+  const out: Partial<Record<PairStatus, number>> = {};
+  for (const m of pairMachines(p)) out[m.status] = (out[m.status] ?? 0) + 1;
+  return out;
+}
 
 function PairSummary({ pair }: { pair: Pair }) {
   const { t } = useTranslation();
-  const rows = pairRows(pair);
-  const drift = rows.filter(isDrifting).length;
-  const down = rows.filter((r) => r.status === 'offline').length;
+  const counts = statusCounts(pair);
+  const problems = (Object.keys(SUMMARY_COLOR) as (keyof typeof SUMMARY_COLOR)[]).filter((s) => counts[s]);
+  if (problems.length === 0) {
+    return (
+      <Tag icon={<CheckCircleOutlined />} color="success">
+        {t('pairs.allOk')}
+      </Tag>
+    );
+  }
   return (
     <Space size={4} wrap>
-      {drift === 0 && down === 0 && (
-        <Tag icon={<CheckCircleOutlined />} color="success">
-          {t('pairs.allApplied')}
+      {problems.map((s) => (
+        <Tag key={s} color={SUMMARY_COLOR[s]}>
+          {t(`status.${s}`)}: {counts[s]}
         </Tag>
-      )}
-      {drift > 0 && (
-        <Tag icon={<WarningOutlined />} color="warning">
-          {t('pairs.driftCount', { count: drift })}
-        </Tag>
-      )}
-      {down > 0 && <Tag color="error">{t('pairs.offlineCount', { count: down })}</Tag>}
+      ))}
     </Space>
   );
 }
 
 export default function PairsPage() {
   const { t } = useTranslation();
-  const { message } = App.useApp();
-  const qc = useQueryClient();
-  const isMaster = useIsMaster();
-  const pairs = usePairs();
-  // Выбор - по каждой паре отдельно, общий список - для bulk-действия.
-  const [selection, setSelection] = useState<Record<string, string[]>>({});
-  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const paging = usePaging(20);
+  const pairs = usePairs(paging.pageSize, paging.offset);
+  const [opened, setOpened] = useState<PairMachine | null>(null);
 
-  const selected = useMemo(() => Object.values(selection).flat(), [selection]);
+  const { syncTotal } = paging;
+  const total = pairs.data?.paging.total;
+  useEffect(() => syncTotal(total), [syncTotal, total]);
 
-  const mark = (codes: string[], on: boolean) =>
-    setBusy((prev) => {
-      const next = new Set(prev);
-      codes.forEach((c) => (on ? next.add(c) : next.delete(c)));
-      return next;
-    });
-
-  const apply = useMutation({
-    mutationFn: async (codes: string[]) => {
-      mark(codes, true);
-      try {
-        // Ошибка на одной машине не должна отменять остальные.
-        return await Promise.allSettled(codes.map((c) => api.applyTarget(c)));
-      } finally {
-        mark(codes, false);
-      }
-    },
-    onSuccess: (results, codes) => {
-      const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
-      if (failed.length === 0) {
-        message.success(t('pairs.applyQueued', { count: codes.length }));
-      } else {
-        message.error(`${t('pairs.applyFailed', { count: failed.length })}: ${describeError(failed[0].reason, t)}`);
-      }
-      setSelection({});
-      void qc.invalidateQueries({ queryKey: qk.pairs });
-    },
-  });
-
-  const retry = useMutation({
-    mutationFn: (code: string) => api.retryTarget(code),
-    onSuccess: (_r, code) => {
-      message.success(t('pairs.retryQueued', { name: code }));
-      void qc.invalidateQueries({ queryKey: qk.pairs });
-    },
-    onError: (e) => message.error(describeError(e, t)),
-  });
-
-  // mutate у react-query стабилен между рендерами - колонки таблиц не пересобираются.
-  const applyMutate = apply.mutate;
-  const retryMutate = retry.mutate;
-  const onApply = useCallback((tg: Target) => applyMutate([tg.code]), [applyMutate]);
-  const onRetry = useCallback((tg: Target) => retryMutate(tg.code), [retryMutate]);
+  const onOpen = useCallback((m: PairMachine) => setOpened(m), []);
+  const list = pairs.data?.data;
 
   return (
     <>
       <div className="page-header">
         <h1>{t('menu.pairs')}</h1>
-        <Space wrap>
-          {selected.length > 0 && (
-            <Typography.Text type="secondary">{t('pairs.selected', { count: selected.length })}</Typography.Text>
-          )}
-          <Button
-            type="primary"
-            icon={<ThunderboltOutlined />}
-            disabled={!isMaster || selected.length === 0}
-            loading={apply.isPending}
-            onClick={() => apply.mutate(selected)}
-          >
-            {t('pairs.applySelected')}
-          </Button>
-          <Button icon={<ReloadOutlined />} onClick={() => pairs.refetch()} loading={pairs.isFetching}>
-            {t('common.refresh')}
-          </Button>
-        </Space>
+        <Button icon={<ReloadOutlined />} onClick={() => pairs.refetch()} loading={pairs.isFetching}>
+          {t('common.refresh')}
+        </Button>
       </div>
-      {USES_MOCKS.pairs && <MockBanner />}
       {pairs.isError && <ErrorAlert error={pairs.error} onRetry={() => pairs.refetch()} />}
       {pairs.isPending && <Card loading />}
-      {pairs.data?.length === 0 && (
+      {list?.length === 0 && (
         <Card>
           <Empty description={t('pairs.empty')} />
         </Card>
       )}
       <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-        {pairs.data?.map((p) => (
+        {list?.map((p) => (
           <Card
-            key={p.code}
+            key={pairKey(p)}
             size="small"
+            data-testid={`pair-${pairKey(p)}`}
             title={
-              <Space wrap>
-                <span>{t('pairs.pairTitle', { name: p.name })}</span>
-                <Typography.Text type="secondary" className="mono">
-                  {p.code}
-                </Typography.Text>
-              </Space>
+              p.relay ? (
+                <Space wrap>
+                  <span>{t('pairs.relayTitle')}</span>
+                  <Typography.Text strong className="mono">
+                    {p.relay.code}
+                  </Typography.Text>
+                </Space>
+              ) : (
+                <Space wrap>
+                  <span>{t('pairs.noRelay')}</span>
+                  <Typography.Text type="secondary">{t('pairs.noRelayHint')}</Typography.Text>
+                </Space>
+              )
             }
             extra={<PairSummary pair={p} />}
           >
-            <PairTable
-              pair={p}
-              isMaster={isMaster}
-              selected={selection[p.code] ?? []}
-              onSelectionChange={(codes) => setSelection((s) => ({ ...s, [p.code]: codes }))}
-              onApply={onApply}
-              onRetry={onRetry}
-              busy={busy}
-            />
+            <PairTable pair={p} onOpen={onOpen} />
           </Card>
         ))}
+        {list !== undefined && (total ?? 0) > 0 && (
+          <Pagination align="end" {...paging.pagination(total)} />
+        )}
       </Space>
+      <Drawer
+        open={opened !== null}
+        onClose={() => setOpened(null)}
+        size="large"
+        destroyOnHidden
+        title={opened ? t('history.title', { code: opened.code }) : undefined}
+      >
+        {opened && <TargetHistory code={opened.code} />}
+      </Drawer>
     </>
   );
 }

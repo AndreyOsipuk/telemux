@@ -22,6 +22,10 @@ type fakeAgents struct {
 	observed []store.ObservedReport
 
 	machines              []store.Machine
+	pairs                 []store.Pair
+	drift                 []store.DriftItem
+	applyLog              map[string][]store.ApplyLogEntry
+	fail                  error // ошибка базы для Pairs
 	lastLimit, lastOffset int
 	lastFilter            store.MachineFilter
 
@@ -35,8 +39,9 @@ type fakeAgents struct {
 	lastSince  time.Time
 	lastMach   string
 
-	pruned       int
-	prunedBefore time.Time
+	pruned        int
+	prunedBefore  time.Time
+	lastThreshold time.Duration
 }
 
 func (f *fakeAgents) TargetByAgentToken(_ context.Context, token string) (string, error) {

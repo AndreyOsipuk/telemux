@@ -1,55 +1,91 @@
-// Раскрывающаяся строка машины: последняя ошибка и история применений (apply-log).
-// Образец - NodeHistoryPanel из форка 3x-ui; код написан заново.
+// История применений и проверок машины (/api/v1/targets/{code}/apply-log), новые
+// первыми, постранично. Образец - NodeHistoryPanel из форка 3x-ui; код написан заново.
 
+import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Empty, Spin, Tag, Timeline, Typography } from 'antd';
+import { Table, Tag, Typography } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
 
 import { useApplyLog } from '@/api/queries';
-import type { ApplyResult, Target } from '@/api/types';
-import { describeError } from '@/api/errors';
+import type { ApplyLogEntry } from '@/api/types';
+import ErrorAlert from '@/components/ErrorAlert';
+import { usePaging } from '@/hooks/usePaging';
 import { formatDateTime } from '@/utils/format';
 
-const RESULT_COLOR: Record<ApplyResult, string> = {
-  applied: 'green',
-  pending: 'blue',
-  rejected: 'red',
-  rolled_back: 'orange',
-  failed: 'red',
+const STATUS_COLOR: Record<string, string> = {
+  applied: 'success',
+  ok: 'success',
+  pending: 'processing',
+  compared: 'gold',
+  failed: 'error',
 };
 
-export default function TargetHistory({ target }: { target: Target }) {
+const KNOWN_STATUS = new Set(Object.keys(STATUS_COLOR));
+const CHECK_PREFIX = 'check:';
+
+export default function TargetHistory({ code }: { code: string }) {
   const { t } = useTranslation();
-  const log = useApplyLog(target.code);
+  const paging = usePaging(20);
+  const log = useApplyLog(code, paging.pageSize, paging.offset);
+  const { syncTotal } = paging;
+  const total = log.data?.paging.total;
+  useEffect(() => syncTotal(total), [syncTotal, total]);
+
+  const columns: ColumnsType<ApplyLogEntry> = [
+    {
+      title: t('history.at'),
+      dataIndex: 'at',
+      width: 170,
+      render: (v: string) => <Typography.Text type="secondary">{formatDateTime(v)}</Typography.Text>,
+    },
+    {
+      title: t('history.resource'),
+      dataIndex: 'resource',
+      render: (v: string) =>
+        v.startsWith(CHECK_PREFIX) ? (
+          <span>
+            {t('history.check')} <span className="mono">{v.slice(CHECK_PREFIX.length)}</span>
+          </span>
+        ) : (
+          <span className="mono">{v}</span>
+        ),
+    },
+    {
+      title: t('history.revision'),
+      dataIndex: 'revision',
+      width: 90,
+      align: 'center',
+      render: (v: number | null | undefined) => (v === null || v === undefined ? '-' : <span className="mono">{v}</span>),
+    },
+    {
+      title: t('history.status'),
+      dataIndex: 'status',
+      width: 120,
+      render: (v: string) => (
+        <Tag color={STATUS_COLOR[v] ?? 'default'}>{KNOWN_STATUS.has(v) ? t(`applyStatus.${v}`) : v}</Tag>
+      ),
+    },
+    {
+      title: t('history.error'),
+      dataIndex: 'error',
+      ellipsis: true,
+      render: (v: string | undefined) => (v ? <Typography.Text type="danger">{v}</Typography.Text> : '-'),
+    },
+  ];
 
   return (
-    <div style={{ padding: '4px 8px' }}>
-      {target.last_error && (
-        <Alert type="error" showIcon style={{ marginBottom: 12 }} title={t('pairs.lastError')} description={target.last_error} />
-      )}
-      <Typography.Text type="secondary">{t('pairs.history')}</Typography.Text>
-      <div style={{ marginTop: 12 }}>
-        {log.isPending ? (
-          <Spin size="small" />
-        ) : log.isError ? (
-          <Typography.Text type="danger">{describeError(log.error, t)}</Typography.Text>
-        ) : log.data.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('pairs.noHistory')} />
-        ) : (
-          <Timeline
-            items={log.data.map((e) => ({
-              color: RESULT_COLOR[e.result],
-              content: (
-                <span>
-                  <Typography.Text type="secondary">{formatDateTime(e.at)}</Typography.Text>{' '}
-                  <Tag className="mono">rev {e.rev}</Tag>
-                  <Tag color={RESULT_COLOR[e.result]}>{t(`applyResult.${e.result}`)}</Tag>
-                  {e.message && <Typography.Text>{e.message}</Typography.Text>}
-                </span>
-              ),
-            }))}
-          />
-        )}
-      </div>
-    </div>
+    <>
+      {log.isError && <ErrorAlert error={log.error} onRetry={() => log.refetch()} />}
+      <Table<ApplyLogEntry>
+        rowKey={(e) => `${e.at}/${e.resource}/${e.status}`}
+        size="small"
+        columns={columns}
+        dataSource={log.data?.data ?? []}
+        loading={log.isPending || (log.isFetching && log.isPlaceholderData)}
+        scroll={{ x: 640 }}
+        locale={{ emptyText: log.isSuccess ? t('history.empty') : <span /> }}
+        pagination={paging.pagination(total, { size: 'small' })}
+      />
+    </>
   );
 }

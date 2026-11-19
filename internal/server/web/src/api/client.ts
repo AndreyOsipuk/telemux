@@ -1,13 +1,15 @@
-// Ручки API, которыми пользуется панель. Пути - текущие (/api/...). Переход на
-// /api/v1 и сгенерированный клиент - вместе с api/openapi.yaml.
+// Ручки API, которыми пользуется панель. Флот (машины, пары, дрейф, журнал
+// применений) - /api/v1 по api/openapi.yaml; остальное - старые пути /api/...
 
 import { request } from './http';
-import { delay, mockApplyLog, mockDrift, mockPairs } from './mocks';
 import type {
   ApplyLogEntry,
   ClusterNode,
   DriftResponse,
+  JoinCommand,
+  Machine,
   Me,
+  NewTarget,
   NewUser,
   Page,
   Pair,
@@ -17,9 +19,7 @@ import type {
 } from './types';
 
 const enc = encodeURIComponent;
-
-// Экраны на заглушках: ручек pairs/drift/apply-log на мастере ещё нет.
-export const USES_MOCKS = { pairs: true, drift: true } as const;
+const paging = (limit: number, offset: number) => `limit=${limit}&offset=${offset}`;
 
 export const api = {
   me: () => request<Me>('/api/me'),
@@ -52,10 +52,16 @@ export const api = {
       method: 'POST',
     }),
 
-  // ---- заглушки (USES_MOCKS) ----
-  pairs: (): Promise<Pair[]> => delay(mockPairs()),
-  drift: (thresholdSeconds?: number): Promise<DriftResponse> => delay(mockDrift(thresholdSeconds)),
-  applyLog: (target: string): Promise<ApplyLogEntry[]> => delay(mockApplyLog(target)),
-  applyTarget: (target: string): Promise<{ target: string }> => delay({ target }, 400),
-  retryTarget: (target: string): Promise<{ target: string }> => delay({ target }, 400),
+  // ---- флот (/api/v1, постранично, limit до 100) ----
+  machines: (limit: number, offset: number) =>
+    request<Page<Machine>>(`/api/v1/machines?${paging(limit, offset)}`),
+  pairs: (limit: number, offset: number) => request<Page<Pair>>(`/api/v1/pairs?${paging(limit, offset)}`),
+  drift: (thresholdSeconds: number, limit: number, offset: number) =>
+    request<DriftResponse>(`/api/v1/drift?threshold=${thresholdSeconds}&${paging(limit, offset)}`),
+  // Добавить машину: одноразовая команда установки агента сразу в ответе (201).
+  createTarget: (body: NewTarget) => request<JoinCommand>('/api/v1/targets', { method: 'POST', body }),
+  // Новая одноразовая команда для существующей машины; прежняя неиспользованная сгорает.
+  createJoin: (code: string) => request<JoinCommand>(`/api/v1/targets/${enc(code)}/join`, { method: 'POST' }),
+  applyLog: (code: string, limit: number, offset: number) =>
+    request<Page<ApplyLogEntry>>(`/api/v1/targets/${enc(code)}/apply-log?${paging(limit, offset)}`),
 };

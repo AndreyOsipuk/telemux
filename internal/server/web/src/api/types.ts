@@ -61,74 +61,40 @@ export interface NewUser {
   max_tcp_conns?: number | null;
 }
 
-export interface Paging {
-  total: number;
-  limit: number;
-  offset: number;
-}
+// ---- флот: машины, пары, дрейф, журнал применений (api/openapi.yaml) ----
+
+export type Paging = components['schemas']['Paging'];
 
 export interface Page<T> {
   data: T[];
   paging: Paging;
 }
 
-// ---- пары и дрейф (ручек ещё нет, данные - заглушки, см. mocks.ts) ----
+export type Machine = components['schemas']['Machine'];
+export type MachineKind = Machine['kind'];
+export type ObservedCheck = components['schemas']['ObservedCheck'];
+export type ObservedResource = Machine['observed'][number];
+export type PairMachine = components['schemas']['PairMachine'];
+// Сводный статус машины в паре: ok, behind, failed, silent, no_agent, disabled.
+export type PairStatus = PairMachine['status'];
+export type DesiredResource = PairMachine['desired'][number];
+// relay: null - псевдо-пара «без релея».
+export type Pair = components['schemas']['Pair'];
+export type DriftItem = components['schemas']['DriftItem'];
+export type DriftReason = DriftItem['reason'];
+export type ApplyLogEntry = components['schemas']['ApplyLogEntry'];
 
-export type MachineRole = 'relay' | 'server' | 'exit';
-export type MachineStatus = 'online' | 'degraded' | 'offline' | 'unknown';
-export type ApplyResult = 'applied' | 'rejected' | 'rolled_back' | 'failed' | 'pending';
-
-export interface BinaryVersion {
-  name: 'telemt' | 'mtg' | 'telemux';
-  version: string;
-  // Машина в канарейке раскатки - версия новее, чем на остальных.
-  canary: boolean;
-}
-
-// Машина-цель: что ей велено (desired) и что она применила (applied).
-export interface Target {
-  code: string;
-  name: string;
-  role: MachineRole;
-  status: MachineStatus;
-  desired_rev: number;
-  applied_rev: number | null;
-  binary: BinaryVersion;
-  last_seen_at: string | null;
-  // Через какой мост (код машины-выхода) релей получает состояние; null - напрямую.
-  via_bridge: string | null;
-  last_error: string | null;
-}
-
-export interface ApplyLogEntry {
-  at: string;
-  target: string;
-  rev: number;
-  result: ApplyResult;
-  message: string | null;
-}
-
-// Пара: релей, два его сервера, два выхода.
-export interface Pair {
-  code: string;
-  name: string;
-  relay: Target;
-  servers: Target[];
-  exits: Target[];
-}
-
-export interface DriftItem {
-  target: string;
-  name: string;
-  pair: string;
-  role: MachineRole;
-  desired_rev: number;
-  applied_rev: number | null;
-  // С какого момента желаемое не совпадает с применённым.
-  since: string;
-  last_error: string | null;
-}
+// Добавление машины и команда установки агента (createTarget, createJoin).
+export type NewTarget = components['schemas']['NewTarget'];
+export type NewTargetKind = NewTarget['kind'];
+export type TargetResource = NonNullable<NewTarget['resources']>[number];
+export type JoinCommand = components['schemas']['JoinCommand'];
+// opened, not_configured, failed, not_needed; у старого мастера поля нет.
+export type FirewallStatus = NonNullable<JoinCommand['firewall']>;
 
 export interface DriftResponse extends Page<DriftItem> {
   threshold_seconds: number;
 }
+
+// Статус управляющего узла кластера (/api/nodes) по последнему heartbeat.
+export type MachineStatus = 'online' | 'degraded' | 'offline' | 'unknown';

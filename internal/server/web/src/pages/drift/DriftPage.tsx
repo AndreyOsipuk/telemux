@@ -1,114 +1,122 @@
-// «Дрейф» (docs/PLAN.md, раздел 3): только машины, где желаемое не совпадает с
-// применённым дольше порога.
+// «Дрейф» (docs/PLAN.md, раздел 3): строки (машина, ресурс), где применённое
+// расходится с желаемым дольше порога (/api/v1/drift). Причины: behind - машина
+// отстаёт от желаемой ревизии, failed - агент сообщил об отказе, silent - агент
+// молчит дольше порога (строка на машину, ресурса нет). Постранично по paging.total.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { App, Button, Card, Empty, Result, Segmented, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { Button, Card, Result, Segmented, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { ReloadOutlined } from '@ant-design/icons';
 
-import { api, USES_MOCKS } from '@/api/client';
-import { describeError } from '@/api/errors';
-import { useDrift, useIsMaster } from '@/api/queries';
-import type { DriftItem } from '@/api/types';
+import { useDrift } from '@/api/queries';
+import type { DriftItem, DriftReason } from '@/api/types';
 import ErrorAlert from '@/components/ErrorAlert';
-import MockBanner from '@/components/MockBanner';
-import { secondsSince, useDuration, useNow } from '@/hooks/useRelativeTime';
+import { ErrorText, KindTag } from '@/components/FleetTags';
+import { usePaging } from '@/hooks/usePaging';
+import { secondsSince, useDuration, useNow, useRelativeTime } from '@/hooks/useRelativeTime';
 import { formatDateTime } from '@/utils/format';
 
-export const THRESHOLDS = [60, 300, 900, 3600] as const;
+export const THRESHOLDS = [60, 300, 600, 1800, 3600] as const;
+export const DEFAULT_THRESHOLD = 600;
 
-// Сервер уже отдаёт только расхождения дольше порога; фильтр на клиенте страхует
-// от устаревшего кэша после смены порога.
-export function overThreshold(items: DriftItem[], thresholdSec: number, now: number): DriftItem[] {
-  return items.filter((d) => (secondsSince(d.since, now) ?? 0) >= thresholdSec);
-}
+const REASON_COLOR: Record<DriftReason, string> = { behind: 'processing', failed: 'error', silent: 'warning' };
+
+export const driftKey = (d: DriftItem) => `${d.target}/${d.reason}/${d.resource}`;
 
 export default function DriftPage() {
   const { t } = useTranslation();
-  const { message } = App.useApp();
-  const qc = useQueryClient();
-  const isMaster = useIsMaster();
   const now = useNow();
   const duration = useDuration();
-  const [threshold, setThreshold] = useState<number>(300);
-  const drift = useDrift(threshold);
+  const relative = useRelativeTime();
+  const [threshold, setThreshold] = useState<number>(DEFAULT_THRESHOLD);
+  const paging = usePaging(20);
+  const drift = useDrift(threshold, paging.pageSize, paging.offset);
 
-  const apply = useMutation({
-    mutationFn: (code: string) => api.applyTarget(code),
-    onSuccess: (_r, code) => {
-      message.success(t('pairs.retryQueued', { name: code }));
-      void qc.invalidateQueries({ queryKey: ['drift'] });
-    },
-    onError: (e) => message.error(describeError(e, t)),
-  });
-
-  const rows = useMemo(() => overThreshold(drift.data?.data ?? [], threshold, now), [drift.data, threshold, now]);
+  const { syncTotal } = paging;
+  const total = drift.data?.paging.total;
+  useEffect(() => syncTotal(total), [syncTotal, total]);
 
   const columns: ColumnsType<DriftItem> = [
     {
-      title: t('pairs.machine'),
-      width: 200,
-      dataIndex: 'name',
+      title: t('fleet.machine'),
+      width: 190,
+      dataIndex: 'target',
       render: (v: string, d) => (
         <Space size={8}>
-          <Tag style={{ margin: 0 }}>{t(`roles.${d.role}`)}</Tag>
-          <Typography.Text strong>{v}</Typography.Text>
+          <KindTag kind={d.kind} />
+          <span>
+            <Typography.Text strong className="mono">
+              {v}
+            </Typography.Text>
+            {d.relay_code && (
+              <Typography.Text type="secondary" className="mono" style={{ display: 'block', fontSize: 12 }}>
+                {t('drift.relayOf', { code: d.relay_code })}
+              </Typography.Text>
+            )}
+          </span>
         </Space>
       ),
     },
     {
-      title: t('drift.pair'),
-      width: 110,
-      dataIndex: 'pair',
-      render: (v: string) => <span className="mono">{v}</span>,
-    },
-    {
-      title: t('pairs.revision'),
-      width: 110,
-      align: 'center',
-      render: (_v, d) => (
-        <Tag color="error" className="mono">
-          {d.applied_rev ?? '-'} → {d.desired_rev}
-        </Tag>
-      ),
-    },
-    {
-      title: t('drift.duration'),
-      width: 130,
-      dataIndex: 'since',
-      defaultSortOrder: 'descend',
-      sorter: (a, b) => Date.parse(b.since) - Date.parse(a.since),
-      render: (v: string) => (
-        <Tooltip title={formatDateTime(v)}>{duration(secondsSince(v, now) ?? 0)}</Tooltip>
-      ),
-    },
-    {
       title: t('drift.reason'),
-      dataIndex: 'last_error',
-      ellipsis: true,
-      render: (v: string | null) =>
-        v ? <Typography.Text type="danger">{v}</Typography.Text> : <Typography.Text type="secondary">{t('drift.noError')}</Typography.Text>,
-    },
-    {
-      title: t('common.actions'),
-      width: 90,
-      align: 'right',
-      render: (_v, d) => (
-        <Tooltip title={isMaster ? t('pairs.applyNow') : t('role.writeOnMaster')}>
-          <Button
-            size="small"
-            icon={<ThunderboltOutlined />}
-            disabled={!isMaster}
-            loading={apply.isPending && apply.variables === d.target}
-            onClick={() => apply.mutate(d.target)}
-            aria-label={`${t('pairs.applyNow')} ${d.name}`}
-          />
+      width: 140,
+      dataIndex: 'reason',
+      render: (v: DriftReason) => (
+        <Tooltip title={t(`driftReasonHint.${v}`)}>
+          <Tag color={REASON_COLOR[v]}>{t(`driftReason.${v}`)}</Tag>
         </Tooltip>
       ),
     },
+    {
+      title: t('drift.resource'),
+      width: 150,
+      dataIndex: 'resource',
+      render: (v: string) => (v ? <span className="mono">{v}</span> : <Typography.Text type="secondary">-</Typography.Text>),
+    },
+    {
+      title: (
+        <Tooltip title={t('fleet.resourcesHint')}>
+          <span>{t('drift.revisions')}</span>
+        </Tooltip>
+      ),
+      width: 120,
+      align: 'center',
+      render: (_v, d) =>
+        d.reason === 'silent' ? (
+          <Typography.Text type="secondary">-</Typography.Text>
+        ) : (
+          <Tag color="error" className="mono" data-testid={`rev-${driftKey(d)}`}>
+            {d.observed_revision ?? '-'} / {d.desired_revision}
+          </Tag>
+        ),
+    },
+    {
+      title: t('drift.since'),
+      width: 130,
+      dataIndex: 'since',
+      render: (v: string) => <Tooltip title={formatDateTime(v)}>{duration(secondsSince(v, now) ?? 0)}</Tooltip>,
+    },
+    {
+      title: t('fleet.lastSeen'),
+      width: 140,
+      dataIndex: 'seen_at',
+      render: (v: string | null | undefined) =>
+        v ? (
+          <Tooltip title={formatDateTime(v)}>{relative(secondsSince(v, now))}</Tooltip>
+        ) : (
+          <Typography.Text type="secondary">{t('fleet.noAgent')}</Typography.Text>
+        ),
+    },
+    {
+      title: t('drift.error'),
+      dataIndex: 'error',
+      render: (v: string | undefined) =>
+        v ? <ErrorText text={v} /> : <Typography.Text type="secondary">{t('drift.noError')}</Typography.Text>,
+    },
   ];
+
+  const empty = drift.isSuccess && total === 0;
 
   return (
     <>
@@ -118,7 +126,10 @@ export default function DriftPage() {
           <Typography.Text type="secondary">{t('drift.threshold')}</Typography.Text>
           <Segmented<number>
             value={threshold}
-            onChange={setThreshold}
+            onChange={(v) => {
+              setThreshold(v);
+              paging.reset();
+            }}
             options={THRESHOLDS.map((s) => ({ value: s, label: duration(s) }))}
           />
           <Button icon={<ReloadOutlined />} onClick={() => drift.refetch()} loading={drift.isFetching}>
@@ -126,21 +137,21 @@ export default function DriftPage() {
           </Button>
         </Space>
       </div>
-      {USES_MOCKS.drift && <MockBanner />}
       {drift.isError && <ErrorAlert error={drift.error} onRetry={() => drift.refetch()} />}
       <Card>
-        {!drift.isPending && !drift.isError && rows.length === 0 ? (
+        {empty ? (
           <Result status="success" title={t('drift.none')} subTitle={t('drift.noneHint', { threshold: duration(threshold) })} />
         ) : (
           <Table<DriftItem>
-            rowKey="target"
+            rowKey={driftKey}
             size="middle"
             columns={columns}
-            dataSource={rows}
-            loading={drift.isPending}
-            pagination={false}
-            scroll={{ x: 720 }}
-            locale={{ emptyText: <Empty description={t('drift.none')} /> }}
+            dataSource={drift.data?.data ?? []}
+            loading={drift.isPending || (drift.isFetching && drift.isPlaceholderData)}
+            scroll={{ x: 1000 }}
+            // Пока грузится или при ошибке - не «расхождений нет», а пусто.
+            locale={{ emptyText: drift.isSuccess ? t('drift.none') : <span /> }}
+            pagination={paging.pagination(total)}
           />
         )}
       </Card>

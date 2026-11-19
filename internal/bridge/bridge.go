@@ -6,6 +6,9 @@
 // его, когда мастер недоступен; отчёты релея при недоступном мастере ставит в
 // очередь и досылает. Своего доступа к чужим бандлам у моста нет: кэш отдаётся
 // только тому токену, который мастер принял.
+//
+// Для установки агента на новый релей мост так же пересылает /v1/join/* (скрипт,
+// бинарь потоком, обмен одноразового токена) - без кэша и очереди.
 package bridge
 
 import (
@@ -19,6 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +54,7 @@ type pendingReport struct {
 type Bridge struct {
 	cfg    Config
 	client *http.Client
+	stream *http.Client // join: без общего таймаута - бинарь идёт потоком со скоростью туннеля
 
 	mu      sync.Mutex
 	cache   map[string]cacheEntry    // sha256(токен) → последний бандл
@@ -71,9 +76,12 @@ func New(cfg Config) (*Bridge, error) {
 	if cfg.MasterPin != "" {
 		tr.TLSClientConfig = tlspin.Config(cfg.MasterPin)
 	}
+	streamTr := tr.Clone()
+	streamTr.ResponseHeaderTimeout = 30 * time.Second
 	return &Bridge{
 		cfg:     cfg,
 		client:  &http.Client{Timeout: 90 * time.Second, Transport: tr}, // long-poll мастера - до 60 с
+		stream:  &http.Client{Transport: streamTr},                      // ограничен контекстом запроса
 		cache:   map[string]cacheEntry{},
 		pending: map[string]pendingReport{},
 	}, nil
@@ -105,7 +113,92 @@ func (b *Bridge) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/desired", b.handleDesired)
 	mux.HandleFunc("POST /v1/observed", b.handleObserved)
 	mux.HandleFunc("POST /v1/runtime", b.handleRuntime)
+	// Установка агента релея: скрипт, бинарь и обмен токена. Токена агента у
+	// релея ещё нет - запрос авторизует одноразовый токен в пути, его проверяет мастер.
+	mux.HandleFunc("GET /v1/join/{token}", b.handleJoin(http.MethodGet, ""))
+	mux.HandleFunc("GET /v1/join/{token}/telemux", b.handleJoin(http.MethodGet, "/telemux"))
+	mux.HandleFunc("POST /v1/join/{token}/agent", b.handleJoin(http.MethodPost, "/agent"))
 	return mux
+}
+
+// joinTokenRe - одноразовый токен установки: 64 hex. Иное мастеру не пересылается.
+var joinTokenRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// handleJoin пересылает join-запрос мастерам по очереди и отдаёт ответ потоком
+// (бинарь - около 20 МБ, в память целиком не читается). Сбой сети, 5xx или
+// 409 not_master (адрес оказался репликой) - следующий мастер; если ответили
+// только реплики, клиенту уходит последний 409. Кэша и очереди у join нет.
+func (b *Bridge) handleJoin(method, suffix string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var notMaster *upstream
+		token := r.PathValue("token")
+		if !joinTokenRe.MatchString(token) {
+			writeError(w, http.StatusNotFound, "not_found", "не найдено")
+			return
+		}
+		pathQuery := "/v1/join/" + token + suffix
+		if q := r.URL.Query().Get("format"); q == "env" || q == "json" {
+			pathQuery += "?format=" + q
+		}
+		for _, base := range b.cfg.MasterURLs {
+			req, err := http.NewRequestWithContext(r.Context(), method, strings.TrimRight(base, "/")+pathQuery, nil)
+			if err != nil {
+				continue
+			}
+			resp, err := b.stream.Do(req)
+			if err != nil {
+				b.cfg.Log.Warn("мост: мастер не ответил на join", "master", base, "err", err)
+				continue
+			}
+			if resp.StatusCode >= 500 {
+				_ = resp.Body.Close()
+				b.cfg.Log.Warn("мост: мастер ответил сбоем на join", "master", base, "status", resp.StatusCode)
+				continue
+			}
+			if resp.StatusCode == http.StatusConflict {
+				// 409 - короткий JSON, его можно прочитать целиком и проверить код.
+				data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+				_ = resp.Body.Close()
+				if err != nil {
+					b.cfg.Log.Warn("мост: ответ мастера на join не читается", "master", base, "err", err)
+					continue
+				}
+				up := &upstream{status: resp.StatusCode, header: resp.Header, body: data}
+				if isNotMaster(resp.StatusCode, data) {
+					b.cfg.Log.Warn("мост: адрес не мастер, join идёт к следующему", "master", base)
+					notMaster = up
+					continue
+				}
+				writeUpstream(w, up)
+				return
+			}
+			for _, h := range []string{"Content-Type", "Content-Length", "Cache-Control"} {
+				if v := resp.Header.Get(h); v != "" {
+					w.Header().Set(h, v)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			if _, err := io.Copy(w, resp.Body); err != nil {
+				b.cfg.Log.Warn("мост: join оборвался при передаче", "master", base, "err", err)
+			}
+			_ = resp.Body.Close()
+			return
+		}
+		if notMaster != nil {
+			writeUpstream(w, notMaster)
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "мастер недоступен")
+	}
+}
+
+// writeUpstream отдаёт клиенту прочитанный ответ мастера.
+func writeUpstream(w http.ResponseWriter, up *upstream) {
+	if ct := up.header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.WriteHeader(up.status)
+	_, _ = w.Write(up.body)
 }
 
 // upstream - один ответ мастера.

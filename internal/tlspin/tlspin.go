@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -98,4 +99,23 @@ func FingerprintFile(certFile string) (string, error) {
 		return "", fmt.Errorf("%s: нет PEM-сертификата", certFile)
 	}
 	return Fingerprint(block.Bytes), nil
+}
+
+// SPKIPinFile - sha256 открытого ключа (SubjectPublicKeyInfo) сертификата из
+// PEM-файла в base64: формат curl --pinnedpubkey 'sha256//<значение>'.
+func SPKIPinFile(certFile string) (string, error) {
+	data, err := os.ReadFile(certFile)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("%s: нет PEM-сертификата", certFile)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", certFile, err)
+	}
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return base64.StdEncoding.EncodeToString(sum[:]), nil
 }

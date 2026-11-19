@@ -24,8 +24,7 @@
     "yes": "yes",
     "no": "no",
     "total_one": "{{count}} total",
-    "total_other": "{{count}} total",
-    "mockData": "Demo data: the master has no endpoints for this yet, the screen shows stubs. Actions change nothing."
+    "total_other": "{{count}} total"
   },
   "auth": {
     "subtitle": "MTProxy fleet control panel",
@@ -59,19 +58,13 @@
     "online": "online",
     "degraded": "degraded",
     "offline": "offline",
-    "unknown": "unknown"
-  },
-  "roles": {
-    "relay": "relay",
-    "server": "server",
-    "exit": "exit"
-  },
-  "applyResult": {
-    "applied": "applied",
-    "pending": "pending",
-    "rejected": "rejected",
-    "rolled_back": "rolled back",
-    "failed": "failed"
+    "unknown": "unknown",
+    "ok": "ok",
+    "behind": "behind",
+    "failed": "failed",
+    "silent": "silent",
+    "no_agent": "no agent",
+    "disabled": "disabled"
   },
   "time": {
     "never": "never",
@@ -94,46 +87,24 @@
     "days_other": "{{count}} d"
   },
   "pairs": {
-    "pairTitle": "Pair {{name}}",
-    "machine": "Machine",
-    "status": "Status",
-    "revision": "Revision",
-    "revisionHint": "Applied → desired. Green means they match.",
-    "revisionDrift": "Desired {{desired}}, applied {{applied}}",
-    "version": "Version",
-    "canary": "canary",
-    "canaryHint": "Machine is a rollout canary: its version is newer than the rest",
-    "lastSeen": "Seen",
-    "bridge": "Bridge",
-    "direct": "direct",
-    "applyNow": "Apply now",
-    "applySelected": "Apply selected",
-    "retry": "Retry",
-    "selected_one": "{{count}} machine selected",
-    "selected_other": "{{count}} machines selected",
-    "applyQueued_one": "Apply requested for {{count}} machine",
-    "applyQueued_other": "Apply requested for {{count}} machines",
-    "applyFailed_one": "Failed on {{count}} machine",
-    "applyFailed_other": "Failed on {{count}} machines",
-    "retryQueued": "Requested: {{name}}",
-    "allApplied": "all applied",
-    "driftCount_one": "{{count}} mismatch",
-    "driftCount_other": "{{count}} mismatches",
-    "offlineCount_one": "{{count}} offline",
-    "offlineCount_other": "{{count}} offline",
-    "lastError": "Last error",
-    "history": "Apply history",
-    "noHistory": "No applies yet",
+    "relayTitle": "Relay",
+    "noRelay": "No relay",
+    "noRelayHint": "exits without a relay and panel machines",
+    "allOk": "all ok",
+    "noMachines": "No machines",
     "empty": "No pairs yet"
   },
   "drift": {
     "threshold": "Longer than",
-    "pair": "Pair",
-    "duration": "Drifting for",
     "reason": "Reason",
-    "noError": "no error, waiting for the machine",
+    "resource": "Resource",
+    "revisions": "Revision",
+    "since": "Drifting for",
+    "error": "Error",
+    "relayOf": "relay {{code}}",
+    "noError": "no error",
     "none": "No drift",
-    "noneHint": "All machines applied the desired state or have drifted for less than {{threshold}}."
+    "noneHint": "All machines have applied the desired state or have drifted for less than {{threshold}}."
   },
   "users": {
     "username": "Username",
@@ -157,7 +128,12 @@
     "status": "Status",
     "lastSeen": "Seen",
     "disabled": "disabled",
-    "empty": "No machines yet"
+    "fleetTitle": "Fleet machines",
+    "fleetHint": "relays, exits and panels with the telemux agent",
+    "fleetEmpty": "No fleet machines yet",
+    "clusterTitle": "Cluster control nodes",
+    "clusterHint": "telemux master and replicas",
+    "clusterEmpty": "No control nodes yet"
   },
   "sync": {
     "runNow": "Sync now",
@@ -178,5 +154,118 @@
     "missingTitle": "The API specification is not published yet",
     "missingHint": "The master does not serve {{url}} yet. This page will work once the daemon has an OpenAPI spec.",
     "failedTitle": "Failed to load the API specification"
+  },
+  "kinds": {
+    "relay": "relay",
+    "exit": "exit",
+    "panel": "panel"
+  },
+  "resourceState": {
+    "applied": "applied",
+    "behind": "behind the desired revision",
+    "failed": "the agent reported a failure",
+    "pending": "pending",
+    "compared": "compare mode",
+    "missing": "the agent has not reported this resource"
+  },
+  "applyStatus": {
+    "applied": "applied",
+    "ok": "ok",
+    "pending": "pending",
+    "compared": "compared",
+    "failed": "failed"
+  },
+  "fleet": {
+    "machine": "Machine",
+    "status": "Status",
+    "agent": "Agent",
+    "bridge": "Bridge",
+    "direct": "direct",
+    "via": "via {{code}}",
+    "relay": "Relay",
+    "lastSeen": "Seen",
+    "noAgent": "no agent",
+    "resources": "Resources",
+    "resourcesHint": "Applied / desired revision. Green - applied, blue - behind, red - failed.",
+    "revisions": "Applied {{observed}}, desired {{desired}}",
+    "noResources": "no resources",
+    "checks": "Checks",
+    "checkOk": "ok",
+    "checkFailed": "error",
+    "openHistory": "Apply history",
+    "historyOf": "Apply history of {{code}}"
+  },
+  "driftReason": {
+    "behind": "behind",
+    "failed": "failed",
+    "silent": "silent"
+  },
+  "driftReasonHint": {
+    "behind": "The applied revision is lower than the desired one",
+    "failed": "The agent reported a failure to apply",
+    "silent": "The agent has not reported for longer than the threshold"
+  },
+  "history": {
+    "title": "Apply history: {{code}}",
+    "at": "Time",
+    "resource": "Resource",
+    "check": "check",
+    "revision": "Revision",
+    "status": "Status",
+    "error": "Error",
+    "empty": "No entries yet"
+  },
+  "addMachine": {
+    "open": "Add machine",
+    "title": "Add machine",
+    "doneTitle": "Machine {{code}} added",
+    "code": "Code",
+    "codeHint": "lowercase latin letters, digits and hyphen, 2-32 chars, starts with a letter:",
+    "codeRequired": "Enter the machine code",
+    "codeInvalid": "Invalid code: lowercase latin letters, digits and hyphen, 2-32 chars, starting with a letter",
+    "kind": "Role",
+    "resources": "Resources",
+    "resourcesHint": "what the agent applies on the machine; with none the agent only reports",
+    "resource": {
+      "telemt": "telemt - users",
+      "mtg": "mtg - config"
+    },
+    "relay": "Relay",
+    "relayPlaceholder": "relay of this exit",
+    "relayRequired": "Choose a relay",
+    "noRelays": "No relays yet - add a relay first",
+    "address": "Exit public IPv4",
+    "addressHint": "the master opens the agent port for it and the relay reaches the exit at it",
+    "addressRequired": "Enter the exit public IPv4",
+    "addressInvalid": "Expected an IPv4 address like 203.0.113.10",
+    "socks": "socks inbound on the relay",
+    "socksHint": "socks inbound on the relay through which the relay reaches this exit; append the port",
+    "socksInvalid": "Expected socks5://127.0.0.1:port (port 1-65535)",
+    "submit": "Add",
+    "failed": "Could not add the machine",
+    "checkFields": "The server rejected the data - fix the highlighted fields"
+  },
+  "join": {
+    "action": "Install command",
+    "actionOf": "Install command for {{code}}",
+    "titleOf": "Agent install command: {{code}}",
+    "issue": "Issue new command",
+    "failed": "Could not issue the command",
+    "renewWarning": "A new one-time agent install command will be issued. The previous unused command of this machine will stop working.",
+    "hasAgentNote": "This machine's agent already reports - a new command is only needed to reinstall.",
+    "renewedNote": "The previous command of this machine no longer works.",
+    "instruction": "Run as root on the new machine; the agent will start in compare mode.",
+    "copy": "Copy",
+    "copied": "Command copied",
+    "copyManually": "Clipboard is unavailable - the command is selected, copy it with Ctrl+C",
+    "expires": "Valid until {{time}}, one-time",
+    "firewall": {
+      "opened": "The exit address is open on the master",
+      "not_configured": "The firewall chain is not configured on the master - open the agent port for this IP manually",
+      "failed": "Could not open the exit address on the master - open the agent port for this IP manually and check the daemon log",
+      "not_needed": "No need to open the address on the master"
+    },
+    "noExitsTitle": "Relay {{code}} added",
+    "noExits": "The install command appears once the relay has an exit: add an exit of this pair (with its IP and socks entry), then press «Install command» on the relay."
   }
 }

@@ -47,6 +47,124 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Добавить машину (кнопка «Добавить машину» в панели)
+         * @description Заводит машину и сразу выдаёт одноразовую команду установки агента (как POST .../join).
+         *     Только мастер. Код - `^[a-z][a-z0-9-]{1,31}$`, занятый код - 409. Для выхода (`exit`)
+         *     обязательны `relay_code` (существующий релей), `address` (публичный IPv4 выхода) и
+         *     `bridge_socks` (адрес socks-входа на релее, через который релей ходит в этот выход,
+         *     например `socks5://127.0.0.1:10872`). Ресурсы - из `telemt.users`, `mtg.config`.
+         *     Если на мастере настроена цепочка файрвола (`TELEMUX_AGENT_FW_CHAIN`), адрес выхода
+         *     сразу открывается на TLS-порту агентов.
+         *     Новый релей ходит к мастеру через мост своего выхода, а выходов у него ещё нет: машина
+         *     заводится, `command` пустая, токен не выпускается - добавьте выход и вызовите POST .../join.
+         *     Не задан `TELEMUX_AGENT_PUBLIC_URL` или нет сертификата API агентов - 409 до создания машины.
+         */
+        post: operations["createTarget"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/targets/{code}/join": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Новая одноразовая команда установки агента
+         * @description Выдаёт свежий одноразовый токен (живёт 1 час) и команду для новой машины. Прежний
+         *     неиспользованный токен этой машины сгорает. Только мастер. Неизвестная машина - 404.
+         *     Выход идёт на мастер напрямую по TLS с проверкой ключа сертификата (`--pinnedpubkey`);
+         *     релей - через мост первого своего выхода (`-x <bridge_socks> http://<address выхода>:18480`).
+         *     Релей без выходов с адресом и socks - 409 с объяснением.
+         */
+        post: operations["createJoin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/join/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Скрипт установки агента (выполняется на новой машине)
+         * @description bash-скрипт: скачивает бинарь (`/v1/join/{token}/telemux`), меняет токен на токен агента
+         *     (`POST /v1/join/{token}/agent`), пишет /etc/telemux/agent.env, agent.token и юнит
+         *     telemux-agent, запускает агента в режиме compare. Токен не тратится, пока не вызван
+         *     обмен. Просроченный, использованный или неизвестный токен - 404 (без подробностей).
+         *     Доступен на TLS-слушателе агентов и через мост выхода.
+         */
+        get: operations["getJoinScript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/join/{token}/telemux": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Бинарь telemux для новой машины (linux/amd64)
+         * @description Бинарь самого мастера. Токен не тратится. Мастер собран не под linux/amd64 - 503.
+         */
+        get: operations["getJoinBinary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/join/{token}/agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Обмен одноразового токена на токен агента
+         * @description Одноразово - второй вызов 404. Возвращает токен и содержимое agent.env. Только мастер.
+         *     `format=env` - для скрипта без jq: text/plain, первая строка - токен агента, дальше agent.env.
+         */
+        post: operations["exchangeJoin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/targets/{code}/resources/{resource}": {
         parameters: {
             query?: never;
@@ -197,6 +315,77 @@ export interface paths {
          *     убыванию, machine, key, kind. Пустой `key` - строка без пользователя.
          */
         get: operations["listLogErrors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pairs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Пары флота - релей и его выходы
+         * @description Пара - релей (kind=relay) и выходы, у которых relay_code указывает на него.
+         *     Страница идёт по релеям, отсортированным по коду. Выходы без релея и машины
+         *     вида panel попадают в отдельную псевдо-пару с `relay: null` в конце списка
+         *     (её не бывает, если таких машин нет).
+         */
+        get: operations["listPairs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/drift": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Машины, где применённое расходится с желаемым
+         * @description Строка на (машина, ресурс) с проблемой, которая держится дольше порога:
+         *     - `behind` - применённая ревизия меньше желаемой, `since` - время создания желаемой;
+         *     - `failed` - агент сообщил status=failed (resource - ресурс) или не прошла локальная
+         *       проверка (resource - `check:<имя>`, desired_revision 0); `since` - последняя смена
+         *       состояния в apply_log, без записи - seen_at;
+         *     - `silent` - агент не отчитывался дольше порога (одна строка на машину, resource пустой).
+         *     Машина без агента не silent, но её назначенные ресурсы попадают в `behind` с
+         *     `observed_revision: null`.
+         *     Выключенные машины (enabled=false) не попадают.
+         */
+        get: operations["listDrift"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/targets/{code}/apply-log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * История применений и проверок машины
+         * @description Записи apply_log машины, новые первыми. Неизвестная машина - 404.
+         */
+        get: operations["getApplyLog"];
         put?: never;
         post?: never;
         delete?: never;
@@ -394,6 +583,30 @@ export interface components {
              */
             runtime_seen_at?: string | null;
         };
+        NewTarget: {
+            code: string;
+            /** @enum {string} */
+            kind: "exit" | "relay";
+            /** @description Для выхода - его релей */
+            relay_code?: string;
+            /** @description Для выхода - публичный IPv4 */
+            address?: string;
+            /** @description Для выхода - socks-вход на релее к этому выходу, socks5://127.0.0.1:<порт> */
+            bridge_socks?: string;
+            resources: ("telemt.users" | "mtg.config")[];
+        };
+        JoinCommand: {
+            target: string;
+            /** @description Одна строка для root на новой машине; пусто - у нового релея ещё нет выходов */
+            command: string;
+            /** Format: date-time */
+            expires_at: string;
+            /**
+             * @description Открыт ли адрес выхода на мастере
+             * @enum {string}
+             */
+            firewall?: "opened" | "not_configured" | "failed" | "not_needed";
+        };
         Paging: {
             /** @description Всего строк с учётом фильтров */
             total: number;
@@ -538,6 +751,52 @@ export interface components {
             kind: components["schemas"]["LogErrorKind"];
             count: number;
         };
+        /** @description Машина в паре - то же, что Machine, плюс желаемая ревизия по ресурсам и сводный статус. */
+        PairMachine: components["schemas"]["Machine"] & {
+            /**
+             * @description disabled - enabled=false; no_agent - агент ни разу не отчитывался; silent - отчёт
+             *     старше 10 минут; failed - хоть один ресурс failed или проверка не пройдена;
+             *     behind - хоть один ресурс отстаёт от желаемой ревизии; иначе ok.
+             * @enum {string}
+             */
+            status: "ok" | "behind" | "failed" | "silent" | "no_agent" | "disabled";
+            desired: {
+                resource: string;
+                revision: number;
+            }[];
+        };
+        Pair: {
+            /** @description null - псевдо-пара «без релея» (выходы без relay_code и машины panel) */
+            relay: components["schemas"]["PairMachine"] | null;
+            exits: components["schemas"]["PairMachine"][];
+        };
+        DriftItem: {
+            target: string;
+            /** @enum {string} */
+            kind: "exit" | "relay" | "panel";
+            relay_code?: string;
+            /** @enum {string} */
+            reason: "behind" | "failed" | "silent";
+            /** @description Пусто для silent */
+            resource: string;
+            /** @description 0 для silent */
+            desired_revision: number;
+            observed_revision?: number | null;
+            /** Format: date-time */
+            since: string;
+            /** Format: date-time */
+            seen_at?: string | null;
+            error?: string;
+        };
+        ApplyLogEntry: {
+            /** Format: date-time */
+            at: string;
+            /** @description Ресурс или check:<имя> для локальной проверки */
+            resource: string;
+            revision?: number | null;
+            status: string;
+            error?: string;
+        };
         Error: {
             /**
              * @description Машинный код
@@ -672,6 +931,143 @@ export interface operations {
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
             500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    createTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewTarget"];
+            };
+        };
+        responses: {
+            /** @description Машина заведена */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinCommand"];
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    createJoin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Команда установки */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinCommand"];
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    getJoinScript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Скрипт */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/x-shellscript": string;
+                };
+            };
+            404: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    getJoinBinary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Бинарь */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            404: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    exchangeJoin: {
+        parameters: {
+            query?: {
+                format?: "json" | "env";
+            };
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Токен агента */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        target: string;
+                        agent_token: string;
+                        /** @description Готовое содержимое /etc/telemux/agent.env */
+                        agent_env: string;
+                    };
+                    "text/plain": string;
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
             503: components["responses"]["Error"];
         };
     };
@@ -891,6 +1287,102 @@ export interface operations {
             };
             400: components["responses"]["Error"];
             401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listPairs: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница пар */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Pair"][];
+                        paging: components["schemas"]["Paging"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listDrift: {
+        parameters: {
+            query?: {
+                /** @description Порог в секундах */
+                threshold?: number;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница расхождений */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DriftItem"][];
+                        paging: components["schemas"]["Paging"];
+                        threshold_seconds: number;
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    getApplyLog: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница журнала */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplyLogEntry"][];
+                        paging: components["schemas"]["Paging"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
             500: components["responses"]["Error"];
             503: components["responses"]["Error"];
         };

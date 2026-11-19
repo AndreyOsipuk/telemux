@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AndreyOsipuk/telemux/internal/agentjoin"
 	"github.com/AndreyOsipuk/telemux/internal/backend/mtgmulti"
 	"github.com/AndreyOsipuk/telemux/internal/patroni"
 	"github.com/AndreyOsipuk/telemux/internal/peers"
@@ -168,12 +169,29 @@ func runServe(args []string) int {
 		logger.Info("синхронизатор панели 3x-ui включён")
 	}
 
+	// Добавление машины одной командой: внешний адрес API агентов и цепочка файрвола.
+	agentPublicURL := envOr("TELEMUX_AGENT_PUBLIC_URL", "")
+	if agentPublicURL != "" {
+		if err := agentjoin.ValidPublicURL(agentPublicURL); err != nil {
+			logger.Warn("команды установки агентов выдаваться не будут", "err", err)
+		}
+	}
+	fwChain := envOr("TELEMUX_AGENT_FW_CHAIN", "")
+	if fwChain != "" && !agentjoin.ValidChain(fwChain) {
+		logger.Error("TELEMUX_AGENT_FW_CHAIN - имя цепочки iptables: буквы, цифры, _ и -, до 28 символов", "value", fwChain)
+		return 2
+	}
+
 	srv := server.New(server.Deps{
-		Panel:       panel,
-		TLSListen:   envOr("TELEMUX_TLS_LISTEN", ""),
-		TLSCertFile: envOr("TELEMUX_TLS_CERT", "/etc/telemux/tls/cert.pem"),
-		TLSKeyFile:  envOr("TELEMUX_TLS_KEY", "/etc/telemux/tls/key.pem"),
-		Store:       st, Node: telemt.New(*api, *auth), Version: version,
+		Joins:          st, // /api/v1/targets и /v1/join/* - добавление машины одной командой
+		AgentPublicURL: agentPublicURL,
+		AgentFWChain:   fwChain,
+		Firewall:       agentjoin.IPTables{},
+		Panel:          panel,
+		TLSListen:      envOr("TELEMUX_TLS_LISTEN", ""),
+		TLSCertFile:    envOr("TELEMUX_TLS_CERT", "/etc/telemux/tls/cert.pem"),
+		TLSKeyFile:     envOr("TELEMUX_TLS_KEY", "/etc/telemux/tls/key.pem"),
+		Store:          st, Node: telemt.New(*api, *auth), Version: version,
 		Interval: *interval, SyncOpts: syncpkg.Options{Mode: mode}, Log: logger,
 		AdminUser:     envOr("TELEMUX_ADMIN_USER", "admin"),
 		AdminPassword: envOr("TELEMUX_ADMIN_PASSWORD", ""),

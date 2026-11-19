@@ -1,202 +1,135 @@
 // Источник: форк 3x-ui, frontend/src/pages/nodes/NodeList.tsx (GPL-3.0). Адаптировано:
-// строки - машины пары (релей, два сервера, два выхода), колонки - статус, ревизия
-// желаемая/применённая, версия бинаря с отметкой канарейки, «видели N секунд назад»,
-// мост, «применить сейчас» и «повторить»; раскрывающаяся строка - история применений.
+// строки - машины пары (релей, затем его выходы), колонки - сводный статус, версия
+// агента, мост, «видели N назад», ресурсы (применённая/желаемая ревизия) и проверки.
+// Клик по машине открывает историю применений; действие «Команда установки» выдаёт
+// новую одноразовую команду агента.
 
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { Button, Space, Table, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { ExclamationCircleOutlined, RedoOutlined, ThunderboltOutlined } from '@ant-design/icons';
 
-import type { Pair, Target } from '@/api/types';
+import type { Pair, PairMachine } from '@/api/types';
+import { CheckTags, KindTag, ResourceTags, resourceRows } from '@/components/FleetTags';
+import { JoinCommandButton } from '@/components/JoinCommand';
 import StatusCell from '@/components/StatusDot';
 import { secondsSince, useNow, useRelativeTime } from '@/hooks/useRelativeTime';
 import { formatDateTime } from '@/utils/format';
-import TargetHistory from './TargetHistory';
 
-export interface PairRow extends Target {
-  pair: string;
+// Порядок строк: релей (если есть), затем выходы.
+export function pairMachines(p: Pair): PairMachine[] {
+  return p.relay ? [p.relay, ...p.exits] : p.exits;
 }
 
-// Порядок строк: релей, его серверы, выходы.
-export function pairRows(p: Pair): PairRow[] {
-  return [p.relay, ...p.servers, ...p.exits].map((t) => ({ ...t, pair: p.code }));
-}
-
-export const isDrifting = (t: Target) => t.applied_rev !== t.desired_rev;
-
-const ROLE_COLOR: Record<Target['role'], string> = { relay: 'purple', server: 'blue', exit: 'cyan' };
+// Ключ пары: код релея; у псевдо-пары релея нет.
+export const NO_RELAY_KEY = '__no_relay__';
+export const pairKey = (p: Pair) => p.relay?.code ?? NO_RELAY_KEY;
 
 interface PairTableProps {
   pair: Pair;
-  isMaster: boolean;
-  selected: string[];
-  onSelectionChange: (codes: string[]) => void;
-  onApply: (t: Target) => void;
-  onRetry: (t: Target) => void;
-  busy: Set<string>;
+  onOpen: (m: PairMachine) => void;
 }
 
-export default function PairTable({
-  pair,
-  isMaster,
-  selected,
-  onSelectionChange,
-  onApply,
-  onRetry,
-  busy,
-}: PairTableProps) {
+export default function PairTable({ pair, onOpen }: PairTableProps) {
   const { t } = useTranslation();
   const now = useNow();
   const relative = useRelativeTime();
-  const rows = useMemo(() => pairRows(pair), [pair]);
-  const writeHint = isMaster ? undefined : t('role.writeOnMaster');
+  const rows = useMemo(() => pairMachines(pair), [pair]);
 
-  const columns = useMemo<ColumnsType<PairRow>>(
+  const columns = useMemo<ColumnsType<PairMachine>>(
     () => [
       {
-        title: t('pairs.machine'),
+        title: t('fleet.machine'),
         width: 190,
-        dataIndex: 'name',
-        render: (_v, r) => (
+        dataIndex: 'code',
+        render: (v: string, m) => (
           <Space size={8}>
-            <Tag color={ROLE_COLOR[r.role]} style={{ margin: 0, minWidth: 64, textAlign: 'center' }}>
-              {t(`roles.${r.role}`)}
-            </Tag>
-            <Typography.Text strong style={{ whiteSpace: 'nowrap' }}>
-              {r.name}
-            </Typography.Text>
+            <KindTag kind={m.kind} />
+            <Tooltip title={t('fleet.openHistory')}>
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: 0, fontWeight: 600 }}
+                aria-label={t('fleet.historyOf', { code: v })}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpen(m);
+                }}
+              >
+                {v}
+              </Button>
+            </Tooltip>
           </Space>
         ),
       },
       {
-        title: t('pairs.status'),
-        width: 150,
+        title: t('fleet.status'),
+        width: 140,
         dataIndex: 'status',
-        render: (_v, r) => (
-          <Space size={4}>
-            <StatusCell status={r.status} />
-            {r.last_error && (
-              <Tooltip title={r.last_error}>
-                <ExclamationCircleOutlined style={{ color: 'var(--ant-color-warning)' }} aria-label={r.last_error} />
-              </Tooltip>
-            )}
-          </Space>
-        ),
+        render: (_v, m) => <StatusCell status={m.status} />,
+      },
+      {
+        title: t('fleet.agent'),
+        width: 120,
+        dataIndex: 'agent_version',
+        render: (v: string | undefined) =>
+          v ? <span className="mono">{v}</span> : <Typography.Text type="secondary">-</Typography.Text>,
+      },
+      {
+        title: t('fleet.bridge'),
+        width: 110,
+        dataIndex: 'via',
+        render: (v: string | undefined, m) =>
+          v ? (
+            <span className="mono">{v}</span>
+          ) : (
+            <Typography.Text type="secondary">{m.seen_at ? t('fleet.direct') : '-'}</Typography.Text>
+          ),
+      },
+      {
+        title: t('fleet.lastSeen'),
+        width: 140,
+        dataIndex: 'seen_at',
+        render: (v: string | null) =>
+          v ? (
+            <Tooltip title={formatDateTime(v)}>{relative(secondsSince(v, now))}</Tooltip>
+          ) : (
+            <Typography.Text type="secondary">{t('fleet.noAgent')}</Typography.Text>
+          ),
       },
       {
         title: (
-          <Tooltip title={t('pairs.revisionHint')}>
-            <span>{t('pairs.revision')}</span>
+          <Tooltip title={t('fleet.resourcesHint')}>
+            <span>{t('fleet.resources')}</span>
           </Tooltip>
         ),
-        width: 100,
-        align: 'center',
-        render: (_v, r) =>
-          isDrifting(r) ? (
-            <Tooltip title={t('pairs.revisionDrift', { desired: r.desired_rev, applied: r.applied_rev ?? '-' })}>
-              <Tag color="error" className="mono" data-testid={`rev-${r.code}`}>
-                {r.applied_rev ?? '-'} → {r.desired_rev}
-              </Tag>
-            </Tooltip>
-          ) : (
-            <Tag color="success" className="mono" data-testid={`rev-${r.code}`}>
-              {r.desired_rev}
-            </Tag>
-          ),
+        render: (_v, m) => <ResourceTags rows={resourceRows(m.resources, m.observed, m.desired)} />,
       },
       {
-        title: t('pairs.version'),
-        width: 230,
-        render: (_v, r) => (
-          <Space size={4} wrap>
-            <Tag className="mono" style={{ margin: 0 }}>
-              {r.binary.name} {r.binary.version}
-            </Tag>
-            {r.binary.canary && (
-              <Tooltip title={t('pairs.canaryHint')}>
-                <Tag color="orange" style={{ margin: 0 }}>
-                  {t('pairs.canary')}
-                </Tag>
-              </Tooltip>
-            )}
-          </Space>
-        ),
-      },
-      {
-        title: t('pairs.lastSeen'),
-        width: 140,
-        dataIndex: 'last_seen_at',
-        render: (v: string | null) => (
-          <Tooltip title={v ? formatDateTime(v) : undefined}>{relative(secondsSince(v, now))}</Tooltip>
-        ),
-      },
-      {
-        title: t('pairs.bridge'),
-        width: 120,
-        dataIndex: 'via_bridge',
-        render: (v: string | null, r) =>
-          r.role !== 'relay' ? (
-            <Typography.Text type="secondary">-</Typography.Text>
-          ) : v ? (
-            <Tag className="mono">{v}</Tag>
-          ) : (
-            <Typography.Text type="secondary">{t('pairs.direct')}</Typography.Text>
-          ),
+        title: t('fleet.checks'),
+        width: 200,
+        render: (_v, m) => <CheckTags checks={m.checks} />,
       },
       {
         title: t('common.actions'),
-        width: 90,
-        align: 'right',
-        render: (_v, r) => (
-          <Space size={4}>
-            <Tooltip title={writeHint ?? t('pairs.applyNow')}>
-              <Button
-                size="small"
-                type="text"
-                icon={<ThunderboltOutlined />}
-                aria-label={`${t('pairs.applyNow')} ${r.name}`}
-                disabled={!isMaster}
-                loading={busy.has(r.code)}
-                onClick={() => onApply(r)}
-              />
-            </Tooltip>
-            <Tooltip title={writeHint ?? t('pairs.retry')}>
-              <Button
-                size="small"
-                type="text"
-                icon={<RedoOutlined />}
-                aria-label={`${t('pairs.retry')} ${r.name}`}
-                disabled={!isMaster || (!r.last_error && !isDrifting(r))}
-                onClick={() => onRetry(r)}
-              />
-            </Tooltip>
-          </Space>
-        ),
+        width: 190,
+        render: (_v, m) => <JoinCommandButton code={m.code} hasAgent={m.seen_at !== null} />,
       },
     ],
-    [t, now, relative, isMaster, writeHint, busy, onApply, onRetry],
+    [t, now, relative, onOpen],
   );
 
   return (
-    <Table<PairRow>
+    <Table<PairMachine>
       rowKey="code"
       size="small"
       columns={columns}
       dataSource={rows}
       pagination={false}
       tableLayout="fixed"
-      scroll={{ x: 1000 }}
-      rowSelection={{
-        selectedRowKeys: selected,
-        onChange: (keys) => onSelectionChange(keys.map(String)),
-        getCheckboxProps: () => ({ disabled: !isMaster }),
-      }}
-      expandable={{
-        expandedRowRender: (r) => <TargetHistory target={r} />,
-        rowExpandable: () => true,
-      }}
+      scroll={{ x: 1290 }}
+      locale={{ emptyText: t('pairs.noMachines') }}
+      onRow={(m) => ({ onClick: () => onOpen(m), style: { cursor: 'pointer' } })}
     />
   );
 }

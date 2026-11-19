@@ -55,6 +55,19 @@ func (s *Store) Machines(ctx context.Context, f MachineFilter, limit, offset int
 		f.Resource, f.Enabled, f.Kind).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count targets: %w", err)
 	}
+	list, err := s.queryMachines(ctx, where+` ORDER BY t.code LIMIT $4 OFFSET $5`,
+		f.Resource, f.Enabled, f.Kind, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+// queryMachines - единый путь выборки машин (список с фильтрами и пары): отчёт
+// агента, версии из runtime-отчёта и состояние ресурсов; tail - условие, порядок
+// и лимит запроса по targets t (с параметрами args). Отчёты по ресурсам
+// подгружаются одним запросом на все найденные машины.
+func (s *Store) queryMachines(ctx context.Context, tail string, args ...any) ([]Machine, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT t.code, t.kind, COALESCE(t.relay_code, ''), t.enabled, t.resources,
 		        COALESCE(a.agent_version, ''), COALESCE(a.via, ''), a.seen_at, COALESCE(a.checks, '[]'),
@@ -62,13 +75,11 @@ func (s *Store) Machines(ctx context.Context, f MachineFilter, limit, offset int
 		   FROM targets t
 		   LEFT JOIN agent_state a ON a.target = t.code
 		   LEFT JOIN agent_runtime r ON r.target = t.code
-		  `+where+`
-		  ORDER BY t.code
-		  LIMIT $4 OFFSET $5`, f.Resource, f.Enabled, f.Kind, limit, offset)
+		`+tail, args...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("machines: %w", err)
+		return nil, fmt.Errorf("machines: %w", err)
 	}
-	var list []Machine
+	list := []Machine{}
 	idx := map[string]int{}
 	for rows.Next() {
 		var m Machine
@@ -76,10 +87,13 @@ func (s *Store) Machines(ctx context.Context, f MachineFilter, limit, offset int
 			&m.AgentVersion, &m.Via, &m.SeenAt, &m.Checks,
 			&m.TelemtVersion, &m.MtgVersion, &m.RuntimeSeenAt); err != nil {
 			rows.Close()
-			return nil, 0, fmt.Errorf("scan machine: %w", err)
+			return nil, fmt.Errorf("scan machine: %w", err)
 		}
 		if m.Resources == nil {
 			m.Resources = []string{}
+		}
+		if m.Checks == nil {
+			m.Checks = []ObservedCheck{}
 		}
 		m.Observed = []MachineResource{}
 		idx[m.Code] = len(list)
@@ -87,31 +101,38 @@ func (s *Store) Machines(ctx context.Context, f MachineFilter, limit, offset int
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("machines: %w", err)
+		return nil, fmt.Errorf("machines: %w", err)
 	}
 	if len(list) == 0 {
-		return []Machine{}, total, nil
-	}
-	codes := make([]string, 0, len(list))
-	for _, m := range list {
-		codes = append(codes, m.Code)
+		return list, nil
 	}
 	obs, err := s.pool.Query(ctx,
 		`SELECT o.target, o.resource, COALESCE(o.revision, 0), COALESCE(o.sha256, ''), o.status,
 		        COALESCE(o.error, ''), o.seen_at,
 		        (SELECT max(d.revision) FROM desired_config d WHERE d.target = o.target AND d.resource = o.resource)
-		   FROM observed_state o WHERE o.target = ANY($1) ORDER BY o.target, o.resource`, codes)
+		   FROM observed_state o WHERE o.target = ANY($1) ORDER BY o.target, o.resource`, machineCodes(list))
 	if err != nil {
-		return nil, 0, fmt.Errorf("machines observed: %w", err)
+		return nil, fmt.Errorf("machines observed: %w", err)
 	}
 	defer obs.Close()
 	for obs.Next() {
 		var code string
 		var r MachineResource
 		if err := obs.Scan(&code, &r.Resource, &r.Revision, &r.SHA256, &r.Status, &r.Error, &r.SeenAt, &r.DesiredRevision); err != nil {
-			return nil, 0, fmt.Errorf("scan observed: %w", err)
+			return nil, fmt.Errorf("scan observed: %w", err)
 		}
 		list[idx[code]].Observed = append(list[idx[code]].Observed, r)
 	}
-	return list, total, obs.Err()
+	if err := obs.Err(); err != nil {
+		return nil, fmt.Errorf("machines observed: %w", err)
+	}
+	return list, nil
+}
+
+func machineCodes(list []Machine) []string {
+	codes := make([]string, 0, len(list))
+	for _, m := range list {
+		codes = append(codes, m.Code)
+	}
+	return codes
 }

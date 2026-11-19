@@ -1,7 +1,10 @@
 package tlspin
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -59,5 +62,39 @@ func TestGenerateAndPin(t *testing.T) {
 func TestNormalize(t *testing.T) {
 	if Normalize("AB:cd:EF") != "abcdef" {
 		t.Fatal("отпечаток не нормализован")
+	}
+}
+
+// SPKI-отпечаток для curl --pinnedpubkey совпадает с ключом, который предъявляет сервер.
+func TestSPKIPinFile(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	if _, err := Generate(certFile, keyFile, "telemux-master"); err != nil {
+		t.Fatal(err)
+	}
+	pin, err := SPKIPinFile(certFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	if want := base64.StdEncoding.EncodeToString(sum[:]); pin != want {
+		t.Fatalf("SPKI-отпечаток %q, ждали %q", pin, want)
+	}
+	if _, err := SPKIPinFile(filepath.Join(dir, "nope.pem")); err == nil {
+		t.Fatal("нет файла - ждали ошибку")
+	}
+	if err := os.WriteFile(keyFile+".bad", []byte("мусор"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SPKIPinFile(keyFile + ".bad"); err == nil {
+		t.Fatal("не PEM - ждали ошибку")
 	}
 }

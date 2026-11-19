@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var (
@@ -26,12 +27,21 @@ func tokenHash(token string) string {
 // IssueAgentToken выпускает новый токен машины; прежний перестаёт действовать.
 // Токен возвращается один раз, в базе остаётся только его хеш.
 func (s *Store) IssueAgentToken(ctx context.Context, target string) (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("генерация токена: %w", err)
+	return issueAgentToken(ctx, s.pool, target)
+}
+
+// execer - пул или открытая транзакция.
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// issueAgentToken - выпуск токена агента через пул или внутри транзакции.
+func issueAgentToken(ctx context.Context, db execer, target string) (string, error) {
+	token, err := randomToken()
+	if err != nil {
+		return "", err
 	}
-	token := hex.EncodeToString(b)
-	tag, err := s.pool.Exec(ctx,
+	tag, err := db.Exec(ctx,
 		`INSERT INTO agent_tokens (target, token_sha256)
 		 SELECT code, $2 FROM targets WHERE code = $1
 		 ON CONFLICT (target) DO UPDATE SET token_sha256 = EXCLUDED.token_sha256, created_at = now()`,
@@ -43,6 +53,15 @@ func (s *Store) IssueAgentToken(ctx context.Context, target string) (string, err
 		return "", ErrUnknownTarget
 	}
 	return token, nil
+}
+
+// randomToken - 32 случайных байта в hex.
+func randomToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("генерация токена: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // TargetByAgentToken - машина, которой принадлежит токен.

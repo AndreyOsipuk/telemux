@@ -30,6 +30,11 @@ type AgentStore interface {
 	LogErrors(ctx context.Context, since time.Time, machine string, limit, offset int) ([]store.LogErrorSum, int, error)
 	// PruneLogErrors удаляет счётчики журнала с концом периода раньше before.
 	PruneLogErrors(ctx context.Context, before time.Time) (int64, error)
+
+	// Ручки панели (fleet.go).
+	Pairs(ctx context.Context, limit, offset int) ([]store.Pair, int, error)
+	Drift(ctx context.Context, threshold time.Duration, limit, offset int) ([]store.DriftItem, int, error)
+	ApplyLog(ctx context.Context, target string, limit, offset int) ([]store.ApplyLogEntry, int, error)
 }
 
 const (

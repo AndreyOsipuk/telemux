@@ -1,1 +1,0 @@
-import{et as e}from"./antd-D1tna8IE.js";import{d as t,n}from"./vendor-DFEcAjct.js";var r=t();function i(){let{t}=n();return(0,r.jsx)(e,{type:`info`,showIcon:!0,style:{marginBottom:16},title:t(`common.mockData`)})}export{i as t};

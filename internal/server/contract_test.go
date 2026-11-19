@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +160,59 @@ func TestContract_Agents(t *testing.T) {
 	check("POST", "/v1/observed", pr2Token, `{"target":"pr2","resources":[{"resource":"telemt.users","revision":2,"status":"bad"}]}`, http.StatusBadRequest)
 }
 
+// Пары, дрейф и журнал машины: ответы и ошибки совпадают со спекой.
+func TestContract_Fleet(t *testing.T) {
+	_, router := loadSpec(t)
+	s, _ := fleetServer(t)
+	checkContract(t, router, s, "GET", "/api/v1/pairs", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/pairs?limit=1&offset=2", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/pairs?offset=10", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/drift", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/drift?threshold=0&limit=1", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/targets/pr1/apply-log", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/targets/ps1/apply-log", "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/api/v1/targets/nobody/apply-log", "", http.StatusNotFound)
+	// Мусор в параметрах: запрос вне спеки, но ответ 400 - по ней.
+	checkContractResponse(t, router, s, "/api/v1/pairs", "/api/v1/pairs?limit=0", http.StatusBadRequest)
+	checkContractResponse(t, router, s, "/api/v1/drift", "/api/v1/drift?threshold=100000", http.StatusBadRequest)
+	checkContractResponse(t, router, s, "/api/v1/targets/pr1/apply-log", "/api/v1/targets/pr1/apply-log?offset=-1", http.StatusBadRequest)
+	unauth := httptest.NewRecorder()
+	s.Handler().ServeHTTP(unauth, httptest.NewRequest("GET", "/api/v1/drift", nil))
+	validateResponse(t, router, httptest.NewRequest("GET", "/api/v1/drift", nil), unauth)
+}
+
+// checkContractResponse сверяет со спекой только ответ: запрос с мусором в
+// параметрах спеке заведомо не соответствует. Маршрут ищется по specPath.
+func checkContractResponse(t *testing.T, router routers.Router, s *Server, specPath, path string, wantStatus int) {
+	t.Helper()
+	req := httptest.NewRequest("GET", path, nil)
+	req.Header.Set("Authorization", "Bearer "+botToken)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != wantStatus {
+		t.Fatalf("GET %s → ждали %d, получили %d: %s", path, wantStatus, rec.Code, rec.Body.String())
+	}
+	validateResponse(t, router, httptest.NewRequest("GET", specPath, nil), rec)
+}
+
+// validateResponse сверяет ответ rec со спекой маршрута запроса specReq.
+func validateResponse(t *testing.T, router routers.Router, specReq *http.Request, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	route, params, err := router.FindRoute(specReq)
+	if err != nil {
+		t.Fatalf("%s нет в спеке: %v", specReq.URL.Path, err)
+	}
+	res := rec.Result()
+	out := &openapi3filter.ResponseValidationInput{
+		RequestValidationInput: &openapi3filter.RequestValidationInput{Request: specReq, PathParams: params, Route: route,
+			Options: &openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc}},
+		Status: res.StatusCode, Header: res.Header, Body: io.NopCloser(bytes.NewReader(rec.Body.Bytes())),
+	}
+	if err := openapi3filter.ValidateResponse(context.Background(), out); err != nil {
+		t.Fatalf("%s %d не соответствует спеке: %v\nтело: %s", specReq.URL.Path, rec.Code, err, rec.Body.String())
+	}
+}
+
 // Спека отдаётся панели в JSON без авторизации (для страницы /api-docs).
 func TestContract_SpecServed(t *testing.T) {
 	doc, _ := loadSpec(t)
@@ -240,4 +296,48 @@ func TestContract_Runtime(t *testing.T) {
 	post("token-ps2", runtimeOK, http.StatusForbidden)
 	post(pr2Token, `{"target":"pr2","telemt":{"users":[`+usersJSON(1, 21)+`]}}`, http.StatusBadRequest)
 	post(pr2Token, `{"target":"pr2","agent_version":"`+strings.Repeat("x", 2<<20)+`"}`, http.StatusRequestEntityTooLarge)
+}
+
+// Добавление машины и join: ответы и ошибки совпадают со спекой.
+func TestContract_Join(t *testing.T) {
+	_, router := loadSpec(t)
+	// Скрипт - текст: декодер как у файла (строка), иначе kin-openapi не знает этот тип.
+	openapi3filter.RegisterBodyDecoder("text/x-shellscript", openapi3filter.FileBodyDecoder)
+	s, _, _, _ := defaultJoin(t)
+	bin := filepath.Join(t.TempDir(), "telemux")
+	if err := os.WriteFile(bin, []byte("ELF"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.joinBinary = func() (string, error) { return bin, nil }
+
+	checkContract(t, router, s, "POST", "/api/v1/targets", exitBody, http.StatusCreated)
+	checkContract(t, router, s, "POST", "/api/v1/targets", `{"code":"pr3","kind":"relay","resources":[]}`, http.StatusCreated)
+	checkContract(t, router, s, "POST", "/api/v1/targets", exitBody, http.StatusConflict)
+	checkContract(t, router, s, "POST", "/api/v1/targets",
+		`{"code":"ps4","kind":"exit","relay_code":"pr1","address":"203.0.113.40","bridge_socks":"socks5://127.0.0.1:0","resources":[]}`, http.StatusBadRequest)
+	checkContract(t, router, s, "POST", "/api/v1/targets/ps1/join", "", http.StatusOK)
+	checkContract(t, router, s, "POST", "/api/v1/targets/nobody/join", "", http.StatusNotFound)
+	checkContract(t, router, s, "POST", "/api/v1/targets/pr2/join", "", http.StatusConflict)
+
+	unauth := httptest.NewRecorder()
+	s.Handler().ServeHTTP(unauth, httptest.NewRequest("POST", "/api/v1/targets/ps1/join", nil))
+	validateResponse(t, router, httptest.NewRequest("POST", "/api/v1/targets/ps1/join", nil), unauth)
+
+	tok := func() string {
+		rec := do(s, "POST", "/api/v1/targets/ps1/join", botToken, "")
+		return tokenOf(t, decodeCmd(t, rec).Command)
+	}
+	live := tok()
+	checkContract(t, router, s, "GET", "/v1/join/"+live, "", http.StatusOK)
+	checkContract(t, router, s, "GET", "/v1/join/"+live+"/telemux", "", http.StatusOK)
+	checkContract(t, router, s, "POST", "/v1/join/"+live+"/agent", "", http.StatusOK)
+	checkContract(t, router, s, "POST", "/v1/join/"+live+"/agent", "", http.StatusNotFound)
+	checkContract(t, router, s, "GET", "/v1/join/"+live, "", http.StatusNotFound)
+	checkContract(t, router, s, "GET", "/v1/join/"+live+"/telemux", "", http.StatusNotFound)
+	checkContract(t, router, s, "POST", "/v1/join/"+tok()+"/agent?format=env", "", http.StatusOK)
+	s.joinBinary = func() (string, error) { return "", errors.New("не linux/amd64") }
+	checkContract(t, router, s, "GET", "/v1/join/"+tok()+"/telemux", "", http.StatusServiceUnavailable)
+
+	replica, _, _, _ := joinServer(t, joinOpts{publicURL: publicURL, inRecovery: true})
+	checkContract(t, router, replica, "POST", "/api/v1/targets", exitBody, http.StatusConflict)
 }

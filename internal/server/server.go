@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AndreyOsipuk/telemux/internal/agentjoin"
 	"github.com/AndreyOsipuk/telemux/internal/mtgsync"
 	"github.com/AndreyOsipuk/telemux/internal/role"
 	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
@@ -61,7 +62,18 @@ type Deps struct {
 	TLSCertFile string
 	TLSKeyFile  string
 
-	PublicURL string // внешний URL мастера (для join-команды)
+	PublicURL string // внешний URL мастера (для join-команды узлов управления)
+
+	// Добавление машины одной командой (/api/v1/targets, /v1/join/*); nil → выключено.
+	Joins JoinStore
+	// Внешний https-адрес API агентов для команды установки (TELEMUX_AGENT_PUBLIC_URL).
+	// Пусто → createTarget и createJoin отвечают 409.
+	AgentPublicURL string
+	// Цепочка iptables, куда при добавлении выхода открывается его адрес на TLS-порту
+	// агентов (TELEMUX_AGENT_FW_CHAIN). Пусто → firewall: not_configured.
+	AgentFWChain string
+	// Файрвол; nil → iptables.
+	Firewall agentjoin.Firewall
 
 	// Идентичность ноды для heartbeat (пусто → heartbeat выключен).
 	SelfCode      string
@@ -102,6 +114,8 @@ type Server struct {
 	lastSync syncStatus
 
 	revs revisionWatch // будит long-poll агентов после публикации
+
+	joinBinary func() (string, error) // бинарь для новых машин (подменяется в тестах)
 }
 
 // markDirty просит sync-loop синхронизироваться немедленно (не дожидаясь интервала).
@@ -136,7 +150,7 @@ func New(d Deps) *Server {
 	if d.DesiredPollInterval <= 0 {
 		d.DesiredPollInterval = time.Second
 	}
-	s := &Server{deps: d, mux: http.NewServeMux(), auth: newAuth(d.AdminUser, d.AdminPassword), dirty: make(chan struct{}, 1)}
+	s := &Server{deps: d, mux: http.NewServeMux(), auth: newAuth(d.AdminUser, d.AdminPassword), dirty: make(chan struct{}, 1), joinBinary: selfBinary}
 	s.routes()
 	s.auth.routes(s.mux)
 	return s
@@ -177,6 +191,9 @@ func (s *Server) routes() {
 	if s.deps.Agents != nil {
 		s.routesAgents()
 		s.routesMachines()
+	}
+	if s.deps.Joins != nil {
+		s.routesJoin()
 	}
 	s.mux.HandleFunc("GET /api/openapi.json", s.handleSpec)
 	// Дашборд (встроенный, см. web.go).

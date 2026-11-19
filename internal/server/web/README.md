@@ -26,9 +26,12 @@ npm run gen:api   # типы из ../../../api/openapi.yaml -> src/api/generated
 |---|---|
 | `src/api/http.ts` | `request()`: ошибки API -> `ApiError {status, code, message, masterUrl}`; 401 -> событие «нужен вход» |
 | `src/api/errors.ts` | понятный текст ошибки: 409 `not_master` -> «эта машина не мастер» с адресом мастера, сеть, 503, 5xx |
-| `src/api/client.ts` | ручки, которыми пользуется панель; `USES_MOCKS` - экраны на заглушках |
-| `src/api/types.ts` | типы: из спеки (`generated/openapi.ts`) и временные для ручек, которых в спеке ещё нет |
-| `src/api/mocks.ts` | демо-данные «Пар» и «Дрейфа», пока на мастере нет ручек |
+| `src/api/client.ts` | ручки, которыми пользуется панель; флот (машины, пары, дрейф, журнал применений) - `/api/v1`, постранично |
+| `src/api/types.ts` | типы: из спеки (`generated/openapi.ts`) и временные для старых ручек, которых в спеке ещё нет |
+| `src/api/queries.ts` | хуки react-query; экраны флота (Пары, Дрейф, Машины) обновляются раз в 30 секунд |
+| `src/components/JoinCommand.tsx` | одноразовая команда установки агента (копирование, срок, файрвол) и действие «Команда установки» у машины (`POST /api/v1/targets/{code}/join`) |
+| `src/pages/nodes/AddMachineModal.tsx` | «Добавить машину» (`POST /api/v1/targets`): код, роль, ресурсы, для выхода - релей, IPv4 и socks-вход на релее |
+| `src/hooks/usePaging.ts` | серверная пагинация `{data, paging}` для таблиц |
 | `src/auth/AuthGate.tsx` | вход по сессии (`/api/me`, `/api/login`, `/api/logout`) |
 | `src/layouts/` | оболочка страниц и сайдбар |
 | `src/pages/*` | экраны, грузятся лениво |
