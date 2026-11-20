@@ -78,6 +78,10 @@ export type PairMachine = components['schemas']['PairMachine'];
 // Сводный статус машины в паре: ok, behind, failed, silent, no_agent, disabled.
 export type PairStatus = PairMachine['status'];
 export type DesiredResource = PairMachine['desired'][number];
+// Статус своей ноды релея в паре (relay-via-exit, R3.2): ok, relay_silent, exit_down.
+export type RelayStatus = NonNullable<PairMachine['relay_status']>;
+// Статус пары: ok, down (релей упал по R3.3), no_exit (у релея нет своих нод).
+export type PairPathStatus = NonNullable<components['schemas']['Pair']['status']>;
 // relay: null - псевдо-пара «без релея».
 export type Pair = components['schemas']['Pair'];
 export type DriftItem = components['schemas']['DriftItem'];

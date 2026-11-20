@@ -65,7 +65,9 @@ export interface paths {
          *     например `socks5://127.0.0.1:10872`). Релею можно задать `address` - его публичный
          *     IPv4 для сборки `telemt.config`. Ресурсы - из `telemt.users`, `mtg.config`.
          *     Если на мастере настроена цепочка файрвола (`TELEMUX_AGENT_FW_CHAIN`), адрес выхода
-         *     сразу открывается на TLS-порту агентов.
+         *     сразу открывается на TLS-порту агентов. Релея из `relay_code` нет (или это машина не
+         *     вида `relay`) - 400 `unknown_machine`. Пары «релей - своя нода» берутся только из
+         *     `relay_code` выходов; карта серверов на них не влияет.
          *     Новый релей ходит к мастеру через мост своего выхода, а выходов у него ещё нет: машина
          *     заводится, `command` пустая, токен не выпускается - добавьте выход и вызовите POST .../join.
          *     Не задан `TELEMUX_AGENT_PUBLIC_URL` или нет сертификата API агентов - 409 до создания машины.
@@ -817,6 +819,19 @@ export interface paths {
          *     сообщил провал применения ревизии ресурса (одно событие на ревизию). Выключенные
          *     машины в тревогах не участвуют. Хранение - 30 дней. `paging.total` - сколько
          *     событий после `after_id`, `paging.offset` всегда 0.
+         *
+         *     Релей и его свои ноды (выходы с `relay_code` = релей):
+         *     - `down` по релею - только если его агент молчит дольше 10 мин и ни одна своя
+         *       нода не видела его через мост дольше 3 мин; `up` - снова на связи;
+         *     - `relay_silent` (`machine` - релей, `exit` - выход) - выход жив, а релей не
+         *       ходит через его мост дольше 3 мин; `relay_ok` - пара вернулась в `ok` после
+         *       `relay_silent`. Пара, у которой молчит сам выход (`exit_down`), событий не даёт;
+         *     - `foreign_bridge` (`machine` - релей, `exit` - чужой выход) - последний отчёт
+         *       релея пришёл через мост выхода не из его пары;
+         *     - `relay_no_exit` - у релея нет ни одной своей ноды.
+         *
+         *     Все события - только на переходе; релеи без агента и выключенные машины
+         *     событий пар не дают.
          */
         get: operations["listEvents"];
         put?: never;
@@ -917,6 +932,13 @@ export interface paths {
          *     период длиннее 65 мин; `log_count_invalid` - счётчик больше 1e9.
          *     Старый мастер или мост без этой ручки отвечает 404/405 - агент
          *     увеличивает паузу между попытками до 30 мин.
+         *     Выход с мостом присылает `bridge` - сводку своего моста: какие релеи через
+         *     него ходят (`bridge_invalid` - больше 100 релеев, пустой или повторённый код,
+         *     отрицательный счётчик, `last_seen` в будущем больше чем на 5 мин).
+         *     Пришедший через мост с кодом выхода отчёт релея (заголовок `X-Telemux-Bridge`)
+         *     записывается в `relay_via` машины (только машине вида relay); не код
+         *     существующего выхода - отметка пропускается (WARN в логе мастера), отчёт
+         *     принимается.
          */
         post: operations["postRuntime"];
         delete?: never;
@@ -1009,6 +1031,8 @@ export interface components {
             kind: "exit" | "relay" | "panel";
             /** @description Для выхода - релей, к которому он держит туннель */
             relay_code?: string;
+            /** @description Адрес машины (settings.address); null - не задан. По нему внешние системы сопоставляют свои записи с машинами */
+            address?: string | null;
             enabled: boolean;
             resources: string[];
             agent_version?: string;
@@ -1059,6 +1083,15 @@ export interface components {
              * @enum {string}
              */
             runtime_status?: "online" | "stale" | "degraded" | "offline";
+            /** @description Только у релея - через мост какого выхода пришёл последний отчёт агента (заголовок X-Telemux-Bridge); null - не через мост с кодом */
+            relay_via?: string | null;
+            /**
+             * Format: date-time
+             * @description Когда записан relay_via
+             */
+            relay_via_at?: string | null;
+            /** @description Только у релея - последний relay_via - выход не из его пары (не его своя нода) */
+            foreign_bridge?: boolean;
         };
         NewTarget: {
             code: string;
@@ -1149,9 +1182,39 @@ export interface components {
         };
         /** @enum {string} */
         LogErrorKind: "limit" | "handshake" | "auth" | "timeout" | "other";
+        BridgeRelay: {
+            /** @description Код релея (из ответа мастера на /v1/desired) */
+            code: string;
+            /**
+             * Format: date-time
+             * @description Последний запрос релея через мост (часы выхода)
+             */
+            last_seen: string | null;
+            /** @description Запросов релея через мост с запуска моста (релей, молчавший 24 ч, забывается и считается заново) */
+            requests: number;
+            /** @description Ответил ли мастер на последний запрос релея */
+            master_ok: boolean;
+            /**
+             * @description Последняя ошибка мастера - класс без адресов и query (например «мастер не ответил: таймаут»,
+             *     «мастер ответил сбоем: HTTP 502»); пусто - ошибок не было
+             */
+            last_error: string;
+        };
+        /**
+         * @description Сводка моста выхода (GET /v1/relays на loopback моста) в runtime-отчёте выхода.
+         *     error - мост не ответил агенту за 3 с или ответил не по контракту, relays тогда пустой.
+         */
+        BridgeSummary: {
+            /** @description Код выхода (TELEMUX_BRIDGE_CODE) */
+            code: string;
+            relays: components["schemas"]["BridgeRelay"][];
+            error: string;
+        };
         RuntimeReport: {
             target: string;
             agent_version?: string;
+            /** @description Только у выхода с мостом (агенту задан TELEMUX_AGENT_BRIDGE_URL); у остальных поля нет */
+            bridge?: components["schemas"]["BridgeSummary"];
             host?: components["schemas"]["RuntimeHost"] | null;
             /** @description null - на машине нет telemt */
             telemt?: components["schemas"]["RuntimeTelemt"] | null;
@@ -1293,8 +1356,32 @@ export interface components {
                 resource: string;
                 revision: number;
             }[];
+            /**
+             * @description Только у выхода в паре с релеем (своя нода релея). exit_down - агент выхода
+             *     молчит дольше 10 мин (о релее пара ничего не утверждает); ok - выход жив, и
+             *     релей ходил через его мост не позже 3 мин назад (по сводке моста из
+             *     runtime-отчёта выхода не старше 10 мин или по relay_via_at релея);
+             *     relay_silent - выход жив, релей через его мост молчит дольше. Выключенный
+             *     выход в расчёте relay_down не участвует.
+             * @enum {string}
+             */
+            relay_status?: "ok" | "relay_silent" | "exit_down";
+            /**
+             * Format: date-time
+             * @description Только у выхода в паре с релеем - когда релей последний раз ходил через его мост; null - не ходил
+             */
+            relay_last_seen?: string | null;
         };
         Pair: {
+            /** @description Релей упал - его агент молчит дольше 10 мин и ни одна своя нода не видела его через мост дольше 3 мин */
+            relay_down?: boolean;
+            /** @description Последний отчёт релея пришёл через мост чужого выхода */
+            foreign_bridge?: boolean;
+            /**
+             * @description Статус пары: no_exit - у релея нет своих нод, down - relay_down, иначе ok. У псевдо-пары «без релея» поля нет
+             * @enum {string}
+             */
+            status?: "ok" | "down" | "no_exit";
             /** @description null - псевдо-пара «без релея» (выходы без relay_code и машины panel) */
             relay: components["schemas"]["PairMachine"] | null;
             exits: components["schemas"]["PairMachine"][];
@@ -1620,10 +1707,13 @@ export interface components {
             id: number;
             /** Format: date-time */
             at: string;
+            /** @description Машина; у событий пары - релей */
             machine: string;
             /** @enum {string} */
-            kind: "down" | "up" | "apply_failed";
+            kind: "down" | "up" | "apply_failed" | "relay_silent" | "relay_ok" | "foreign_bridge" | "relay_no_exit";
             detail: string;
+            /** @description Только у relay_silent, relay_ok, foreign_bridge - выход пары (или чужой выход) */
+            exit?: string;
         };
         StackProduct: {
             product: components["schemas"]["Product"];
@@ -1697,7 +1787,7 @@ export interface components {
              * @description Машинный код
              * @enum {string}
              */
-            code: "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "gone" | "unprocessable" | "not_implemented" | "unavailable" | "internal" | "not_master" | "mass_delete_guard" | "payload_too_large" | "unknown_machine" | "engine_immutable" | "unknown_setting" | "bad_setting" | "bad_endpoint" | "batch_too_large" | "machine_enabled" | "machine_in_use" | "machine_disabled" | "too_many_points" | "render_mismatch" | "managed_by_telemux" | "too_many_requests" | "unknown_product" | "unknown_version" | "product_missing" | "custom_build" | "not_newer" | "update_in_progress" | "release_unavailable" | "asset_missing";
+            code: "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "gone" | "unprocessable" | "not_implemented" | "unavailable" | "internal" | "not_master" | "mass_delete_guard" | "payload_too_large" | "unknown_machine" | "engine_immutable" | "unknown_setting" | "bad_setting" | "bad_endpoint" | "batch_too_large" | "machine_enabled" | "machine_in_use" | "machine_disabled" | "too_many_points" | "render_mismatch" | "managed_by_telemux" | "too_many_requests" | "unknown_product" | "unknown_version" | "product_missing" | "custom_build" | "not_newer" | "update_in_progress" | "release_unavailable" | "asset_missing" | "bridge_invalid";
             message: string;
             /** @description Копия message для старой панели */
             error?: string;

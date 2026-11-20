@@ -252,7 +252,20 @@
     "checkOk": "ок",
     "checkFailed": "ошибка",
     "openHistory": "История применений",
-    "historyOf": "История применений {{code}}"
+    "historyOf": "История применений {{code}}",
+    "relayStatus": {
+      "ok": "путь в порядке",
+      "relay_silent": "релей молчит",
+      "exit_down": "выход молчит"
+    },
+    "pairStatus": {
+      "ok": "в порядке",
+      "down": "релей упал",
+      "no_exit": "нет своих нод"
+    },
+    "foreignBridge": "чужой мост",
+    "relayVia": "ходит через мост",
+    "relayLastSeen": "Релей через мост: {{when}}"
   },
   "driftReason": {
     "behind": "отстаёт",
@@ -674,8 +687,13 @@
     "kinds": {
       "down": "молчит",
       "up": "вернулась",
-      "apply_failed": "ошибка применения"
-    }
+      "apply_failed": "ошибка применения",
+      "relay_silent": "релей молчит через мост",
+      "relay_ok": "релей снова через мост",
+      "foreign_bridge": "чужой мост",
+      "relay_no_exit": "нет своих нод"
+    },
+    "exit": "Выход"
   },
   "render": {
     "source": "Конфиги публикует",

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,9 @@ type AgentStore interface {
 	MaxRevision(ctx context.Context, target string) (int64, error)
 	DesiredBundle(ctx context.Context, target string) (store.Bundle, error)
 	RecordObserved(ctx context.Context, rep store.ObservedReport) error
+	// RecordRelayVia - отчёт агента пришёл через мост выхода bridge (R3.1);
+	// не выход - store.ErrUnknownBridge.
+	RecordRelayVia(ctx context.Context, target, bridge string) error
 	Machines(ctx context.Context, f store.MachineFilter, limit, offset int) ([]store.Machine, int, error)
 
 	// Runtime-отчёт агента и ручки бота по нему (runtime.go).
@@ -220,8 +224,47 @@ func (s *Server) routesAgents() {
 			s.writeStoreErr(w, err)
 			return
 		}
+		s.recordRelayVia(r, code)
 		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+// bridgeCodeRe - код выхода в заголовке моста (как код машины).
+var bridgeCodeRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// recordRelayVia записывает, через мост какого выхода пришёл принятый отчёт
+// агента target (заголовок X-Telemux-Bridge, R3.1). Заголовка нет - ничего. Не код
+// существующего выхода - WARN, отчёт всё равно принят. Сбой базы - ERROR в лог:
+// отчёт уже сохранён, отметка моста - вспомогательная и придёт со следующим.
+func (s *Server) recordRelayVia(r *http.Request, target string) {
+	vals, ok := r.Header[bridgeHeader]
+	if !ok {
+		return
+	}
+	bridge := strings.Join(vals, ",")
+	if !bridgeCodeRe.MatchString(bridge) {
+		s.deps.Log.Warn("relay_via: мусор в X-Telemux-Bridge, отметка моста пропущена", "target", target, "bridge", clipLog(bridge))
+		return
+	}
+	err := s.deps.Agents.RecordRelayVia(r.Context(), target, bridge)
+	switch {
+	case errors.Is(err, store.ErrUnknownBridge):
+		s.deps.Log.Warn("relay_via: X-Telemux-Bridge - не код существующего выхода, отметка моста пропущена",
+			"target", target, "bridge", bridge)
+	case err != nil:
+		s.deps.Log.Error("relay_via: отметка моста не записана", "target", target, "bridge", bridge, "err", err)
+	}
+}
+
+// bridgeHeader - X-Telemux-Bridge в каноническом виде (ключ http.Header).
+const bridgeHeader = "X-Telemux-Bridge"
+
+// clipLog - не больше 80 символов чужой строки в лог.
+func clipLog(v string) string {
+	if len(v) > 80 {
+		return v[:80] + "..."
+	}
+	return v
 }
 
 // AgentHandler - обработчик для внешнего TLS-слушателя: только ручки агентов и

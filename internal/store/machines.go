@@ -22,9 +22,12 @@ type MachineResource struct {
 // Machine - машина флота и последний отчёт её агента. SeenAt == nil - агент
 // ещё ни разу не отчитывался.
 type Machine struct {
-	Code         string            `json:"code"`
-	Kind         string            `json:"kind"`
-	RelayCode    string            `json:"relay_code,omitempty"`
+	Code      string `json:"code"`
+	Kind      string `json:"kind"`
+	RelayCode string `json:"relay_code,omitempty"`
+	// Адрес машины (settings.address); nil - не задан. По нему внешние системы
+	// сопоставляют свои записи с машинами telemux (спека relay-via-exit, U13).
+	Address      *string           `json:"address"`
 	Enabled      bool              `json:"enabled"`
 	Resources    []string          `json:"resources"`
 	AgentVersion string            `json:"agent_version,omitempty"`
@@ -48,6 +51,15 @@ type Machine struct {
 	// Сводный runtime-статус (online, stale, degraded, offline) - считает сервер
 	// по порогам свежести; хранилище его не заполняет.
 	RuntimeStatus string `json:"runtime_status,omitempty"`
+	// Через мост какого выхода пришёл последний отчёт агента (заголовок
+	// X-Telemux-Bridge, R3.1) и когда; nil - не через мост с кодом.
+	RelayVia   *string    `json:"relay_via"`
+	RelayViaAt *time.Time `json:"relay_via_at"`
+	// ForeignBridge - только у релея: последний relay_via - выход не из его пары (R3.4).
+	ForeignBridge *bool `json:"foreign_bridge,omitempty"`
+	// Bridge - сводка моста из последнего runtime-отчёта выхода (для статуса пар);
+	// в API машин не отдаётся.
+	Bridge *BridgeSummary `json:"-"`
 }
 
 // MachineFilter - фильтры списка машин; пустые поля не фильтруют.
@@ -67,7 +79,7 @@ func (s *Store) Machines(ctx context.Context, f MachineFilter, limit, offset int
 		f.Resource, f.Enabled, f.Kind).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count targets: %w", err)
 	}
-	list, err := s.queryMachines(ctx, where+` ORDER BY t.code LIMIT $4 OFFSET $5`,
+	list, err := s.queryMachines(ctx, s.pool, where+` ORDER BY t.code LIMIT $4 OFFSET $5`,
 		f.Resource, f.Enabled, f.Kind, limit, offset)
 	if err != nil {
 		return nil, 0, err
@@ -79,13 +91,15 @@ func (s *Store) Machines(ctx context.Context, f MachineFilter, limit, offset int
 // агента, версии из runtime-отчёта и состояние ресурсов; tail - условие, порядок
 // и лимит запроса по targets t (с параметрами args). Отчёты по ресурсам
 // подгружаются одним запросом на все найденные машины.
-func (s *Store) queryMachines(ctx context.Context, tail string, args ...any) ([]Machine, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT t.code, t.kind, COALESCE(t.relay_code, ''), t.enabled, t.resources,
+func (s *Store) queryMachines(ctx context.Context, db queryer, tail string, args ...any) ([]Machine, error) {
+	rows, err := db.Query(ctx,
+		`SELECT t.code, t.kind, COALESCE(t.relay_code, ''), NULLIF(t.settings->>'address', ''), t.enabled, t.resources,
 		        COALESCE(a.agent_version, ''), COALESCE(a.via, ''), a.seen_at, COALESCE(a.checks, '[]'),
 		        COALESCE(r.telemt->>'version', ''), COALESCE(r.mtg->>'version', ''), r.seen_at,
 		        r.host, `+apiOKExpr("r.telemt")+`, `+apiOKExpr("r.mtg")+`,
-		        COALESCE(u.conns, 0), COALESCE(u.online, 0)
+		        COALESCE(u.conns, 0), COALESCE(u.online, 0),
+		        a.relay_via, a.relay_via_at, `+foreignBridgeExpr+`,
+		        CASE WHEN jsonb_typeof(r.bridge) = 'object' THEN r.bridge END
 		   FROM targets t
 		   LEFT JOIN agent_state a ON a.target = t.code
 		   LEFT JOIN agent_runtime r ON r.target = t.code
@@ -101,10 +115,11 @@ func (s *Store) queryMachines(ctx context.Context, tail string, args ...any) ([]
 	idx := map[string]int{}
 	for rows.Next() {
 		var m Machine
-		if err := rows.Scan(&m.Code, &m.Kind, &m.RelayCode, &m.Enabled, &m.Resources,
+		if err := rows.Scan(&m.Code, &m.Kind, &m.RelayCode, &m.Address, &m.Enabled, &m.Resources,
 			&m.AgentVersion, &m.Via, &m.SeenAt, &m.Checks,
 			&m.TelemtVersion, &m.MtgVersion, &m.RuntimeSeenAt,
-			&m.Host, &m.TelemtAPIOK, &m.MtgAPIOK, &m.Connections, &m.UsersOnline); err != nil {
+			&m.Host, &m.TelemtAPIOK, &m.MtgAPIOK, &m.Connections, &m.UsersOnline,
+			&m.RelayVia, &m.RelayViaAt, &m.ForeignBridge, &m.Bridge); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan machine: %w", err)
 		}
@@ -125,7 +140,7 @@ func (s *Store) queryMachines(ctx context.Context, tail string, args ...any) ([]
 	if len(list) == 0 {
 		return list, nil
 	}
-	obs, err := s.pool.Query(ctx,
+	obs, err := db.Query(ctx,
 		`SELECT o.target, o.resource, COALESCE(o.revision, 0), COALESCE(o.sha256, ''), o.status,
 		        COALESCE(o.error, ''), o.seen_at,
 		        (SELECT max(d.revision) FROM desired_config d WHERE d.target = o.target AND d.resource = o.resource)
@@ -147,6 +162,11 @@ func (s *Store) queryMachines(ctx context.Context, tail string, args ...any) ([]
 	}
 	return list, nil
 }
+
+// foreignBridgeExpr - у релея: последний отчёт пришёл через мост выхода не из его
+// пары (R3.4); у остальных машин - NULL.
+const foreignBridgeExpr = `CASE WHEN t.kind = 'relay' THEN (a.relay_via IS NOT NULL AND NOT EXISTS (
+	SELECT 1 FROM targets x WHERE x.code = a.relay_via AND x.kind = 'exit' AND x.relay_code = t.code)) END`
 
 // apiOKExpr - api_ok продукта из JSON-снимка: NULL, если продукта нет или поле не
 // булево (мусор в снимке не должен ронять выборку приведением типа).

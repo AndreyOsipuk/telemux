@@ -139,6 +139,7 @@ func runAgent(args []string) int {
 	stateURL := fs.String("state-url", envOr("TELEMUX_AGENT_STATE_URL", agent.DefaultStateURL), "API telemt: принят ли конфиг")
 	unit := fs.String("telemt-unit", envOr("TELEMUX_AGENT_TELEMT_UNIT", "telemt"), "юнит systemd telemt (SIGHUP)")
 	via := fs.String("via", envOr("TELEMUX_AGENT_VIA", ""), "через какой мост ходит агент (для отчёта)")
+	bridgeURL := fs.String("bridge-url", envOr("TELEMUX_AGENT_BRIDGE_URL", ""), "адрес моста этого выхода (обычно http://127.0.0.1:18480): сводка релеев в runtime-отчёте; пусто - не читать")
 	checks := fs.String("checks", envOr("TELEMUX_AGENT_CHECKS", ""), "локальные проверки для отчёта: имя=http://адрес[,...], например bridge=http://127.0.0.1:18480/healthz")
 	wait := fs.Duration("wait", 55*time.Second, "long-poll")
 	recheck := fs.Duration("recheck", 5*time.Minute, "перепроверка диска без новой ревизии")
@@ -221,6 +222,7 @@ func runAgent(args []string) int {
 			Telemt: *usersFile != "", Mtg: *mtgFile != "", UsersFile: *usersFile,
 			TelemtAPI: *telemtAPI, TelemtBin: *telemtBin, TelemtConfig: *telemtConfig,
 			MtgStatsURL: *mtgStats, MtgBin: *mtgBin, JournalUnit: *journalUnit, Log: logger,
+			BridgeURL: *bridgeURL,
 		},
 	})
 	if err != nil {
@@ -241,11 +243,12 @@ func runBridge(args []string) int {
 	listen := fs.String("listen", envOr("TELEMUX_BRIDGE_LISTEN", "127.0.0.1:18480"), "адрес моста (loopback, куда приходит туннель)")
 	masters := fs.String("master", envOr("TELEMUX_BRIDGE_MASTERS", ""), "адреса мастера через запятую по приоритету")
 	masterPin := fs.String("master-pin", envOr("TELEMUX_BRIDGE_MASTER_PIN", ""), "sha256 сертификата мастера для https-адресов")
+	code := fs.String("code", envOr("TELEMUX_BRIDGE_CODE", ""), "код этого выхода: заголовок X-Telemux-Bridge в запросах к мастеру; пусто - без заголовка")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	b, err := bridge.New(bridge.Config{MasterURLs: splitList(*masters), MasterPin: *masterPin, Log: logger})
+	b, err := bridge.New(bridge.Config{Code: *code, MasterURLs: splitList(*masters), MasterPin: *masterPin, Log: logger})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2

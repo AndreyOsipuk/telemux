@@ -17,6 +17,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -36,6 +37,8 @@ const (
 	runtimeMaxActiveIPs = 20
 	runtimeMaxLogItems  = 5000
 	runtimeMaxText      = 1024
+	// runtimeMaxBridgeRelays - сколько релеев моста идёт в отчёт (лимит мастера).
+	runtimeMaxBridgeRelays = 100
 	// journalMaxWindow - на сколько назад читать журнал, если прошлые чтения или
 	// отправки не удались. Мастер принимает период не длиннее этого окна с запасом.
 	journalMaxWindow = time.Hour
@@ -130,8 +133,12 @@ type RuntimeCollector struct {
 	MtgStatsURL  string // по умолчанию http://127.0.0.1:8081/stats
 	MtgBin       string // по умолчанию mtg
 	JournalUnit  string // по умолчанию telemt
-	ProcRoot     string // по умолчанию /proc
-	DiskPath     string // по умолчанию /
+	// BridgeURL - адрес моста этого выхода (GET <BridgeURL>/v1/relays); пусто -
+	// поля bridge в отчёте нет (R2.3). BridgeTimeout - сколько ждать мост, по умолчанию 3 с.
+	BridgeURL     string
+	BridgeTimeout time.Duration
+	ProcRoot      string // по умолчанию /proc
+	DiskPath      string // по умолчанию /
 	// CPUSampleGap - пауза между двумя замерами /proc/stat в первом отчёте
 	// (дальше CPU считается между отчётами). По умолчанию 1 с.
 	CPUSampleGap time.Duration
@@ -182,6 +189,10 @@ func (c *RuntimeCollector) defaults() {
 	}
 	if c.DiskPath == "" {
 		c.DiskPath = "/"
+	}
+	c.BridgeURL = strings.TrimRight(c.BridgeURL, "/")
+	if c.BridgeTimeout <= 0 {
+		c.BridgeTimeout = 3 * time.Second
 	}
 	if c.CPUSampleGap <= 0 {
 		c.CPUSampleGap = time.Second
@@ -234,7 +245,35 @@ func (c *RuntimeCollector) Collect(ctx context.Context, every time.Duration) sto
 	if c.Mtg {
 		rep.Mtg = c.collectMtg(ctx)
 	}
+	if c.BridgeURL != "" {
+		rep.Bridge = c.collectBridge(ctx)
+	}
 	return rep
+}
+
+// collectBridge читает сводку моста выхода (R2.1). Мост не ответил за
+// BridgeTimeout или ответил не по контракту - error, relays пустой (R2.2).
+func (c *RuntimeCollector) collectBridge(ctx context.Context) *store.BridgeSummary {
+	ctx, cancel := context.WithTimeout(ctx, c.BridgeTimeout)
+	defer cancel()
+	var body struct {
+		Bridge string              `json:"bridge"`
+		Relays []store.BridgeRelay `json:"relays"`
+	}
+	out := &store.BridgeSummary{Relays: []store.BridgeRelay{}}
+	if err := c.getJSON(ctx, c.BridgeURL+"/v1/relays", &body); err != nil {
+		c.Log.Warn("агент: мост не ответил, сводка релеев не отправлена", "err", err)
+		out.Error = clip("мост: " + err.Error())
+		return out
+	}
+	out.Code = body.Bridge
+	if body.Relays != nil {
+		out.Relays = body.Relays
+	}
+	if len(out.Relays) > runtimeMaxBridgeRelays {
+		out.Relays = out.Relays[:runtimeMaxBridgeRelays]
+	}
+	return out
 }
 
 // --- telemt ---
@@ -881,4 +920,68 @@ func (a *Agent) SendRuntime(ctx context.Context) error {
 		return fmt.Errorf("%w: %w", ErrRuntimeUnsupported, errors.Join(errs...))
 	}
 	return fmt.Errorf("ни один мастер не принял runtime-отчёт: %w", errors.Join(errs...))
+}
+
+// probeTimeout - сколько ждать ответа на пробу одного адреса мастера (U17).
+const probeTimeout = 5 * time.Second
+
+// probeMaxEvery - период пробы путей к мастеру по умолчанию и самый длинный (U17).
+const probeMaxEvery = time.Minute
+
+// probeLoop пробует пути к мастеру сразу и затем раз в ProbeEvery. Отдельно от
+// runtime-цикла: его пауза при ErrRuntimeUnsupported пробы не останавливает (U17).
+func (a *Agent) probeLoop(ctx context.Context) {
+	t := time.NewTicker(a.cfg.ProbeEvery)
+	defer t.Stop()
+	for {
+		a.ProbeMasters(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// ProbeMasters - проба путей к мастеру: GET /v1/desired без ожидания через каждый
+// адрес из списка, параллельно, с таймаутом probeTimeout на адрес (U17). Нужна
+// релею с несколькими своими нодами: агент ходит к мастеру через первую доступную,
+// и без пробы мост второй ноды релея не видел бы (пара навсегда relay_silent,
+// спецификация relay-via-exit, U1). Ответ не используется: новые ревизии агент
+// берёт своим long-poll. С одним адресом - ничего.
+func (a *Agent) ProbeMasters(ctx context.Context) {
+	if len(a.masters) < 2 {
+		return
+	}
+	q := url.Values{"target": {a.cfg.Target}, "rev": {strconv.FormatInt(a.knownRev(), 10)}, "wait": {"0s"}}
+	var wg sync.WaitGroup
+	for _, m := range a.masters {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.probeMaster(ctx, m, q)
+		}()
+	}
+	wg.Wait()
+}
+
+// probeMaster - проба одного адреса мастера.
+func (a *Agent) probeMaster(ctx context.Context, m master, q url.Values) {
+	ctx, cancel := context.WithTimeout(ctx, a.probeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.base+"/v1/desired?"+q.Encode(), nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+a.cfg.Token)
+	resp, err := m.client.Do(req)
+	if err != nil {
+		a.cfg.Log.Warn("агент: проба пути к мастеру не прошла", "master", m.base, "err", err)
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<20))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotModified {
+		a.cfg.Log.Warn("агент: проба пути к мастеру", "master", m.base, "status", resp.StatusCode)
+	}
 }

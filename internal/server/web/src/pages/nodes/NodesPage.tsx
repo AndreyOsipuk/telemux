@@ -1,8 +1,8 @@
 // «Машины»: два раздела.
 // 1. Машины флота (/api/v1/machines): сверху карточки «всего / в сети / не в сети»
 //    (/api/v1/overview), в таблице - код, вид, runtime-статус, нагрузка (CPU, память,
-//    диск), аптайм, подключения и онлайн, версии telemt, mtg и агента, релей, «видели N
-//    назад», проверки и ресурсы. Постранично. Клик по строке - карточка машины;
+//    диск), аптайм, подключения и онлайн, версии telemt, mtg и агента, релей и статус
+//    пары «релей - своя нода» (/api/v1/pairs), «видели N назад», проверки и ресурсы. Постранично. Клик по строке - карточка машины;
 //    кнопка «Добавить машину», у каждой машины - «Команда установки» агента,
 //    переключатель «включена» и удаление (только выключенной).
 // 2. Узлы управления кластером (/api/nodes) - мастер и реплики самого telemux: роль,
@@ -24,6 +24,7 @@ import { MachineActions } from '@/components/MachineActions';
 import { IdleCount, UsageTag } from '@/components/UsageTag';
 import { offUsage } from '@/utils/machineUsage';
 import MachineDrawer from '@/components/MachineDrawer';
+import { RelayPathCell, useRelayPaths } from '@/components/RelayPath';
 import { majorityVersion, useRuntimeColumns } from '@/components/MachineCells';
 import { usePaging } from '@/hooks/usePaging';
 import StatusCell from '@/components/StatusDot';
@@ -93,6 +94,8 @@ function FleetMachines() {
   );
   const baseCols = useRuntimeColumns([...RUNTIME_KEYS], versions);
   const usage = useMachineUsage();
+  // Статусы пар «релей - своя нода» (/api/v1/pairs) для ячейки «Релей».
+  const paths = useRelayPaths();
   // Подключения и онлайн у машин без клиентов - серым прочерком.
   const runtimeCols = useMemo(
     () =>
@@ -128,9 +131,8 @@ function FleetMachines() {
       {
         title: t('fleet.relay'),
         dataIndex: 'relay_code',
-        width: 110,
-        render: (v: string | undefined) =>
-          v ? <span className="mono">{v}</span> : <Typography.Text type="secondary">-</Typography.Text>,
+        width: 170,
+        render: (_v: string | undefined, m) => <RelayPathCell m={m} path={paths.get(m.code)} />,
       },
       {
         title: t('fleet.agent'),
@@ -176,7 +178,7 @@ function FleetMachines() {
         ),
       },
     ],
-    [t, now, relative, runtimeCols, usage],
+    [t, now, relative, runtimeCols, usage, paths],
   );
 
   return (

@@ -276,7 +276,8 @@ func (s *Server) routesJoin() {
 			writeErr(w, http.StatusConflict, fmt.Errorf("машина %q уже есть; новая команда установки - POST /api/v1/targets/%s/join", body.Code, body.Code), s.deps.Log)
 			return
 		case errors.Is(err, store.ErrBadRelay):
-			writeErr(w, http.StatusBadRequest, err, s.deps.Log)
+			// Релея нет или машина не того вида - 400 unknown_machine (R5.2).
+			writeErr(w, http.StatusBadRequest, codedErr("unknown_machine", err), s.deps.Log)
 			return
 		case err != nil:
 			s.writeStoreErr(w, err)

@@ -105,3 +105,29 @@ func TestIntegration_Machines(t *testing.T) {
 		t.Fatalf("вторая страница: total=%d len=%d err=%v", total, len(page), err)
 	}
 }
+
+// U13: адрес машины (settings.address) отдаётся в списке машин - по нему бот
+// сопоставляет свои релеи с машинами telemux. Нет адреса - nil, а не пустая строка.
+func TestIntegration_Machines_U13_Address(t *testing.T) {
+	st := setupAll(t)
+	defer st.Close()
+	ctx := context.Background()
+	seedTargets(t, st,
+		Target{Code: "pr1", Kind: "relay", Enabled: true, Settings: map[string]string{"address": "192.0.2.10"}},
+		Target{Code: "pr2", Kind: "relay", Enabled: true},
+	)
+	list, _, err := st.Machines(ctx, MachineFilter{Kind: "relay"}, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]*string{}
+	for _, m := range list {
+		got[m.Code] = m.Address
+	}
+	if a := got["pr1"]; a == nil || *a != "192.0.2.10" {
+		t.Fatalf("у pr1 ждали адрес 192.0.2.10, получили %v", a)
+	}
+	if a, ok := got["pr2"]; !ok || a != nil {
+		t.Fatalf("у pr2 без адреса ждали nil, получили %v (есть: %v)", a, ok)
+	}
+}

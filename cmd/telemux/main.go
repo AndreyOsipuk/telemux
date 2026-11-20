@@ -131,6 +131,12 @@ func runServe(args []string) int {
 		logger.Error("схема базы не готова, мастер не запущен", "err", err)
 		return 1
 	}
+	// Миграция 0014 (relay_via, сводка моста, состояние пар): список машин, пары и
+	// детектор тревог читают её колонки - без неё они отвечали бы 500.
+	if err := st.CheckRelayViaSchema(ctx); err != nil {
+		logger.Error("схема базы не готова, мастер не запущен", "err", err)
+		return 1
+	}
 	runtimeStale, err := runtimeStaleAfter()
 	if err != nil {
 		logger.Error("настройка runtime-отчётов", "err", err)

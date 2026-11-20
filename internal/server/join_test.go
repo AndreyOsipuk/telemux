@@ -318,8 +318,6 @@ func TestJoin_CreateTargetValidation(t *testing.T) {
 		"чужой ресурс":             `{"code":"pr3","kind":"relay","resources":["xui.clients"]}`,
 		"ресурс дважды":            `{"code":"pr3","kind":"relay","resources":["telemt.users","telemt.users"]}`,
 		"выход без relay_code":     `{"code":"ps3","kind":"exit","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
-		"релея нет":                `{"code":"ps3","kind":"exit","relay_code":"pr9","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
-		"релей - это выход":        `{"code":"ps3","kind":"exit","relay_code":"ps1","address":"203.0.113.13","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
 		"адрес с мусором":          `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"1.2.3.4;rm","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
 		"адрес IPv6":               `{"code":"ps3","kind":"exit","relay_code":"pr1","address":"2001:db8::1","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,
 		"адрес пустой":             `{"code":"ps3","kind":"exit","relay_code":"pr1","bridge_socks":"socks5://127.0.0.1:1","resources":[]}`,

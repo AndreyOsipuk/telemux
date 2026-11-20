@@ -157,6 +157,8 @@ func TestIntegration_MachineOps_Detector(t *testing.T) {
 	setSeen(t, st, "ps2", 20*time.Minute) // молчит
 	setSeen(t, st, "ps3", 20*time.Minute) // молчит, но выключена
 	// pr2 и ps4 - агента нет: не молчат.
+	// pr1 ходит через мост своей ноды ps1: пара в порядке, событий пар нет (relay-via-exit).
+	setRelayVia(t, st, "pr1", "ps1", 0)
 
 	detect := func() []string {
 		t.Helper()

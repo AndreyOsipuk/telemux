@@ -304,14 +304,19 @@ func (s *Store) MachineMetrics(ctx context.Context, code string, from, to time.T
 	return out, rows.Err()
 }
 
-// MachineEvent - тревога по машине.
+// MachineEvent - тревога по машине. У события пары (relay_silent, relay_ok,
+// foreign_bridge) machine - релей, exit - выход; у остальных exit пустой.
 type MachineEvent struct {
 	ID      int64     `json:"id"`
 	At      time.Time `json:"at"`
 	Machine string    `json:"machine"`
-	Kind    string    `json:"kind"` // down | up | apply_failed
+	Kind    string    `json:"kind"` // down | up | apply_failed | relay_silent | relay_ok | foreign_bridge | relay_no_exit
 	Detail  string    `json:"detail"`
+	Exit    string    `json:"exit,omitempty"`
 }
+
+// eventCols - колонки machine_events в порядке scanEvents.
+const eventCols = `id, at, machine, kind, detail, COALESCE(exit, '')`
 
 // MachineEvents - события с id больше afterID по возрастанию id, не больше limit;
 // total - сколько всего событий после afterID.
@@ -321,7 +326,7 @@ func (s *Store) MachineEvents(ctx context.Context, afterID int64, limit int) ([]
 		return nil, 0, fmt.Errorf("count machine_events: %w", err)
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, at, machine, kind, detail FROM machine_events WHERE id > $1 ORDER BY id LIMIT $2`, afterID, limit)
+		`SELECT `+eventCols+` FROM machine_events WHERE id > $1 ORDER BY id LIMIT $2`, afterID, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("machine_events: %w", err)
 	}
@@ -337,7 +342,7 @@ func scanEvents(rows pgx.Rows) ([]MachineEvent, error) {
 	out := []MachineEvent{}
 	for rows.Next() {
 		var e MachineEvent
-		if err := rows.Scan(&e.ID, &e.At, &e.Machine, &e.Kind, &e.Detail); err != nil {
+		if err := rows.Scan(&e.ID, &e.At, &e.Machine, &e.Kind, &e.Detail, &e.Exit); err != nil {
 			return nil, fmt.Errorf("scan machine_events: %w", err)
 		}
 		out = append(out, e)
@@ -367,7 +372,11 @@ func (s *Store) PruneMachineOps(ctx context.Context, metricsBefore, eventsBefore
 // (машина, где агента ещё не ставили, не молчит):
 //   - down - агент молчит дольше silentAfter (последний отчёт observed или runtime),
 //     up - снова на связи; событие пишется только на переход. Машину, впервые
-//     увиденной живой, детектор запоминает молча, впервые увиденной молчащей - down;
+//     увиденной живой, детектор запоминает молча, впервые увиденной молчащей - down.
+//     Релей down только по правилу R3.3: агент молчит и ни одна своя нода не видела
+//     его через мост дольше RelaySilentAfter;
+//   - события пар relay_silent, relay_ok, foreign_bridge, relay_no_exit - на
+//     переходах статуса пары (detectPairEvents);
 //   - apply_failed - агент сообщил провал применения ресурса; одно событие на
 //     ревизию ресурса (повторы отчёта и проходы детектора его не дублируют).
 //
@@ -381,16 +390,28 @@ func (s *Store) DetectMachineEvents(ctx context.Context, silentAfter time.Durati
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, alertsLockKey); err != nil {
 		return nil, fmt.Errorf("alerts lock: %w", err)
 	}
+	var now time.Time
+	if err := tx.QueryRow(ctx, `SELECT now()`).Scan(&now); err != nil {
+		return nil, fmt.Errorf("alerts now: %w", err)
+	}
+	graph, err := s.loadRelayGraph(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	downRelays := graph.downRelays(silentAfter, now)
 	rows, err := tx.Query(ctx,
 		`WITH cur AS (
-		   SELECT t.code, GREATEST(a.seen_at, r.seen_at) AS seen
+		   SELECT t.code, t.kind, GREATEST(a.seen_at, r.seen_at) AS seen
 		     FROM targets t
 		     LEFT JOIN agent_state a ON a.target = t.code
 		     LEFT JOIN agent_runtime r ON r.target = t.code
 		    WHERE t.enabled AND (a.seen_at IS NOT NULL OR r.seen_at IS NOT NULL)
 		 ), st AS (
 		   INSERT INTO machine_alert_state AS s (code, down, changed_at)
-		   SELECT code, seen < now() - make_interval(secs => $1), now() FROM cur
+		   SELECT code,
+		          CASE WHEN kind = 'relay' THEN code = ANY($2::text[])
+		               ELSE seen < now() - make_interval(secs => $1) END,
+		          now() FROM cur
 		   ON CONFLICT (code) DO UPDATE SET down = EXCLUDED.down, changed_at = EXCLUDED.changed_at
 		    WHERE s.down <> EXCLUDED.down
 		   RETURNING s.code, s.down, (s.xmax = 0) AS inserted
@@ -400,11 +421,13 @@ func (s *Store) DetectMachineEvents(ctx context.Context, silentAfter time.Durati
 		        CASE WHEN st.down THEN 'down' ELSE 'up' END,
 		        CASE WHEN st.down
 		             THEN 'агент молчит с ' || to_char(cur.seen AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC'
+		                  || CASE WHEN cur.kind = 'relay' THEN ', и ни одна своя нода не видит релей через мост' ELSE '' END
+		             WHEN cur.kind = 'relay' THEN 'релей снова на связи'
 		             ELSE 'агент снова на связи' END
 		   FROM st JOIN cur ON cur.code = st.code
 		  WHERE NOT (st.inserted AND NOT st.down)
 		  ORDER BY st.code
-		 RETURNING id, at, machine, kind, detail`, silentAfter.Seconds())
+		 RETURNING `+eventCols, silentAfter.Seconds(), downRelays)
 	if err != nil {
 		return nil, fmt.Errorf("тревоги down/up: %w", err)
 	}
@@ -429,7 +452,7 @@ func (s *Store) DetectMachineEvents(ctx context.Context, silentAfter time.Durati
 		 SELECT target, 'apply_failed',
 		        resource || ', ревизия ' || revision || CASE WHEN error <> '' THEN ': ' || left(error, 500) ELSE '' END
 		   FROM f ORDER BY target, resource
-		 RETURNING id, at, machine, kind, detail`)
+		 RETURNING `+eventCols)
 	if err != nil {
 		return nil, fmt.Errorf("тревоги apply_failed: %w", err)
 	}
@@ -437,10 +460,14 @@ func (s *Store) DetectMachineEvents(ctx context.Context, silentAfter time.Durati
 	if err != nil {
 		return nil, err
 	}
+	pairs, err := s.detectPairEvents(ctx, tx, graph, downRelays, now)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit alerts: %w", err)
 	}
-	return append(events, failed...), nil
+	return append(append(events, failed...), pairs...), nil
 }
 
 // CheckTarget - машина для проверки связи и последний отчёт её агента.

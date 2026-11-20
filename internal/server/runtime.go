@@ -137,6 +137,44 @@ func validText(name string, vals ...string) error {
 	return nil
 }
 
+// maxBridgeRelays - сколько релеев в сводке моста (R2.1).
+const maxBridgeRelays = 100
+
+// validBridge проверяет сводку моста выхода (контракт 5.2): не больше 100 релеев,
+// коды непустые и без повторов, счётчики не меньше 0, last_seen не в будущем
+// (иначе релей навсегда «ходил только что»), строки - до 1024 символов.
+func validBridge(b *store.BridgeSummary, now time.Time) error {
+	if b == nil {
+		return nil
+	}
+	if err := validText("bridge", b.Code, b.Error); err != nil {
+		return codedErr("bridge_invalid", err)
+	}
+	if len(b.Relays) > maxBridgeRelays {
+		return codedErr("bridge_invalid", fmt.Errorf("bridge: не больше %d релеев", maxBridgeRelays))
+	}
+	seen := make(map[string]bool, len(b.Relays))
+	for _, r := range b.Relays {
+		if r.Code == "" || len(r.Code) > 64 {
+			return codedErr("bridge_invalid", errors.New("bridge: у релея нужен код до 64 символов"))
+		}
+		if seen[r.Code] {
+			return codedErr("bridge_invalid", fmt.Errorf("bridge: релей %q повторяется", r.Code))
+		}
+		seen[r.Code] = true
+		if r.Requests < 0 {
+			return codedErr("bridge_invalid", fmt.Errorf("bridge: у %q отрицательный счётчик", r.Code))
+		}
+		if r.LastSeen != nil && r.LastSeen.After(now.Add(maxClockSkew)) {
+			return codedErr("bridge_invalid", fmt.Errorf("bridge: last_seen %q в будущем (часы выхода спешат больше чем на %s)", r.Code, maxClockSkew))
+		}
+		if err := validText("bridge", r.LastError); err != nil {
+			return codedErr("bridge_invalid", err)
+		}
+	}
+	return nil
+}
+
 // validateRuntime проверяет лимиты и значения отчёта (target сверяется отдельно);
 // now - время мастера для проверки периода журнала.
 func validateRuntime(rep store.RuntimeReport, now time.Time) error {
@@ -167,6 +205,9 @@ func validateRuntime(rep store.RuntimeReport, now time.Time) error {
 		if err := validRuntimeUsers(store.ProductMtg, m.Users); err != nil {
 			return err
 		}
+	}
+	if err := validBridge(rep.Bridge, now); err != nil {
+		return err
 	}
 	if le := rep.LogErrors; le != nil {
 		if len(le.Items) > maxRuntimeLogItems {
@@ -262,6 +303,7 @@ func (s *Server) routesRuntime() {
 			s.writeStoreErr(w, err)
 			return
 		}
+		s.recordRelayVia(r, code)
 		s.recordMetrics(r.Context(), code)
 		w.WriteHeader(http.StatusNoContent)
 	})

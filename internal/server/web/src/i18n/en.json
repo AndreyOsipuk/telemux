@@ -230,7 +230,20 @@
     "checkOk": "ok",
     "checkFailed": "error",
     "openHistory": "Apply history",
-    "historyOf": "Apply history of {{code}}"
+    "historyOf": "Apply history of {{code}}",
+    "relayStatus": {
+      "ok": "path ok",
+      "relay_silent": "relay silent",
+      "exit_down": "exit down"
+    },
+    "pairStatus": {
+      "ok": "ok",
+      "down": "relay down",
+      "no_exit": "no own exits"
+    },
+    "foreignBridge": "foreign bridge",
+    "relayVia": "goes via bridge",
+    "relayLastSeen": "Relay via bridge: {{when}}"
   },
   "driftReason": {
     "behind": "behind",
@@ -648,8 +661,13 @@
     "kinds": {
       "down": "down",
       "up": "back up",
-      "apply_failed": "apply failed"
-    }
+      "apply_failed": "apply failed",
+      "relay_silent": "relay silent via bridge",
+      "relay_ok": "relay back via bridge",
+      "foreign_bridge": "foreign bridge",
+      "relay_no_exit": "no own exits"
+    },
+    "exit": "Exit"
   },
   "render": {
     "source": "Configs published by",

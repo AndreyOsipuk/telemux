@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -36,17 +37,41 @@ type DesiredRevision struct {
 }
 
 // PairMachine - машина в паре: отчёт агента, желаемые ревизии и сводный статус.
+// RelayStatus и RelayLastSeen - только у выхода в паре с релеем (R3.2): у релея и
+// у машин псевдо-пары этих полей в JSON нет.
 type PairMachine struct {
 	Machine
-	Status  string            `json:"status"`
-	Desired []DesiredRevision `json:"desired"`
+	Status        string            `json:"status"`
+	Desired       []DesiredRevision `json:"desired"`
+	RelayStatus   string            `json:"relay_status,omitempty"`
+	RelayLastSeen *time.Time        `json:"relay_last_seen"`
+}
+
+// pairMachineJSON - PairMachine без своего MarshalJSON.
+type pairMachineJSON PairMachine
+
+// MarshalJSON: у выхода пары relay_last_seen есть всегда (null - релей через мост не
+// ходил), у остальных машин поля нет.
+func (p PairMachine) MarshalJSON() ([]byte, error) {
+	if p.RelayStatus == "" {
+		return json.Marshal(struct {
+			pairMachineJSON
+			RelayLastSeen *time.Time `json:"relay_last_seen,omitempty"`
+		}{pairMachineJSON: pairMachineJSON(p)})
+	}
+	return json.Marshal(pairMachineJSON(p))
 }
 
 // Pair - релей и его выходы. Relay == nil - псевдо-пара «без релея»: выходы
 // без relay_code (или с несуществующим релеем) и машины вида panel.
+// RelayDown, ForeignBridge, Status - по правилам R3.3-R3.4, R5.3 (у псевдо-пары
+// false и пустой статус).
 type Pair struct {
-	Relay *PairMachine  `json:"relay"`
-	Exits []PairMachine `json:"exits"`
+	Relay         *PairMachine  `json:"relay"`
+	Exits         []PairMachine `json:"exits"`
+	RelayDown     bool          `json:"relay_down"`
+	ForeignBridge bool          `json:"foreign_bridge"`
+	Status        string        `json:"status,omitempty"`
 }
 
 // DriftItem - расхождение применённого с желаемым на (машина, ресурс).
@@ -119,13 +144,16 @@ const orphanCond = `(t.kind = 'panel' OR (t.kind = 'exit' AND NOT EXISTS (
 
 // Pairs - пары флота постранично: страница идёт по релеям по коду, псевдо-пара
 // «без релея» - последней (если такие машины есть). total - релеи плюс псевдо-пара.
-// Запросов - фиксированное число на страницу, без цикла по машинам.
+// Запросов - фиксированное число на страницу, без цикла по машинам. Статусы
+// считаются от now() базы, как в детекторе (U22): часы мастера и базы могут
+// расходиться, и тогда API и тревоги говорили бы разное.
 func (s *Store) Pairs(ctx context.Context, limit, offset int) ([]Pair, int, error) {
 	var relays int
 	var hasOrphans bool
+	var now time.Time
 	if err := s.pool.QueryRow(ctx,
 		`SELECT (SELECT count(*) FROM targets WHERE kind = 'relay'),
-		        EXISTS (SELECT 1 FROM targets t WHERE `+orphanCond+`)`).Scan(&relays, &hasOrphans); err != nil {
+		        EXISTS (SELECT 1 FROM targets t WHERE `+orphanCond+`), now()`).Scan(&relays, &hasOrphans, &now); err != nil {
 		return nil, 0, fmt.Errorf("count pairs: %w", err)
 	}
 	total := relays
@@ -150,7 +178,7 @@ func (s *Store) Pairs(ctx context.Context, limit, offset int) ([]Pair, int, erro
 	}
 	withOrphans := hasOrphans && offset+limit > relays
 
-	list, err := s.queryMachines(ctx,
+	list, err := s.queryMachines(ctx, s.pool,
 		`WHERE t.code = ANY($1)
 		    OR (t.kind = 'exit' AND t.relay_code = ANY($1))
 		    OR ($2 AND `+orphanCond+`)
@@ -162,7 +190,6 @@ func (s *Store) Pairs(ctx context.Context, limit, offset int) ([]Pair, int, erro
 	if err != nil {
 		return nil, 0, err
 	}
-	now := time.Now()
 	pm := func(m Machine) PairMachine {
 		d := desired[m.Code]
 		if d == nil {
@@ -197,6 +224,9 @@ func (s *Store) Pairs(ctx context.Context, limit, offset int) ([]Pair, int, erro
 		if withOrphans {
 			orphans.Exits = append(orphans.Exits, pm(m))
 		}
+	}
+	for i := range pairs {
+		fillRelayStatus(&pairs[i], now)
 	}
 	if withOrphans && len(orphans.Exits) > 0 {
 		pairs = append(pairs, orphans)

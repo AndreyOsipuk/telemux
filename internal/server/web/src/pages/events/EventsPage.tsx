@@ -1,5 +1,6 @@
 // «События»: лента тревог мастера по машинам (ADR 0007) - машина замолчала (down),
-// вернулась (up), агент не смог применить ревизию (apply_failed). Хранение 30 дней;
+// вернулась (up), агент не смог применить ревизию (apply_failed); по парам «релей -
+// своя нода» (ADR 0009) - relay_silent, relay_ok, foreign_bridge, relay_no_exit. Хранение 30 дней;
 // панель забирает ленту целиком и показывает новые первыми, с фильтром по машине и виду.
 
 import { useMemo, useState } from 'react';
@@ -14,8 +15,16 @@ import ErrorAlert from '@/components/ErrorAlert';
 import { secondsSince, useNow, useRelativeTime } from '@/hooks/useRelativeTime';
 import { formatDateTime } from '@/utils/format';
 
-const KINDS: MachineEventKind[] = ['down', 'up', 'apply_failed'];
-const KIND_COLOR: Record<MachineEventKind, string> = { down: 'error', up: 'success', apply_failed: 'warning' };
+const KINDS: MachineEventKind[] = ['down', 'up', 'apply_failed', 'relay_silent', 'relay_ok', 'foreign_bridge', 'relay_no_exit'];
+const KIND_COLOR: Record<MachineEventKind, string> = {
+  down: 'error',
+  up: 'success',
+  apply_failed: 'warning',
+  relay_silent: 'error',
+  relay_ok: 'success',
+  foreign_bridge: 'warning',
+  relay_no_exit: 'warning',
+};
 
 export function EventKindTag({ kind }: { kind: MachineEventKind }) {
   const { t } = useTranslation();
@@ -53,6 +62,12 @@ export default function EventsPage() {
       },
       { title: t('events.machine'), dataIndex: 'machine', width: 130, render: (v: string) => <Typography.Text strong className="mono">{v}</Typography.Text> },
       { title: t('events.kind'), dataIndex: 'kind', width: 160, render: (v: MachineEventKind) => <EventKindTag kind={v} /> },
+      {
+        title: t('events.exit'),
+        dataIndex: 'exit',
+        width: 110,
+        render: (v?: string) => (v ? <span className="mono">{v}</span> : <Typography.Text type="secondary">-</Typography.Text>),
+      },
       { title: t('events.detail'), dataIndex: 'detail', render: (v: string) => v || <Typography.Text type="secondary">-</Typography.Text> },
     ],
     [t, now, relative],

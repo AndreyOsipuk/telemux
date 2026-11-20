@@ -111,7 +111,9 @@ paths:
         например `socks5://127.0.0.1:10872`). Релею можно задать `address` - его публичный
         IPv4 для сборки `telemt.config`. Ресурсы - из `telemt.users`, `mtg.config`.
         Если на мастере настроена цепочка файрвола (`TELEMUX_AGENT_FW_CHAIN`), адрес выхода
-        сразу открывается на TLS-порту агентов.
+        сразу открывается на TLS-порту агентов. Релея из `relay_code` нет (или это машина не
+        вида `relay`) - 400 `unknown_machine`. Пары «релей - своя нода» берутся только из
+        `relay_code` выходов; карта серверов на них не влияет.
         Новый релей ходит к мастеру через мост своего выхода, а выходов у него ещё нет: машина
         заводится, `command` пустая, токен не выпускается - добавьте выход и вызовите POST .../join.
         Не задан `TELEMUX_AGENT_PUBLIC_URL` или нет сертификата API агентов - 409 до создания машины.
@@ -1057,6 +1059,19 @@ paths:
         сообщил провал применения ревизии ресурса (одно событие на ревизию). Выключенные
         машины в тревогах не участвуют. Хранение - 30 дней. `paging.total` - сколько
         событий после `after_id`, `paging.offset` всегда 0.
+
+        Релей и его свои ноды (выходы с `relay_code` = релей):
+        - `down` по релею - только если его агент молчит дольше 10 мин и ни одна своя
+          нода не видела его через мост дольше 3 мин; `up` - снова на связи;
+        - `relay_silent` (`machine` - релей, `exit` - выход) - выход жив, а релей не
+          ходит через его мост дольше 3 мин; `relay_ok` - пара вернулась в `ok` после
+          `relay_silent`. Пара, у которой молчит сам выход (`exit_down`), событий не даёт;
+        - `foreign_bridge` (`machine` - релей, `exit` - чужой выход) - последний отчёт
+          релея пришёл через мост выхода не из его пары;
+        - `relay_no_exit` - у релея нет ни одной своей ноды.
+
+        Все события - только на переходе; релеи без агента и выключенные машины
+        событий пар не дают.
       operationId: listEvents
       parameters:
         - { name: after_id, in: query, schema: { type: integer, format: int64, minimum: 0, default: 0 } }
@@ -1171,6 +1186,13 @@ paths:
         период длиннее 65 мин; `log_count_invalid` - счётчик больше 1e9.
         Старый мастер или мост без этой ручки отвечает 404/405 - агент
         увеличивает паузу между попытками до 30 мин.
+        Выход с мостом присылает `bridge` - сводку своего моста: какие релеи через
+        него ходят (`bridge_invalid` - больше 100 релеев, пустой или повторённый код,
+        отрицательный счётчик, `last_seen` в будущем больше чем на 5 мин).
+        Пришедший через мост с кодом выхода отчёт релея (заголовок `X-Telemux-Bridge`)
+        записывается в `relay_via` машины (только машине вида relay); не код
+        существующего выхода - отметка пропускается (WARN в логе мастера), отчёт
+        принимается.
       operationId: postRuntime
       security:
         - agentToken: []
@@ -1332,6 +1354,7 @@ components:
         code: { type: string }
         kind: { type: string, enum: [exit, relay, panel] }
         relay_code: { type: string, description: "Для выхода - релей, к которому он держит туннель" }
+        address: { type: string, nullable: true, description: "Адрес машины (settings.address); null - не задан. По нему внешние системы сопоставляют свои записи с машинами" }
         enabled: { type: boolean }
         resources:
           type: array
@@ -1377,6 +1400,14 @@ components:
             offline - runtime-отчёта нет или агент молчит дольше 10 минут; stale - отчёт старше
             порога свежести (по умолчанию 180 с); degraded - агент жив, но API telemt или mtg
             не ответил; иначе online.
+        relay_via:
+          type: string
+          nullable: true
+          description: Только у релея - через мост какого выхода пришёл последний отчёт агента (заголовок X-Telemux-Bridge); null - не через мост с кодом
+        relay_via_at: { type: string, format: date-time, nullable: true, description: Когда записан relay_via }
+        foreign_bridge:
+          type: boolean
+          description: Только у релея - последний relay_via - выход не из его пары (не его своя нода)
     NewTarget:
       type: object
       required: [code, kind, resources]
@@ -1467,12 +1498,41 @@ components:
     LogErrorKind:
       type: string
       enum: [limit, handshake, auth, timeout, other]
+    BridgeRelay:
+      type: object
+      required: [code, last_seen, requests, master_ok, last_error]
+      properties:
+        code: { type: string, maxLength: 64, description: Код релея (из ответа мастера на /v1/desired) }
+        last_seen: { type: string, format: date-time, nullable: true, description: Последний запрос релея через мост (часы выхода) }
+        requests: { type: integer, minimum: 0, description: "Запросов релея через мост с запуска моста (релей, молчавший 24 ч, забывается и считается заново)" }
+        master_ok: { type: boolean, description: Ответил ли мастер на последний запрос релея }
+        last_error:
+          type: string
+          description: |
+            Последняя ошибка мастера - класс без адресов и query (например «мастер не ответил: таймаут»,
+            «мастер ответил сбоем: HTTP 502»); пусто - ошибок не было
+    BridgeSummary:
+      type: object
+      description: |
+        Сводка моста выхода (GET /v1/relays на loopback моста) в runtime-отчёте выхода.
+        error - мост не ответил агенту за 3 с или ответил не по контракту, relays тогда пустой.
+      required: [code, relays, error]
+      properties:
+        code: { type: string, description: Код выхода (TELEMUX_BRIDGE_CODE) }
+        relays:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/BridgeRelay' }
+        error: { type: string, maxLength: 1024 }
     RuntimeReport:
       type: object
       required: [target]
       properties:
         target: { type: string }
         agent_version: { type: string }
+        bridge:
+          allOf: [{ $ref: '#/components/schemas/BridgeSummary' }]
+          description: Только у выхода с мостом (агенту задан TELEMUX_AGENT_BRIDGE_URL); у остальных поля нет
         host:
           allOf: [{ $ref: '#/components/schemas/RuntimeHost' }]
           nullable: true
@@ -1629,10 +1689,33 @@ components:
                 properties:
                   resource: { type: string }
                   revision: { type: integer }
+            relay_status:
+              type: string
+              enum: [ok, relay_silent, exit_down]
+              description: |
+                Только у выхода в паре с релеем (своя нода релея). exit_down - агент выхода
+                молчит дольше 10 мин (о релее пара ничего не утверждает); ok - выход жив, и
+                релей ходил через его мост не позже 3 мин назад (по сводке моста из
+                runtime-отчёта выхода не старше 10 мин или по relay_via_at релея);
+                relay_silent - выход жив, релей через его мост молчит дольше. Выключенный
+                выход в расчёте relay_down не участвует.
+            relay_last_seen:
+              type: string
+              format: date-time
+              nullable: true
+              description: Только у выхода в паре с релеем - когда релей последний раз ходил через его мост; null - не ходил
     Pair:
       type: object
       required: [relay, exits]
       properties:
+        relay_down:
+          type: boolean
+          description: Релей упал - его агент молчит дольше 10 мин и ни одна своя нода не видела его через мост дольше 3 мин
+        foreign_bridge: { type: boolean, description: Последний отчёт релея пришёл через мост чужого выхода }
+        status:
+          type: string
+          enum: [ok, down, no_exit]
+          description: "Статус пары: no_exit - у релея нет своих нод, down - relay_down, иначе ok. У псевдо-пары «без релея» поля нет"
         relay:
           nullable: true
           allOf: [{ $ref: '#/components/schemas/PairMachine' }]
@@ -1952,9 +2035,10 @@ components:
       properties:
         id: { type: integer, format: int64 }
         at: { type: string, format: date-time }
-        machine: { type: string }
-        kind: { type: string, enum: [down, up, apply_failed] }
+        machine: { type: string, description: "Машина; у событий пары - релей" }
+        kind: { type: string, enum: [down, up, apply_failed, relay_silent, relay_ok, foreign_bridge, relay_no_exit] }
         detail: { type: string }
+        exit: { type: string, description: "Только у relay_silent, relay_ok, foreign_bridge - выход пары (или чужой выход)" }
     StackProduct:
       type: object
       required: [product, repo, latest, checked_at, error]
@@ -2043,6 +2127,6 @@ components:
                  machine_disabled, too_many_points, render_mismatch, managed_by_telemux,
                  too_many_requests, unknown_product, unknown_version, product_missing,
                  custom_build, not_newer, update_in_progress, release_unavailable,
-                 asset_missing]
+                 asset_missing, bridge_invalid]
         message: { type: string }
         error: { type: string, description: Копия message для старой панели }

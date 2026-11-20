@@ -65,7 +65,10 @@ type Config struct {
 	Checks       []Check           // локальные проверки машины для отчёта (мост и т.п.)
 	Runtime      *RuntimeCollector // сборщик runtime-отчёта; nil - не шлётся
 	RuntimeEvery time.Duration     // период runtime-отчёта; 0 - не шлётся
-	Log          *slog.Logger
+	// ProbeEvery - период пробы путей к мастеру (ProbeMasters) при двух и более
+	// адресах; по умолчанию и не реже - раз в probeMaxEvery.
+	ProbeEvery time.Duration
+	Log        *slog.Logger
 }
 
 // Agent - агент одной машины.
@@ -81,6 +84,8 @@ type Agent struct {
 	failed    map[string]failedRev      // отвергнутые ревизии по ресурсам: повторно не применяются
 	versions  *RuntimeCollector         // версии бинарей для ресурса stack (тот же кэш, что у runtime-отчёта)
 	stackDone *stackOutcome             // итог последней ревизии stack, по которой агент запускал обновление
+
+	probeTimeout time.Duration // сколько ждать пробу одного адреса мастера (U17)
 }
 
 // master - адрес мастера и HTTP-клиент со своим прокси (туннелем).
@@ -167,13 +172,17 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.RecheckEvery <= 0 {
 		cfg.RecheckEvery = 5 * time.Minute
 	}
+	if cfg.ProbeEvery <= 0 || cfg.ProbeEvery > probeMaxEvery {
+		cfg.ProbeEvery = probeMaxEvery
+	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
 	if cfg.Mode == ModeApply && cfg.StackApplier == nil {
 		cfg.StackApplier = &StackApplier{}
 	}
-	a := &Agent{cfg: cfg, desired: map[string]*store.Desired{}, failed: map[string]failedRev{}, versions: cfg.Runtime}
+	a := &Agent{cfg: cfg, desired: map[string]*store.Desired{}, failed: map[string]failedRev{}, versions: cfg.Runtime,
+		probeTimeout: probeTimeout}
 	if a.versions == nil {
 		a.versions = &RuntimeCollector{Log: cfg.Log}
 	}
@@ -216,6 +225,9 @@ func (a *Agent) ForceRecheck() {
 func (a *Agent) Run(ctx context.Context) {
 	if a.cfg.Runtime != nil && a.cfg.RuntimeEvery > 0 {
 		go a.runtimeLoop(ctx) // своим тикером: не ждёт long-poll и отчёт observed
+	}
+	if len(a.masters) > 1 {
+		go a.probeLoop(ctx) // своим тикером: не зависит от runtime-цикла и его пауз (U17)
 	}
 	backoff := 2 * time.Second
 	for ctx.Err() == nil {

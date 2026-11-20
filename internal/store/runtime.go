@@ -84,8 +84,39 @@ type RuntimeLogErrors struct {
 	Items       []LogErrorItem `json:"items"`
 }
 
+// BridgeRelay - релей в сводке моста выхода (спецификация relay-via-exit, контракт 5.1).
+type BridgeRelay struct {
+	Code      string     `json:"code"`
+	LastSeen  *time.Time `json:"last_seen"`
+	Requests  int64      `json:"requests"`
+	MasterOK  bool       `json:"master_ok"`
+	LastError string     `json:"last_error"`
+}
+
+// BridgeSummary - сводка моста в runtime-отчёте выхода (контракт 5.2): код моста,
+// его релеи; error - мост не ответил агенту (relays тогда пустой).
+type BridgeSummary struct {
+	Code   string        `json:"code"`
+	Relays []BridgeRelay `json:"relays"`
+	Error  string        `json:"error"`
+}
+
+// RelayLastSeen - когда релей code последний раз ходил через этот мост; nil - не ходил.
+func (b *BridgeSummary) RelayLastSeen(code string) *time.Time {
+	if b == nil {
+		return nil
+	}
+	for _, r := range b.Relays {
+		if r.Code == code {
+			return r.LastSeen
+		}
+	}
+	return nil
+}
+
 // RuntimeReport - тело POST /v1/runtime. telemt, mtg, log_errors - nil, если
-// на машине нет этого продукта.
+// на машине нет этого продукта. bridge - только у выхода с мостом (агенту задан
+// адрес моста); у остальных поля в JSON нет.
 type RuntimeReport struct {
 	Target       string            `json:"target"`
 	AgentVersion string            `json:"agent_version"`
@@ -93,6 +124,7 @@ type RuntimeReport struct {
 	Telemt       *RuntimeTelemt    `json:"telemt"`
 	Mtg          *RuntimeMtg       `json:"mtg"`
 	LogErrors    *RuntimeLogErrors `json:"log_errors"`
+	Bridge       *BridgeSummary    `json:"bridge,omitempty"`
 }
 
 // RuntimeTables - таблицы миграции 0007, без которых мастер не стартует.
@@ -180,13 +212,19 @@ func (s *Store) RecordRuntime(ctx context.Context, rep RuntimeReport) error {
 	if rep.Host != nil {
 		hostDoc = *rep.Host
 	}
+	// Сводка моста выхода (R2.1); отчёт без неё (не выход или старый агент) - NULL.
+	var bridgeDoc any
+	if rep.Bridge != nil {
+		bridgeDoc = *rep.Bridge
+	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO agent_runtime (target, agent_version, host, telemt, mtg, seen_at)
-		 VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6)
+		`INSERT INTO agent_runtime (target, agent_version, host, telemt, mtg, bridge, seen_at)
+		 VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7)
 		 ON CONFLICT (target) DO UPDATE
 		   SET agent_version = EXCLUDED.agent_version, host = EXCLUDED.host,
-		       telemt = EXCLUDED.telemt, mtg = EXCLUDED.mtg, seen_at = EXCLUDED.seen_at`,
-		rep.Target, rep.AgentVersion, hostDoc, telemtDoc, mtgDoc, now); err != nil {
+		       telemt = EXCLUDED.telemt, mtg = EXCLUDED.mtg, bridge = EXCLUDED.bridge,
+		       seen_at = EXCLUDED.seen_at`,
+		rep.Target, rep.AgentVersion, hostDoc, telemtDoc, mtgDoc, bridgeDoc, now); err != nil {
 		return fmt.Errorf("agent_runtime %s: %w", rep.Target, err)
 	}
 	// Какие продукты заменяются: есть в отчёте и API ответил - новыми строками,

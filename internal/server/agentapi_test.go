@@ -46,6 +46,8 @@ type fakeAgents struct {
 	lastSilent time.Time
 	byUserKeys []string
 
+	relayVia      []relayViaCall
+	relayViaErr   error
 	pruned        int
 	prunedBefore  time.Time
 	lastThreshold time.Duration
