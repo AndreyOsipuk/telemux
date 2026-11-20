@@ -298,6 +298,30 @@ func (s *Store) detectPairEvents(ctx context.Context, tx pgx.Tx, g relayGraph, d
 		return nil, fmt.Errorf("pair_alert_state: %w", err)
 	}
 
+	// U26: по каким парам последней была тревога relay_silent - только им положено
+	// «снова ходит» (тихо записанное первое наблюдение тревогой не считается).
+	alerted := map[pairKey]bool{}
+	arows, err := tx.Query(ctx, `SELECT DISTINCT ON (machine, exit) machine, exit, kind
+	                               FROM machine_events
+	                              WHERE exit IS NOT NULL AND kind IN ('relay_silent', 'relay_ok')
+	                              ORDER BY machine, exit, id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("machine_events: %w", err)
+	}
+	for arows.Next() {
+		var k pairKey
+		var kind string
+		if err := arows.Scan(&k.relay, &k.exit, &kind); err != nil {
+			arows.Close()
+			return nil, fmt.Errorf("scan machine_events: %w", err)
+		}
+		alerted[k] = kind == EventRelaySilent
+	}
+	arows.Close()
+	if err := arows.Err(); err != nil {
+		return nil, fmt.Errorf("machine_events: %w", err)
+	}
+
 	want := map[pairKey]string{} // строки, которые должны быть после прохода
 	var events []pairEvent
 	set := func(k pairKey, status string, onNew func(old string, had bool)) {
@@ -334,10 +358,12 @@ func (s *Store) detectPairEvents(ctx context.Context, tx pgx.Tx, g relayGraph, d
 			}
 			set(k, st, func(old string, had bool) {
 				switch {
+				case !had:
+					// U26: первое наблюдение пары - молча (сводки мостов могли ещё не прийти).
 				case st == RelayStatusSilent:
 					events = append(events, pairEvent{r.Code, e.Code, EventRelaySilent,
 						"релей " + r.Code + " не ходит через мост " + e.Code + " " + fmtUTC(last)})
-				case st == RelayStatusOK && had && old == RelayStatusSilent:
+				case st == RelayStatusOK && old == RelayStatusSilent && alerted[k]:
 					events = append(events, pairEvent{r.Code, e.Code, EventRelayOK,
 						"релей " + r.Code + " снова ходит через мост " + e.Code})
 				}

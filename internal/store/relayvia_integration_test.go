@@ -334,6 +334,31 @@ func TestIntegration_RelayVia_R4_1_SilentAndOkOnTransition(t *testing.T) {
 	}
 }
 
+// U26: первое наблюдение пары (детектор её ещё не видел - пустое состояние после
+// установки или новая пара) записывается без события: при старте мастера сводки
+// мостов ещё не пришли. «Снова ходит» уходит только после тревоги.
+func TestIntegration_RelayVia_U26_FirstObservationSilent(t *testing.T) {
+	st := setupOps(t)
+	defer st.Close()
+	pairsAlive(t, st)
+	setExitBridge(t, st, "ps2", 0, "pr2", 5*time.Minute)
+	if got := detect(t, st); len(got) != 0 {
+		t.Fatalf("первое наблюдение - без событий, даже если релей молчит: %v", got)
+	}
+	setExitBridge(t, st, "ps2", 0, "pr2", 0)
+	if got := detect(t, st); len(got) != 0 {
+		t.Fatalf("relay_ok без предшествующей тревоги не нужен: %v", got)
+	}
+	setExitBridge(t, st, "ps2", 0, "pr2", 5*time.Minute)
+	if got := detect(t, st); !slices.Equal(got, []string{"pr2:relay_silent:ps2"}) {
+		t.Fatalf("переход ok -> relay_silent - тревога: %v", got)
+	}
+	setExitBridge(t, st, "ps2", 0, "pr2", 0)
+	if got := detect(t, st); !slices.Equal(got, []string{"pr2:relay_ok:ps2"}) {
+		t.Fatalf("после тревоги - relay_ok: %v", got)
+	}
+}
+
 func TestIntegration_RelayVia_R4_3_ExitDownNoRelaySilent(t *testing.T) {
 	st := setupOps(t)
 	defer st.Close()
