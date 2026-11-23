@@ -47,6 +47,9 @@ type Config struct {
 	Via        string   // через какой мост ходит агент (для отчёта), необязательно
 	UsersFile  string   // путь к users.toml на машине; пусто - telemt.users не ведётся
 	MtgFile    string   // путь к config.toml mtg-multi; пусто - mtg.config не ведётся
+
+	MtgSecondaryFile    string // отдельный config.toml второго процесса mtg на релее
+	MtgSecondaryApplier *MtgApplier
 	// TelemtConfigFile - telemt.toml под ресурсом telemt.config; пусто - не ведётся.
 	TelemtConfigFile string
 	// TelemtLocalFile - машинная часть telemt.toml (telemtcfg/compose.go); файла может не быть.
@@ -147,6 +150,8 @@ func New(cfg Config) (*Agent, error) {
 		return nil, errors.New("для режима apply с users.toml нужен Applier")
 	case cfg.Mode == ModeApply && cfg.MtgFile != "" && cfg.MtgApplier == nil:
 		return nil, errors.New("для режима apply с mtg нужен MtgApplier")
+	case cfg.Mode == ModeApply && cfg.MtgSecondaryFile != "" && cfg.MtgSecondaryApplier == nil:
+		return nil, errors.New("для второго процесса mtg в режиме apply нужен отдельный MtgApplier")
 	case cfg.Mode == ModeApply && cfg.TelemtConfigFile != "" && cfg.ConfigApplier == nil:
 		return nil, errors.New("для режима apply с telemt.config нужен ConfigApplier")
 	case cfg.Mode == ModeApply && cfg.TLSDir != "" && cfg.TLSApplier == nil:
@@ -160,6 +165,18 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.MtgApplier != nil {
 		cfg.MtgApplier.ConfigFile = cfg.MtgFile
+	}
+	if cfg.MtgSecondaryFile != "" {
+		if err := validateMtgFiles(cfg.MtgFile, cfg.MtgSecondaryFile); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.MtgSecondaryApplier != nil {
+		if cfg.MtgSecondaryApplier == cfg.MtgApplier {
+			return nil, errors.New("двум процессам mtg нужны отдельные MtgApplier")
+		}
+		cfg.MtgSecondaryApplier.ConfigFile = cfg.MtgSecondaryFile
+		cfg.MtgSecondaryApplier.verifyUnchanged = true
 	}
 	if cfg.ConfigApplier != nil {
 		cfg.ConfigApplier.ConfigFile = cfg.TelemtConfigFile
@@ -203,6 +220,9 @@ func (a *Agent) handles(resource string) bool {
 		return a.cfg.UsersFile != ""
 	case store.ResourceMtgConfig:
 		return a.cfg.MtgFile != ""
+	case store.ResourceMtgSecondaryConfig:
+		// Мастер уже назначил ресурс: отсутствие локальной настройки видно в observed.
+		return true
 	case store.ResourceTelemtConfig:
 		return a.cfg.TelemtConfigFile != ""
 	case store.ResourceTLSWeb:
@@ -329,7 +349,7 @@ func (a *Agent) checkAndReport(ctx context.Context, m master) error {
 	var items []*store.Desired
 	// Порядок важен: сначала пользователи, затем основной конфиг - он собирает
 	// профили из users.toml, который только что лёг на диск.
-	for _, r := range []string{store.ResourceTelemtUsers, store.ResourceTelemtConfig, store.ResourceMtgConfig, store.ResourceTLSWeb, stack.Resource} {
+	for _, r := range []string{store.ResourceTelemtUsers, store.ResourceTelemtConfig, store.ResourceMtgConfig, store.ResourceMtgSecondaryConfig, store.ResourceTLSWeb, stack.Resource} {
 		if d := a.desired[r]; d != nil {
 			items = append(items, d)
 		}
@@ -345,7 +365,10 @@ func (a *Agent) checkAndReport(ctx context.Context, m master) error {
 		Checks: runChecks(ctx, a.cfg.Checks)}
 	for _, d := range items {
 		var res store.ObservedResource
-		if a.cfg.Mode == ModeApply {
+		if d.Resource == store.ResourceMtgSecondaryConfig && a.cfg.MtgSecondaryFile == "" {
+			res = store.ObservedResource{Resource: d.Resource, Revision: d.Revision, SHA256: d.SHA256, Status: "failed",
+				Error: "у агента не настроен второй процесс mtg (TELEMUX_AGENT_MTG_SECONDARY_FILE/UNIT/STATS_URL)"}
+		} else if a.cfg.Mode == ModeApply {
 			res = a.apply(ctx, d)
 		} else {
 			res = a.compare(ctx, d)
@@ -368,7 +391,9 @@ func (a *Agent) compare(ctx context.Context, d *store.Desired) store.ObservedRes
 	case stack.Resource:
 		return a.compareStack(ctx, d)
 	case store.ResourceMtgConfig:
-		return a.compareMtg(d)
+		return a.compareMtg(d, a.cfg.MtgFile)
+	case store.ResourceMtgSecondaryConfig:
+		return a.compareMtg(d, a.cfg.MtgSecondaryFile)
 	case store.ResourceTelemtConfig:
 		return a.compareMainConfig(d)
 	case store.ResourceTLSWeb:
@@ -389,9 +414,9 @@ func (a *Agent) compareMainConfig(d *store.Desired) store.ObservedResource {
 	return res
 }
 
-func (a *Agent) compareMtg(d *store.Desired) store.ObservedResource {
+func (a *Agent) compareMtg(d *store.Desired, configFile string) store.ObservedResource {
 	res := store.ObservedResource{Resource: d.Resource, Revision: d.Revision, SHA256: d.SHA256, Status: "compared"}
-	onDisk, err := os.ReadFile(a.cfg.MtgFile)
+	onDisk, err := os.ReadFile(configFile)
 	if err != nil {
 		res.Status, res.Error = "failed", fmt.Sprintf("config.toml mtg не читается: %v", err)
 		return res
@@ -437,6 +462,8 @@ func (a *Agent) apply(ctx context.Context, d *store.Desired) store.ObservedResou
 	switch d.Resource {
 	case store.ResourceMtgConfig:
 		r = a.cfg.MtgApplier.Apply(ctx, d.Content)
+	case store.ResourceMtgSecondaryConfig:
+		r = a.cfg.MtgSecondaryApplier.Apply(ctx, d.Content)
 	case store.ResourceTelemtConfig:
 		r = a.cfg.ConfigApplier.Apply(ctx, d.Content)
 	case store.ResourceTLSWeb:
@@ -446,7 +473,7 @@ func (a *Agent) apply(ctx context.Context, d *store.Desired) store.ObservedResou
 	}
 	res.Status, res.Error = r.Status, r.Error
 	a.mu.Lock()
-	if r.Status == "failed" {
+	if r.Status == "failed" && !r.retry {
 		a.failed[d.Resource] = failedRev{rev: d.Revision, inputs: inputs, err: r.Error}
 	} else {
 		delete(a.failed, d.Resource)

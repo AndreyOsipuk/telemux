@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/AndreyOsipuk/telemux/internal/servercfg"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -54,6 +55,47 @@ type RenderStatus struct {
 	Current *string // содержимое последней ревизии; nil - нет
 }
 
+// RenderJob - что собрать: ресурс одной машины сервера.
+type RenderJob struct {
+	Target   string // код машины
+	Kind     string // relay | exit
+	Resource string
+}
+
+// RenderJobs - какие конфиги собираются у сервера (как цели бота):
+//   - telemt: машина за рубежом (кроме node_retired) и релей - telemt.config;
+//   - mtg: машина за рубежом (кроме node_retired и доставки через панель, BACKEND=xui) и
+//     релей в режиме local-mtg - ресурс TELEMUX_RELAY_RESOURCE (по умолчанию mtg.config). Релей-проброс (без local-mtg) конфига не имеет.
+//
+// Выключенный сервер (state=disabled) не собирается вовсе.
+func (srv Server) RenderJobs() []RenderJob {
+	if srv.State == "disabled" {
+		return nil
+	}
+	var out []RenderJob
+	switch srv.Engine {
+	case servercfg.EngineTelemt:
+		if srv.NodeCode != nil && !srv.NodeRetired {
+			out = append(out, RenderJob{Target: *srv.NodeCode, Kind: "exit", Resource: ResourceTelemtConfig})
+		}
+		if srv.RelayCode != nil {
+			out = append(out, RenderJob{Target: *srv.RelayCode, Kind: "relay", Resource: ResourceTelemtConfig})
+		}
+	case servercfg.EngineMtg:
+		if srv.NodeCode != nil && !srv.NodeRetired && srv.Settings["BACKEND"] != "xui" {
+			out = append(out, RenderJob{Target: *srv.NodeCode, Kind: "exit", Resource: ResourceMtgConfig})
+		}
+		if srv.RelayCode != nil && srv.Settings["RELAY_MODE"] == "local-mtg" {
+			resource := srv.Settings["TELEMUX_RELAY_RESOURCE"]
+			if resource == "" {
+				resource = ResourceMtgConfig
+			}
+			out = append(out, RenderJob{Target: *srv.RelayCode, Kind: "relay", Resource: resource})
+		}
+	}
+	return out
+}
+
 // RenderMachine - машина для сборки: вид, адрес и назначенные ресурсы.
 type RenderMachine struct {
 	Code      string
@@ -84,7 +126,7 @@ type RenderInput struct {
 func CurrentKey(target, resource string) string { return target + "\x00" + resource }
 
 // RenderInput читает серверы, их машины, пользователей и хеши текущих ревизий
-// telemt.config и mtg.config - по одному запросу на вид данных, без N+1.
+// telemt.config и обоих ресурсов mtg - по одному запросу на вид данных, без N+1.
 func (s *Store) RenderInput(ctx context.Context) (RenderInput, error) {
 	in := RenderInput{Machines: map[string]RenderMachine{}, Current: map[string]string{}}
 	// Серверов не больше 99 (номер 1..99): страница не нужна.
@@ -162,7 +204,7 @@ func (s *Store) renderMachines(ctx context.Context, codes []string, in RenderInp
 	drows, err := s.pool.Query(ctx,
 		`SELECT DISTINCT ON (target, resource) target, resource, sha256 FROM desired_config
 		  WHERE target = ANY($1) AND resource = ANY($2)
-		  ORDER BY target, resource, revision DESC`, codes, []string{ResourceTelemtConfig, ResourceMtgConfig})
+		  ORDER BY target, resource, revision DESC`, codes, []string{ResourceTelemtConfig, ResourceMtgConfig, ResourceMtgSecondaryConfig})
 	if err != nil {
 		return fmt.Errorf("текущие ревизии для сборки: %w", err)
 	}
@@ -274,8 +316,7 @@ func (s *Store) SetConfigSource(ctx context.Context, no int, source string, forc
 		return Server{}, fmt.Errorf("%w, получено %q", ErrBadConfigSource, source)
 	}
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		var cur string
-		err := tx.QueryRow(ctx, `SELECT config_source FROM servers WHERE no = $1 FOR UPDATE`, no).Scan(&cur)
+		srv, err := scanServer(tx.QueryRow(ctx, `SELECT `+serverCols+` FROM servers WHERE no = $1 FOR UPDATE`, no))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("%w: %d", ErrServerNotFound, no)
 		}
@@ -283,20 +324,28 @@ func (s *Store) SetConfigSource(ctx context.Context, no int, source string, forc
 			return fmt.Errorf("сервер %d: %w", no, err)
 		}
 		if source == ConfigSourceTelemux && !force {
-			var total, ok int
+			// Сверяем именно текущий набор (машина, ресурс). После правки карточки
+			// в server_render может ещё лежать успешное сравнение старого процесса.
+			jobs := srv.RenderJobs()
+			if len(jobs) == 0 {
+				return fmt.Errorf("%w: у сервера %d нет машин для сборки", ErrRenderMismatch, no)
+			}
+			targets, resources := make([]string, len(jobs)), make([]string, len(jobs))
+			for i, j := range jobs {
+				targets[i], resources[i] = j.Target, j.Resource
+			}
+			var matched int
 			if err := tx.QueryRow(ctx,
-				`SELECT count(*), count(*) FILTER (WHERE equal AND error = '') FROM server_render WHERE server_no = $1`,
-				no).Scan(&total, &ok); err != nil {
+				`SELECT count(*) FROM server_render r
+				   JOIN unnest($2::text[], $3::text[]) AS expected(target, resource) USING (target, resource)
+				  WHERE r.server_no = $1 AND r.equal AND r.error = ''`, no, targets, resources).Scan(&matched); err != nil {
 				return fmt.Errorf("сравнение сервера %d: %w", no, err)
 			}
-			if total == 0 {
-				return fmt.Errorf("%w: у сервера %d сравнения ещё не было (нет машин для сборки или цикл не прошёл)", ErrRenderMismatch, no)
-			}
-			if ok < total {
-				return fmt.Errorf("%w: сервер %d - совпало %d из %d (GET /api/v1/servers/%d/render)", ErrRenderMismatch, no, ok, total, no)
+			if matched != len(jobs) {
+				return fmt.Errorf("%w: сервер %d - совпало %d из %d (GET /api/v1/servers/%d/render)", ErrRenderMismatch, no, matched, len(jobs), no)
 			}
 		}
-		if cur == source {
+		if srv.ConfigSource == source {
 			return nil
 		}
 		if _, err := tx.Exec(ctx, `UPDATE servers SET config_source = $2, updated_at = now() WHERE no = $1`, no, source); err != nil {

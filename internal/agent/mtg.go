@@ -65,13 +65,14 @@ func runCmd(ctx context.Context, name string, args ...string) error {
 
 // MtgApplier применяет config.toml mtg-multi.
 type MtgApplier struct {
-	ConfigFile     string // по умолчанию /etc/mtg-multi/config.toml
-	StatsURL       string // /stats mtg; по умолчанию http://127.0.0.1:8081/stats
-	Service        MtgService
-	HotReload      bool          // SIGHUP, если изменились только секреты
-	ConfirmTimeout time.Duration // ожидание подтверждения; по умолчанию 10 с
-	PollEvery      time.Duration // по умолчанию 500 мс
-	FreeSpace      func(dir string) (uint64, error)
+	ConfigFile      string // по умолчанию /etc/mtg-multi/config.toml
+	StatsURL        string // /stats mtg; по умолчанию http://127.0.0.1:8081/stats
+	Service         MtgService
+	verifyUnchanged bool          // второй процесс подтверждает уже лежащий на диске конфиг своим /stats
+	HotReload       bool          // SIGHUP, если изменились только секреты
+	ConfirmTimeout  time.Duration // ожидание подтверждения; по умолчанию 10 с
+	PollEvery       time.Duration // по умолчанию 500 мс
+	FreeSpace       func(dir string) (uint64, error)
 
 	writeFile func(path string, data []byte, perm os.FileMode) error
 }
@@ -155,6 +156,19 @@ func (a *MtgApplier) Apply(ctx context.Context, desired []byte) ApplyResult {
 		return failed("config.toml не читается: %v", err)
 	}
 	if bytes.Equal(cur, desired) {
+		if a.verifyUnchanged {
+			want := MtgSecretsDigest(desired)
+			client := &http.Client{Timeout: 3 * time.Second}
+			digest := a.statsDigest(ctx, client)
+			if digest == "" || !a.Service.Active(ctx) {
+				return ApplyResult{Status: "failed", Error: "второй процесс mtg не подтвердил набор секретов в /stats", retry: true}
+			}
+			if digest != want {
+				if !a.HotReload || a.Service.HUP(ctx) != nil || !a.waitDigest(ctx, want) {
+					return ApplyResult{Status: "failed", Error: "второй процесс mtg не подхватил набор секретов с диска", retry: true}
+				}
+			}
+		}
 		return ApplyResult{Status: "applied"}
 	}
 	if len(secretRows(string(desired))) == 0 && len(secretRows(string(cur))) > 0 {
@@ -239,6 +253,9 @@ func (a *MtgApplier) statsDigest(ctx context.Context, client *http.Client) strin
 		return ""
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
 	var s struct {
 		Digest string `json:"secrets_sha256"`
 	}
@@ -246,4 +263,56 @@ func (a *MtgApplier) statsDigest(ctx context.Context, client *http.Client) strin
 		return ""
 	}
 	return s.Digest
+}
+
+// До первой публикации config.toml может ещё отсутствовать. Для нового файла проверяем
+// реальное расположение каталога, для существующих также учитываем жёсткие ссылки.
+func mtgFileLocation(file string) (string, os.FileInfo, error) {
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		return "", nil, err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return "", nil, err
+	}
+	path := filepath.Join(parent, filepath.Base(file))
+	_, err = os.Lstat(path)
+	if os.IsNotExist(err) {
+		return path, nil, nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil, fmt.Errorf("%s должен быть обычным файлом", file)
+	}
+	return path, info, nil
+}
+
+func validateMtgFiles(primary, secondary string) error {
+	if primary == "" || !filepath.IsAbs(secondary) {
+		return fmt.Errorf("нужны основной конфиг и абсолютный путь второго конфига mtg")
+	}
+	first, firstInfo, err := mtgFileLocation(primary)
+	if err != nil {
+		return fmt.Errorf("основной конфиг mtg: %w", err)
+	}
+	second, secondInfo, err := mtgFileLocation(secondary)
+	if err != nil {
+		return fmt.Errorf("второй конфиг mtg: %w", err)
+	}
+	if first == second || (firstInfo != nil && secondInfo != nil && os.SameFile(firstInfo, secondInfo)) ||
+		strings.HasSuffix(first, tmpSuffix) || strings.HasSuffix(first, bakSuffix) || strings.HasSuffix(second, tmpSuffix) || strings.HasSuffix(second, bakSuffix) {
+		return fmt.Errorf("пути конфигов mtg и их служебных файлов должны различаться")
+	}
+	return nil
 }

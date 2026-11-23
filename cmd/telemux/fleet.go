@@ -30,11 +30,17 @@ func runTarget(args []string) int {
 	relay := fs.String("relay", "", "для выхода: релей, к которому он держит туннель")
 	webDomains := fs.String("web-domains", "", "для релея: WEB-домены через запятую (сертификаты tls.web выпускает мастер)")
 	resources := fs.String("resources", "", "ресурсы через запятую, например telemt.users")
+	addResource := fs.String("add-resource", "", "добавить второму экземпляру на существующем релее ресурс mtg.secondary.config")
 	disabled := fs.Bool("disabled", false, "машина выключена (ревизий не получает)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *code == "" || (*kind != "exit" && *kind != "relay" && *kind != "panel") {
+	if *addResource != "" {
+		if *code == "" || *addResource != store.ResourceMtgSecondaryConfig || *kind != "" || *resources != "" || *relay != "" || *webDomains != "" || *settings != "" || *disabled {
+			fmt.Fprintln(os.Stderr, "для назначения второму mtg нужны только --code и --add-resource mtg.secondary.config")
+			return 2
+		}
+	} else if *code == "" || (*kind != "exit" && *kind != "relay" && *kind != "panel") {
 		fmt.Fprintln(os.Stderr, "нужны --code и --kind exit|relay|panel")
 		return 2
 	}
@@ -57,6 +63,14 @@ func runTarget(args []string) int {
 		return 1
 	}
 	defer st.Close()
+	if *addResource != "" {
+		if err := st.AssignSecondaryMtg(ctx, *code); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("%s назначен машине %s\n", *addResource, *code)
+		return 0
+	}
 	t := store.Target{Code: *code, Kind: *kind, RelayCode: *relay, Resources: splitList(*resources), Enabled: !*disabled, Settings: kv}
 	if err := st.UpsertTarget(ctx, t); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -130,6 +144,9 @@ func runAgent(args []string) int {
 	mtgFile := fs.String("mtg-file", envOr("TELEMUX_AGENT_MTG_FILE", "none"), "config.toml mtg-multi; none - mtg не ведётся")
 	mtgStats := fs.String("mtg-stats-url", envOr("TELEMUX_AGENT_MTG_STATS_URL", "http://127.0.0.1:8081/stats"), "/stats mtg-multi (secrets_sha256)")
 	mtgUnit := fs.String("mtg-unit", envOr("TELEMUX_AGENT_MTG_UNIT", "mtg-multi"), "юнит systemd mtg-multi")
+	secondaryFile := fs.String("mtg-secondary-file", envOr("TELEMUX_AGENT_MTG_SECONDARY_FILE", ""), "отдельный config.toml второго процесса mtg")
+	secondaryUnit := fs.String("mtg-secondary-unit", envOr("TELEMUX_AGENT_MTG_SECONDARY_UNIT", ""), "отдельный юнит второго процесса mtg")
+	secondaryStats := fs.String("mtg-secondary-stats-url", envOr("TELEMUX_AGENT_MTG_SECONDARY_STATS_URL", ""), "отдельный локальный /stats второго процесса mtg")
 	mtgHot := fs.Bool("mtg-hot-reload", envOr("TELEMUX_AGENT_MTG_HOT_RELOAD", "1") == "1", "SIGHUP, если изменились только секреты")
 	mode := fs.String("mode", envOr("TELEMUX_AGENT_MODE", agent.ModeCompare), "режим: compare (только сравнить) или apply (применять)")
 	configFile := fs.String("config-file", envOr("TELEMUX_AGENT_CONFIG_FILE", "/etc/telemt/telemt.toml"), "telemt.toml (WEB-профили и ресурс telemt.config)")
@@ -174,6 +191,10 @@ func runAgent(args []string) int {
 	if *mtgFile == "none" {
 		*mtgFile = ""
 	}
+	if err := validateSecondaryMtg(*secondaryFile, *secondaryUnit, *secondaryStats, *mtgUnit, *mtgStats); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 	mainFile := ""
 	if *mainConfig {
 		if *usersFile == "" {
@@ -191,7 +212,7 @@ func runAgent(args []string) int {
 		certDir = *tlsDir
 	}
 	var applier *agent.Applier
-	var mtgApplier *agent.MtgApplier
+	var mtgApplier, secondaryApplier *agent.MtgApplier
 	var configApplier *agent.ConfigApplier
 	var tlsApplier *agent.TLSApplier
 	var stackApplier *agent.StackApplier
@@ -206,11 +227,15 @@ func runAgent(args []string) int {
 		if *usersFile != "" {
 			applier = &agent.Applier{ConfigFile: *configFile, StateURL: *stateURL, Reloader: agent.SystemdReloader{Unit: *unit}}
 		}
+		if *secondaryFile != "" {
+			secondaryApplier = &agent.MtgApplier{StatsURL: *secondaryStats, Service: agent.SystemdMtg{Unit: *secondaryUnit}, HotReload: *mtgHot}
+		}
 		if *mtgFile != "" {
 			mtgApplier = &agent.MtgApplier{StatsURL: *mtgStats, Service: agent.SystemdMtg{Unit: *mtgUnit}, HotReload: *mtgHot}
 		}
 	}
 	a, err := agent.New(agent.Config{
+		MtgSecondaryFile: *secondaryFile, MtgSecondaryApplier: secondaryApplier,
 		Applier: applier, MtgApplier: mtgApplier, MtgFile: *mtgFile, MasterPin: *masterPin,
 		TelemtConfigFile: mainFile, TelemtLocalFile: *localConfig, ConfigApplier: configApplier,
 		TLSDir: certDir, TLSApplier: tlsApplier, StackApplier: stackApplier,

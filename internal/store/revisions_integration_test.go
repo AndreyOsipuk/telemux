@@ -433,3 +433,37 @@ func TestIntegration_PublishTelemtConfig(t *testing.T) {
 		t.Fatalf("ревизия бандла pr2 - максимальная из его ресурсов: ждали %d, получили %d", r1.Revision, b.Revision)
 	}
 }
+
+// Повторное назначение второму процессу сохраняет все параметры существующего релея.
+func TestIntegration_AssignSecondaryMtg(t *testing.T) {
+	st := setupAll(t)
+	defer st.Close()
+	ctx := context.Background()
+	seedTargets(t, st, Target{Code: "pr1", Kind: "relay", Resources: []string{ResourceTelemtUsers, ResourceMtgConfig}, Enabled: true, Settings: map[string]string{"address": "203.0.113.20"}})
+	if _, err := st.PublishResource(ctx, "pr1", ResourceMtgSecondaryConfig, []byte("secondary")); err != ErrResourceNotAssigned {
+		t.Fatalf("второй ресурс до назначения: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := st.AssignSecondaryMtg(ctx, "pr1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := st.pool.QueryRow(ctx, "SELECT count(*) FROM targets WHERE code='pr1' AND enabled AND cardinality(resources)=3 AND settings->>'address'='203.0.113.20' AND $1=ANY(resources)", ResourceTelemtUsers).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("назначение изменило релей: %d %v", count, err)
+	}
+	for _, resource := range []string{ResourceMtgConfig, ResourceMtgSecondaryConfig} {
+		if _, err := st.PublishResource(ctx, "pr1", resource, []byte(resource)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := st.DesiredBundle(ctx, "pr1")
+	if err != nil || len(b.Resources) != 2 {
+		t.Fatalf("нет двух ресурсов: %+v %v", b, err)
+	}
+	for _, r := range b.Resources {
+		if string(r.Content) != r.Resource {
+			t.Fatal("два конфига перекрыли друг друга")
+		}
+	}
+}

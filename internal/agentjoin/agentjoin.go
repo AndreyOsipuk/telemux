@@ -35,8 +35,9 @@ const (
 
 // Ресурсы, которые можно назначить машине при добавлении.
 const (
-	ResourceTelemtUsers = "telemt.users"
-	ResourceMtgConfig   = "mtg.config"
+	ResourceTelemtUsers        = "telemt.users"
+	ResourceMtgConfig          = "mtg.config"
+	ResourceMtgSecondaryConfig = "mtg.secondary.config"
 )
 
 //go:embed telemux-agent.service
@@ -116,17 +117,20 @@ func ValidPublicURL(s string) error {
 	return nil
 }
 
-// ValidateResources - только telemt.users и mtg.config, без повторов.
+// ValidateResources проверяет список ресурсов агента и связь двух экземпляров mtg.
 func ValidateResources(list []string) error {
 	seen := map[string]bool{}
 	for _, r := range list {
-		if r != ResourceTelemtUsers && r != ResourceMtgConfig {
-			return fmt.Errorf("ресурс %q: допустимы %s и %s", r, ResourceTelemtUsers, ResourceMtgConfig)
+		if r != ResourceTelemtUsers && r != ResourceMtgConfig && r != ResourceMtgSecondaryConfig {
+			return fmt.Errorf("ресурс %q: допустимы %s, %s, %s", r, ResourceTelemtUsers, ResourceMtgConfig, ResourceMtgSecondaryConfig)
 		}
 		if seen[r] {
 			return fmt.Errorf("ресурс %q указан дважды", r)
 		}
 		seen[r] = true
+	}
+	if seen[ResourceMtgSecondaryConfig] && !seen[ResourceMtgConfig] {
+		return errors.New("второму процессу нужен основной ресурс mtg.config")
 	}
 	return nil
 }
@@ -259,6 +263,10 @@ func Env(p EnvParams) (string, error) {
 		switch r {
 		case ResourceTelemtUsers:
 			users = UsersFile
+		case ResourceMtgSecondaryConfig:
+			if p.Kind != "relay" {
+				return "", errors.New("второй mtg назначается релею")
+			}
 		case ResourceMtgConfig:
 			mtg = MtgFile
 		}

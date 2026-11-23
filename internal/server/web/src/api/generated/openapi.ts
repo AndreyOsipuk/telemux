@@ -63,7 +63,7 @@ export interface paths {
          *     обязательны `relay_code` (существующий релей), `address` (публичный IPv4 выхода) и
          *     `bridge_socks` (адрес socks-входа на релее, через который релей ходит в этот выход,
          *     например `socks5://127.0.0.1:10872`). Релею можно задать `address` - его публичный
-         *     IPv4 для сборки `telemt.config`. Ресурсы - из `telemt.users`, `mtg.config`.
+         *     IPv4 для сборки `telemt.config`. Ресурсы - из `telemt.users`, `mtg.config`, `mtg.secondary.config` (второй процесс на релее, вместе с основным).
          *     Если на мастере настроена цепочка файрвола (`TELEMUX_AGENT_FW_CHAIN`), адрес выхода
          *     сразу открывается на TLS-порту агентов. Релея из `relay_code` нет (или это машина не
          *     вида `relay`) - 400 `unknown_machine`. Пары «релей - своя нода» берутся только из
@@ -180,7 +180,7 @@ export interface paths {
          * Готовый ресурс одной машины от бота
          * @description Бот публикует ресурс, который собирает сам: `telemt.config` - основной telemt.toml
          *     машины без WEB-профилей (текст; профили агент собирает из `telemt.users`, машинную
-         *     часть накладывает из `telemt.local.toml` на машине), `mtg.config` - config.toml
+         *     часть накладывает из `telemt.local.toml` на машине), `mtg.config` и `mtg.secondary.config` - отдельные config.toml
          *     mtg-multi машины (текст), `xui.clients` - JSON-массив клиентов MTProto-входа
          *     мастер-панели 3x-ui (машина вида panel). Новая ревизия создаётся только при изменении
          *     содержимого. `telemt.config` проверяется до публикации: текст разбирается как TOML,
@@ -562,7 +562,7 @@ export interface paths {
         /**
          * Сравнение сборки telemux с конфигами машин сервера
          * @description Последний проход цикла сборки на мастере (раз в минуту и сразу после правки сервера
-         *     или пользователей): по каждой машине и ресурсу (`telemt.config`, `mtg.config`) - sha
+         *     или пользователей): по каждой машине и ресурсу (`telemt.config`, `mtg.config`, `mtg.secondary.config`) - sha
          *     кандидата telemux и текущей ревизии, совпадение, ошибка сборки и unified diff
          *     «текущий → кандидат». Значения в секциях `[secrets]` и `[access.users]` в diff
          *     заменены на `<secret>` (сменённый ключ - `<secret changed>`). Ошибки - строкой
@@ -1103,7 +1103,7 @@ export interface components {
             address?: string;
             /** @description Для выхода - socks-вход на релее к этому выходу, socks5://127.0.0.1:<порт> */
             bridge_socks?: string;
-            resources: ("telemt.users" | "mtg.config")[];
+            resources: ("telemt.users" | "mtg.config" | "mtg.secondary.config")[];
         };
         JoinCommand: {
             target: string;
@@ -1554,7 +1554,7 @@ export interface components {
             live?: components["schemas"]["ServerLive"];
         };
         /**
-         * @description Кто публикует `telemt.config` / `mtg.config` машин сервера: `bot` (по умолчанию) или
+         * @description Кто публикует конфиги движков машин сервера: `bot` (по умолчанию) или
          *     сам telemux (ADR 0006). Меняется только `PUT /api/v1/servers/{no}/config-source`.
          * @enum {string}
          */
@@ -1576,7 +1576,7 @@ export interface components {
             /** @description Код машины */
             target: string;
             /** @enum {string} */
-            resource: "telemt.config" | "mtg.config";
+            resource: "telemt.config" | "mtg.config" | "mtg.secondary.config";
             /** @description null - кандидат не собран */
             candidate_sha: string | null;
             /** @description null - ревизий ресурса у машины нет */
@@ -2062,7 +2062,7 @@ export interface operations {
             header?: never;
             path: {
                 code: string;
-                resource: "telemt.config" | "mtg.config" | "xui.clients";
+                resource: "telemt.config" | "mtg.config" | "mtg.secondary.config" | "xui.clients";
             };
             cookie?: never;
         };
@@ -2127,7 +2127,7 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["Limit"];
                 offset?: components["parameters"]["Offset"];
-                resource?: "telemt.users" | "telemt.config" | "mtg.config" | "xui.clients" | "tls.web" | "stack";
+                resource?: "telemt.users" | "telemt.config" | "mtg.config" | "mtg.secondary.config" | "xui.clients" | "tls.web" | "stack";
                 enabled?: boolean;
                 kind?: "exit" | "relay" | "panel";
             };

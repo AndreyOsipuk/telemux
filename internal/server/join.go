@@ -91,6 +91,11 @@ func (b newTargetBody) validate() error {
 	if b.Resources == nil {
 		return errors.New("нужен resources - список, можно пустой")
 	}
+	for _, r := range b.Resources {
+		if r == agentjoin.ResourceMtgSecondaryConfig && b.Kind != "relay" {
+			return errors.New("второй mtg назначается релею")
+		}
+	}
 	return agentjoin.ValidateResources(b.Resources)
 }
 

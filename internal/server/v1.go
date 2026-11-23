@@ -201,7 +201,7 @@ func (s *Server) routesV1() {
 		}
 		resource := r.PathValue("resource")
 		if !store.PublishableResources[resource] {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("ресурс %q не публикуется извне (допустимы: %s, %s, %s)", resource, store.ResourceTelemtConfig, store.ResourceMtgConfig, store.ResourceXuiClients), s.deps.Log)
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("ресурс %q не публикуется извне (допустимы: %s, %s, %s, %s)", resource, store.ResourceTelemtConfig, store.ResourceMtgConfig, store.ResourceMtgSecondaryConfig, store.ResourceXuiClients), s.deps.Log)
 			return
 		}
 		content, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))

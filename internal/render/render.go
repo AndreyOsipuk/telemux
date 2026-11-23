@@ -61,42 +61,11 @@ type Machine struct {
 	Address string
 }
 
-// Job - что собрать: ресурс одной машины сервера.
-type Job struct {
-	Target   string // код машины
-	Kind     string // relay | exit
-	Resource string
-}
+// Job - ресурс одной машины сервера.
+type Job = store.RenderJob
 
-// Jobs - какие конфиги собираются у сервера (как цели бота):
-//   - telemt: машина за рубежом (кроме node_retired) и релей - telemt.config;
-//   - mtg: машина за рубежом (кроме node_retired и доставки через панель, BACKEND=xui) и
-//     релей в режиме local-mtg - mtg.config. Релей-проброс (без local-mtg) конфига не имеет.
-//
-// Выключенный сервер (state=disabled) не собирается вовсе.
-func Jobs(srv store.Server) []Job {
-	if srv.State == "disabled" {
-		return nil
-	}
-	var out []Job
-	switch srv.Engine {
-	case servercfg.EngineTelemt:
-		if srv.NodeCode != nil && !srv.NodeRetired {
-			out = append(out, Job{Target: *srv.NodeCode, Kind: "exit", Resource: ResourceTelemtConfig})
-		}
-		if srv.RelayCode != nil {
-			out = append(out, Job{Target: *srv.RelayCode, Kind: "relay", Resource: ResourceTelemtConfig})
-		}
-	case servercfg.EngineMtg:
-		if srv.NodeCode != nil && !srv.NodeRetired && setting(srv, "BACKEND") != "xui" {
-			out = append(out, Job{Target: *srv.NodeCode, Kind: "exit", Resource: ResourceMtgConfig})
-		}
-		if srv.RelayCode != nil && setting(srv, "RELAY_MODE") == "local-mtg" {
-			out = append(out, Job{Target: *srv.RelayCode, Kind: "relay", Resource: ResourceMtgConfig})
-		}
-	}
-	return out
-}
+// Jobs - общий план для сборки конфигов и проверки переключения источника.
+func Jobs(srv store.Server) []Job { return srv.RenderJobs() }
 
 // setting - значение настройки сервера или значение по умолчанию из каталога.
 func setting(srv store.Server, key string) string {

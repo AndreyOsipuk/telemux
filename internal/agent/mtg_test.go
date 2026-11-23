@@ -280,3 +280,91 @@ func TestNew_MtgOnlyMachine(t *testing.T) {
 		t.Fatal("apply без MtgApplier принят")
 	}
 }
+
+// Обновление одного экземпляра не затрагивает конфиг и процесс его соседа.
+func TestAgent_SecondaryMtgIsolation(t *testing.T) {
+	initial := mtgCfg(mtgHead, "alice_1", "aaaa")
+	mainFile, mainService, mainApply := setupMtg(t, initial)
+	secondFile, secondService, secondApply := setupMtg(t, initial)
+	next := mtgCfg(mtgHead, "bob_2", "bbbb")
+	m := &fakeMaster{bundle: store.Bundle{Target: "relay", Revision: 12, Resources: []store.Desired{
+		{Resource: "mtg.config", Revision: 8, SHA256: "a", Content: []byte(initial)},
+		{Resource: "mtg.secondary.config", Revision: 12, SHA256: "b", Content: []byte(next)},
+	}}}
+	srv := httptest.NewServer(m.handler(t, "tok", "relay"))
+	defer srv.Close()
+	cfg := Config{MasterURLs: []string{srv.URL}, Token: "tok", Target: "relay", Mode: ModeApply,
+		MtgFile: mainFile, MtgApplier: mainApply, MtgSecondaryFile: secondFile, MtgSecondaryApplier: secondApply}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	report := m.reports[len(m.reports)-1].Resources
+	if len(report) != 2 || report[1].Resource != "mtg.secondary.config" || report[1].Revision != 12 || report[1].Status != "applied" {
+		t.Fatalf("нет отдельного подтверждения второго процесса: %+v", report)
+	}
+	if readFile(t, mainFile) != initial || readFile(t, secondFile) != next || mainService.hups+mainService.restarts != 0 || secondService.hups != 1 {
+		t.Fatal("обновление второго экземпляра должно затронуть только его файл и процесс")
+	}
+}
+
+func TestSecondaryMtgRejectsSameFile(t *testing.T) {
+	main, _, _ := setupMtg(t, mtgCfg(mtgHead))
+	link := filepath.Join(t.TempDir(), "linked.toml")
+	if err := os.Link(main, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateMtgFiles(main, link); err == nil {
+		t.Fatal("два имени одного файла приняты")
+	}
+}
+
+// Совпадения файла недостаточно для передачи доставки от бота агенту.
+func TestSecondaryMtgRequiresRuntimeConfirmation(t *testing.T) {
+	initial := mtgCfg(mtgHead, "alice_1", "aaaa")
+	file, service, apply := setupMtg(t, initial)
+	service.digest = "устаревший набор"
+	service.hupWorks = false
+	service.startable = func(string) bool { return false }
+	mainFile, _, mainApply := setupMtg(t, initial)
+	cfg := Config{MasterURLs: []string{"http://master"}, Target: "relay", Token: "token", Mode: ModeApply, MtgFile: mainFile, MtgApplier: mainApply,
+		MtgSecondaryFile: file, MtgSecondaryApplier: apply}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := a.apply(context.Background(), &store.Desired{Resource: "mtg.secondary.config", Revision: 3, Content: []byte(initial)})
+	if res.Status != "failed" {
+		t.Fatal("устаревший процесс получил applied за совпадение файла")
+	}
+	service.hupWorks = true
+	res = a.apply(context.Background(), &store.Desired{Resource: "mtg.secondary.config", Revision: 3, Content: []byte(initial)})
+	if res.Status != "applied" {
+		t.Fatal("устранённый сбой /stats должен восстановиться на прежней ревизии")
+	}
+	if readFile(t, mainFile) != initial {
+		t.Fatal("неожиданно изменён конфиг")
+	}
+}
+
+func TestSecondaryMtgMissingLocalSettingsReported(t *testing.T) {
+	m := &fakeMaster{bundle: store.Bundle{Target: "pr1", Revision: 9, Resources: []store.Desired{
+		{Resource: "mtg.secondary.config", Revision: 9, Content: []byte("[secrets]\n")},
+	}}}
+	srv := httptest.NewServer(m.handler(t, "tok", "pr1"))
+	defer srv.Close()
+	a, err := New(Config{MasterURLs: []string{srv.URL}, Token: "tok", Target: "pr1", Mode: ModeApply})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := m.reports[len(m.reports)-1].Resources
+	if len(got) != 1 || got[0].Status != "failed" || got[0].Error == "" {
+		t.Fatalf("мастер не видит пропавшие настройки второго процесса: %+v", got)
+	}
+}

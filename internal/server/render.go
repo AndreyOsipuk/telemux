@@ -189,7 +189,7 @@ func (s *Server) renderJob(srv store.Server, j render.Job, machines map[string]s
 	switch j.Resource {
 	case render.ResourceTelemtConfig:
 		content, err = render.TelemtMain(srv, machine)
-	case render.ResourceMtgConfig:
+	case render.ResourceMtgConfig, store.ResourceMtgSecondaryConfig:
 		content, err = render.MtgConfig(srv, machine, users, render.MtgOpts{Now: now})
 	default:
 		return nil, &render.Error{Code: "internal", Msg: "неизвестный ресурс " + j.Resource}
@@ -211,7 +211,7 @@ func (s *Server) renderJob(srv store.Server, j render.Job, machines map[string]s
 // managedByTelemux - ресурс машины собирает сервер с config_source=telemux (тогда
 // публикация извне, от бота, отвергается).
 func (s *Server) managedByTelemux(ctx context.Context, target, resource string) (int, bool, error) {
-	if s.deps.Render == nil || (resource != render.ResourceTelemtConfig && resource != render.ResourceMtgConfig) {
+	if s.deps.Render == nil || (resource != render.ResourceTelemtConfig && resource != render.ResourceMtgConfig && resource != store.ResourceMtgSecondaryConfig) {
 		return 0, false, nil
 	}
 	list, err := s.deps.Render.TelemuxServersOfMachine(ctx, target)

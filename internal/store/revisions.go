@@ -63,6 +63,21 @@ func (s *Store) UpsertTarget(ctx context.Context, t Target) error {
 	return nil
 }
 
+// AssignSecondaryMtg добавляет ресурс существующему релею, не меняя его остальные назначения и настройки.
+func (s *Store) AssignSecondaryMtg(ctx context.Context, code string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE targets
+		SET resources = CASE WHEN $2 = ANY(resources) THEN resources ELSE array_append(resources,$2) END,
+		    updated_at = CASE WHEN $2 = ANY(resources) THEN updated_at ELSE now() END
+		WHERE code=$1 AND kind='relay' AND $3 = ANY(resources)`, code, ResourceMtgSecondaryConfig, ResourceMtgConfig)
+	if err != nil {
+		return fmt.Errorf("назначение второго mtg: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("нет релея %q с назначенным mtg.config", code)
+	}
+	return nil
+}
+
 // PublishResult - итог публикации.
 type PublishResult struct {
 	Revision int64    `json:"revision"` // последняя ревизия ресурса (новая или прежняя)
@@ -263,6 +278,8 @@ func (s *Store) UpsertUser(ctx context.Context, r ImportRow) (bool, error) {
 const (
 	// ResourceMtgConfig - config.toml mtg-multi машины; текст готовит бот.
 	ResourceMtgConfig = "mtg.config"
+	// ResourceMtgSecondaryConfig - отдельный конфиг второго процесса mtg на релейной машине.
+	ResourceMtgSecondaryConfig = "mtg.secondary.config"
 	// ResourceXuiClients - желаемые клиенты MTProto-входа мастер-панели 3x-ui (JSON).
 	ResourceXuiClients = "xui.clients"
 	// ResourceTelemtConfig - основной telemt.toml машины без WEB-профилей; текст
@@ -272,7 +289,7 @@ const (
 
 // PublishableResources - ресурсы, которые публикует внешний источник готовыми.
 // telemt.users сюда не входит: его собирает сам telemux.
-var PublishableResources = map[string]bool{ResourceMtgConfig: true, ResourceXuiClients: true, ResourceTelemtConfig: true}
+var PublishableResources = map[string]bool{ResourceMtgConfig: true, ResourceMtgSecondaryConfig: true, ResourceXuiClients: true, ResourceTelemtConfig: true}
 
 // PanelItem - работа синхронизатора панели по одному входу.
 type PanelItem struct {

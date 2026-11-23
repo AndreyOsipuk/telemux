@@ -197,7 +197,7 @@ func TestMtgConfig_Users(t *testing.T) {
 // Какие машины и ресурсы собираются у сервера.
 func TestJobs(t *testing.T) {
 	tm := telemtSrv()
-	if got := Jobs(tm); len(got) != 2 || got[0] != (Job{"ps1", "exit", ResourceTelemtConfig}) || got[1] != (Job{"pr1", "relay", ResourceTelemtConfig}) {
+	if got := Jobs(tm); len(got) != 2 || got[0] != (Job{Target: "ps1", Kind: "exit", Resource: ResourceTelemtConfig}) || got[1] != (Job{Target: "pr1", Kind: "relay", Resource: ResourceTelemtConfig}) {
 		t.Fatalf("telemt: %+v", got)
 	}
 	tm.NodeRetired = true
@@ -209,11 +209,11 @@ func TestJobs(t *testing.T) {
 		t.Fatalf("disabled: %+v", got)
 	}
 	mg := store.Server{No: 2, Engine: "mtg", State: "test", NodeCode: sp("ps2"), RelayCode: sp("pr2"), Settings: map[string]string{}}
-	if got := Jobs(mg); len(got) != 1 || got[0] != (Job{"ps2", "exit", ResourceMtgConfig}) {
+	if got := Jobs(mg); len(got) != 1 || got[0] != (Job{Target: "ps2", Kind: "exit", Resource: ResourceMtgConfig}) {
 		t.Fatalf("mtg без local-mtg: %+v", got)
 	}
 	mg.Settings = map[string]string{"RELAY_MODE": "local-mtg", "BACKEND": "xui"}
-	if got := Jobs(mg); len(got) != 1 || got[0] != (Job{"pr2", "relay", ResourceMtgConfig}) {
+	if got := Jobs(mg); len(got) != 1 || got[0] != (Job{Target: "pr2", Kind: "relay", Resource: ResourceMtgConfig}) {
 		t.Fatalf("mtg xui + local-mtg: %+v", got)
 	}
 	var e *Error

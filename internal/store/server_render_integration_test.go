@@ -234,3 +234,36 @@ func TestIntegration_Render_SetConfigSource(t *testing.T) {
 		t.Fatalf("выключенный сервер: %+v", got)
 	}
 }
+
+// Старое совпадение для основного слота не разрешает включить управление вторым процессом.
+func TestIntegration_Render_SecondarySource(t *testing.T) {
+	st := setupRender(t)
+	defer st.Close()
+	ctx := context.Background()
+	const secondary = "mtg.secondary.config"
+	seedTargets(t, st, Target{Code: "pr2", Kind: "relay", Enabled: true, Resources: []string{ResourceMtgConfig, secondary}})
+	_, err := st.pool.Exec(ctx, `UPDATE servers SET settings = settings || '{"RELAY_MODE":"local-mtg","TELEMUX_RELAY_RESOURCE":"mtg.secondary.config"}'::jsonb WHERE no=2`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.PublishResource(ctx, "pr2", secondary, []byte("[secrets]\n")); err != nil {
+		t.Fatal(err)
+	}
+	in, err := st.RenderInput(ctx)
+	if err != nil || in.Current[CurrentKey("pr2", secondary)] == "" {
+		t.Fatalf("SHA второго ресурса: %v", err)
+	}
+	exit := renderRow(2, "ps2", ResourceMtgConfig, true, "")
+	if err = st.SaveRender(ctx, []RenderRow{exit, renderRow(2, "pr2", ResourceMtgConfig, true, "")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.SetConfigSource(ctx, 2, ConfigSourceTelemux, false); !errors.Is(err, ErrRenderMismatch) {
+		t.Fatalf("переключён без сверки нужного процесса: %v", err)
+	}
+	if err = st.SaveRender(ctx, []RenderRow{exit, renderRow(2, "pr2", secondary, true, "")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.SetConfigSource(ctx, 2, ConfigSourceTelemux, false); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -325,3 +325,11 @@ func TestV1_PutTargetResource_TelemtConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestV1_SecondaryMtgAssigned(t *testing.T) {
+	s, _ := v1Server(false, 0)
+	rec := do(s, "PUT", "/api/v1/targets/pr2/resources/mtg.secondary.config", botToken, "[secrets]\n")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ресурс второго процесса: статус %d", rec.Code)
+	}
+}

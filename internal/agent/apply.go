@@ -72,6 +72,7 @@ type Applier struct {
 type ApplyResult struct {
 	Status string // applied | failed
 	Error  string
+	retry  bool // сбой проверки живого сервиса: перепроверить ту же ревизию в следующем цикле
 }
 
 func failed(format string, a ...any) ApplyResult {

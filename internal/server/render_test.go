@@ -323,3 +323,47 @@ func TestContract_Render(t *testing.T) {
 	checkContract(t, router, s, "PUT", "/api/v1/servers/1/config-source", `{"source":"telemux","force":true}`, http.StatusOK)
 	checkContract(t, router, s, "PUT", "/api/v1/servers/1/config-source", `{"source":"bot"}`, http.StatusOK)
 }
+
+// Два local-mtg одного релея выпускают независимые ревизии для разных процессов.
+// При смене источника только одного из них бот по-прежнему может вести соседний.
+func TestRender_SecondaryMtgRelay(t *testing.T) {
+	s, frd, fr := renderServer(false)
+	const secondary = "mtg.secondary.config"
+	main := store.Server{No: 5, Engine: "mtg", TLSDomain: "five.example.com", State: "active",
+		ConfigSource: store.ConfigSourceBot, NodeCode: strp("ps5"), RelayCode: strp("pr1"),
+		Settings: map[string]string{"RELAY_MODE": "local-mtg"}}
+	second := store.Server{No: 6, Engine: "mtg", TLSDomain: "six.example.com", State: "active",
+		ConfigSource: store.ConfigSourceTelemux, NodeCode: strp("ps6"), RelayCode: strp("pr1"),
+		Settings: map[string]string{"RELAY_MODE": "local-mtg", "TELEMUX_RELAY_RESOURCE": secondary,
+			"RELAY_PROMETHEUS_BIND": "127.0.0.1:3130"}}
+	frd.servers = []store.Server{main, second}
+	in := store.RenderInput{Servers: frd.servers, Machines: map[string]store.RenderMachine{
+		"pr1": {Code: "pr1", Enabled: true, Resources: []string{"mtg.config", secondary}},
+		"ps5": {Code: "ps5", Enabled: true, Resources: []string{"mtg.config"}},
+		"ps6": {Code: "ps6", Enabled: true, Resources: []string{"mtg.config"}},
+	}, Current: map[string]string{}}
+	want := map[string]string{"pr1/mtg.config": "127.0.0.1:3129", "pr1/" + secondary: "127.0.0.1:3130",
+		"ps5/mtg.config": "127.0.0.1:3129", "ps6/mtg.config": "127.0.0.1:3129"}
+	ctx := context.Background()
+	rows, published := s.renderAll(ctx, in, time.Now())
+	if !published || len(rows) != len(want) || fr.published != 2 {
+		t.Fatalf("строк %d, публикаций %d", len(rows), fr.published)
+	}
+	for _, r := range rows {
+		key := r.Target + "/" + r.Resource
+		if bind, ok := want[key]; !ok || r.Error != "" || r.Candidate == nil || !strings.Contains(*r.Candidate, "[stats.prometheus]\nenabled = true\nbind-to = \""+bind+"\"") {
+			t.Fatalf("неожиданная сборка %s: %q", key, r.Error)
+		}
+		delete(want, key)
+		in.Current[store.CurrentKey(r.Target, r.Resource)] = *r.CandidateSHA
+	}
+	if _, published = s.renderAll(ctx, in, time.Now()); published || fr.published != 2 {
+		t.Fatal("повторно опубликован прежний конфиг")
+	}
+	for res, wantNo := range map[string]int{"mtg.config": 0, secondary: 6} {
+		no, managed, err := s.managedByTelemux(ctx, "pr1", res)
+		if err != nil || managed != (wantNo != 0) || no != wantNo {
+			t.Fatalf("владелец %s: %d %t %v", res, no, managed, err)
+		}
+	}
+}

@@ -64,6 +64,7 @@ type mtgWeb struct{ bindTo, host, decoyDir string }
 type mtgNodeOpts struct {
 	bindTo         string
 	bindAddrs      []string
+	prometheusBind string
 	apiBindTo      string
 	frontingDomain string
 	extraDomains   []string
@@ -143,6 +144,7 @@ func nodeOpts(srv store.Server) (mtgNodeOpts, error) {
 	}
 	port := uintOr(setting(srv, "BIND_PORT"), 8767)
 	o := mtgNodeOpts{
+		prometheusBind: mtgPrometheusBind,
 		bindTo:         "0.0.0.0:" + strconv.Itoa(port),
 		apiBindTo:      setting(srv, "API_BIND"),
 		frontingDomain: srv.TLSDomain,
@@ -187,6 +189,7 @@ func relayOpts(srv store.Server, node mtgNodeOpts) mtgNodeOpts {
 		}
 	}
 	o.bindTo, o.bindAddrs = binds[0], binds
+	o.prometheusBind = setting(srv, "RELAY_PROMETHEUS_BIND")
 	o.apiBindTo = strings.TrimSpace(setting(srv, "RELAY_API_BIND"))
 	if o.apiBindTo == "" {
 		o.apiBindTo = mtgDefaultAPIBind
@@ -224,7 +227,7 @@ func MtgConfig(srv store.Server, m Machine, users []User, opts MtgOpts) ([]byte,
 	default:
 		return nil, errf(CodeUnknown, "машина %s вида %q: mtg собирается для exit и relay", m.Code, m.Kind)
 	}
-	for _, v := range append([]string{o.apiBindTo, o.frontingDomain, o.preferIP}, o.bindAddrs...) {
+	for _, v := range append([]string{o.apiBindTo, o.prometheusBind, o.frontingDomain, o.preferIP}, o.bindAddrs...) {
 		if err := quotable("mtg", v); err != nil {
 			return nil, err
 		}
@@ -295,7 +298,7 @@ func buildMtg(users []User, o mtgNodeOpts, now time.Time) string {
 	if w := o.web; w != nil {
 		lines = append(lines, "", "[web]", `bind-to = "`+w.bindTo+`"`, `host = "`+w.host+`"`, `decoy-dir = "`+w.decoyDir+`"`)
 	}
-	lines = append(lines, "", "[stats.prometheus]", "enabled = true", `bind-to = "`+mtgPrometheusBind+`"`,
+	lines = append(lines, "", "[stats.prometheus]", "enabled = true", `bind-to = "`+o.prometheusBind+`"`,
 		`http-path = "/"`, `metric-prefix = "mtg"`)
 	if o.maxConns > 0 {
 		lines = append(lines, "", "[throttle]", "max-connections = "+strconv.Itoa(o.maxConns), `check-interval = "5s"`)
