@@ -8,6 +8,9 @@ EnvironmentFile=/etc/telemux/agent.env
 ExecStart=/usr/local/bin/telemux agent
 Restart=always
 RestartSec=5
+# Подтверждённый список контрольных путей релея переживает рестарт.
+StateDirectory=telemux-agent
+StateDirectoryMode=0700
 # Система только для чтения, кроме конфигов telemt и mtg-multi и сертификатов nginx:
 # в режиме apply агент заменяет users.toml, telemt.toml, config.toml mtg и файлы
 # /etc/nginx/certs/<домен>.pem|.key (рядом - .telemux-bak). nginx -t открывает свои

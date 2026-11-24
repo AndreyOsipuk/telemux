@@ -364,3 +364,26 @@ func TestAgent_StackEmptyRevisionApplied(t *testing.T) {
 		}
 	}
 }
+
+func TestAgent_StackApplyUsesManagedMasterFirst(t *testing.T) {
+	e := newStackAgent(t, ModeApply, false)
+	e.run.after = func() { e.versions.set(e.telemtBin, "telemt 3.5.17\n") }
+	const entry = "http://192.0.2.41:18480|socks5://127.0.0.1:10874"
+	paths := []relayPath{{Exit: "ps1", Master: entry}}
+	masters, err := e.a.parseRelayPaths(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.a.relayPaths, e.a.relayMasters = paths, masters
+	d := stackDesired(t, 6, stack.Content{stack.ProductTelemt: {Version: "3.5.17", SHA256: shaTelemt, Size: 4242}})
+	if got := e.a.apply(context.Background(), d); got.Status != "applied" {
+		t.Fatalf("применение: %+v", got)
+	}
+	call := e.run.calls[0]
+	for i := 0; i < len(call)-1; i++ {
+		if call[i] == "--master" && strings.HasPrefix(call[i+1], entry+",") {
+			return
+		}
+	}
+	t.Fatal("stack-apply не получил приоритетный путь из реестра")
+}

@@ -77,6 +77,10 @@ func (f *fakeAgents) DesiredBundle(_ context.Context, target string) (store.Bund
 	}}, nil
 }
 
+func (f *fakeAgents) RelayMasterTargets(context.Context, string) (bool, []store.Target, error) {
+	return false, nil, nil
+}
+
 func (f *fakeAgents) RecordObserved(_ context.Context, rep store.ObservedReport) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

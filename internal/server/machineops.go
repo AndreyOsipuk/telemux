@@ -112,7 +112,7 @@ var metricsSteps = map[string]time.Duration{"1m": time.Minute, "5m": 5 * time.Mi
 // targetSettingKeys - какие настройки задаются машине какого вида.
 var targetSettingKeys = map[string][]string{
 	"exit":  {store.SettingAddress, store.SettingBridgeSocks},
-	"relay": {store.SettingAddress, store.SettingWebDomains},
+	"relay": {store.SettingAddress, store.SettingWebDomains, store.SettingRelayPathsManaged},
 	"panel": {"inbound_id", "node_id", "port", "node_code"},
 }
 
@@ -151,6 +151,10 @@ func checkTargetSettings(kind string, patch map[string]string) error {
 		case store.SettingBridgeSocks:
 			if err := agentjoin.ValidBridgeSocks(v); err != nil {
 				return err
+			}
+		case store.SettingRelayPathsManaged:
+			if v != "0" && v != "1" {
+				return fmt.Errorf("%s: допустимы 0 и 1", k)
 			}
 		case "inbound_id", "node_id", "port":
 			n, err := strconv.Atoi(v)

@@ -43,6 +43,12 @@ import (
 // BridgeHeader - заголовок с кодом выхода в каждом запросе моста к мастеру (R1.1).
 const BridgeHeader = "X-Telemux-Bridge"
 
+// Заголовки доставки списка путей от мастера агенту через мост.
+const (
+	AcceptRelayMastersHeader = "X-Telemux-Accept-Relay-Masters"
+	RelayMastersHeader       = "X-Telemux-Relay-Masters"
+)
+
 // bridgeCodeRe - код выхода (как код машины): иное в заголовок не ставится.
 var bridgeCodeRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
@@ -322,6 +328,10 @@ func (b *Bridge) forward(ctx context.Context, method, pathQuery, token string, b
 
 // forwardErr - forward и текст последней ошибки мастера (пусто - ответ по делу).
 func (b *Bridge) forwardErr(ctx context.Context, method, pathQuery, token string, body []byte) (*upstream, string) {
+	return b.forwardRequest(ctx, method, pathQuery, token, body, false)
+}
+
+func (b *Bridge) forwardRequest(ctx context.Context, method, pathQuery, token string, body []byte, wantRelayMasters bool) (*upstream, string) {
 	var notMaster *upstream
 	lastErr := "адрес мастера не задан"
 	for _, base := range b.cfg.MasterURLs {
@@ -332,6 +342,9 @@ func (b *Bridge) forwardErr(ctx context.Context, method, pathQuery, token string
 		req.Header.Set("Authorization", "Bearer "+token)
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
+		}
+		if wantRelayMasters {
+			req.Header.Set(AcceptRelayMastersHeader, "1")
 		}
 		b.markBridge(req)
 		resp, err := b.client.Do(req)
@@ -488,7 +501,8 @@ func (b *Bridge) handleDesired(w http.ResponseWriter, r *http.Request) {
 	key := hashToken(token)
 	target := r.URL.Query().Get("target")
 
-	up, lastErr := b.forwardErr(r.Context(), http.MethodGet, "/v1/desired?"+r.URL.RawQuery, token, nil)
+	wantRelayMasters := r.Header.Get(AcceptRelayMastersHeader) == "1"
+	up, lastErr := b.forwardRequest(r.Context(), http.MethodGet, "/v1/desired?"+r.URL.RawQuery, token, nil, wantRelayMasters)
 	if up != nil {
 		switch {
 		case up.status == http.StatusOK:
@@ -514,6 +528,11 @@ func (b *Bridge) handleDesired(w http.ResponseWriter, r *http.Request) {
 		b.touch(key, masterErrOf(up, lastErr))
 		if ct := up.header.Get("Content-Type"); ct != "" {
 			w.Header().Set("Content-Type", ct)
+		}
+		if wantRelayMasters && (up.status == http.StatusOK || up.status == http.StatusNotModified) {
+			if paths := up.header.Get(RelayMastersHeader); paths != "" {
+				w.Header().Set(RelayMastersHeader, paths)
+			}
 		}
 		w.WriteHeader(up.status)
 		_, _ = w.Write(up.body)

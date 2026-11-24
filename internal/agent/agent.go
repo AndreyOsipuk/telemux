@@ -39,14 +39,15 @@ const (
 
 // Config - настройки агента.
 type Config struct {
-	MasterURLs []string // адреса мастера по приоритету; "адрес|прокси" - через свой туннель (socks5://...)
-	MasterPin  string   // sha256 сертификата мастера для https-адресов (закрепление)
-	Token      string   // токен машины
-	Target     string   // код машины
-	Version    string   // версия агента для отчёта
-	Via        string   // через какой мост ходит агент (для отчёта), необязательно
-	UsersFile  string   // путь к users.toml на машине; пусто - telemt.users не ведётся
-	MtgFile    string   // путь к config.toml mtg-multi; пусто - mtg.config не ведётся
+	MasterURLs      []string // адреса мастера по приоритету; "адрес|прокси" - через свой туннель (socks5://...)
+	RelayPathsCache string   // путь к кэшу подтверждённых путей релея; пусто - только память
+	MasterPin       string   // sha256 сертификата мастера для https-адресов (закрепление)
+	Token           string   // токен машины
+	Target          string   // код машины
+	Version         string   // версия агента для отчёта
+	Via             string   // через какой мост ходит агент (для отчёта), необязательно
+	UsersFile       string   // путь к users.toml на машине; пусто - telemt.users не ведётся
+	MtgFile         string   // путь к config.toml mtg-multi; пусто - mtg.config не ведётся
 
 	MtgSecondaryFile    string // отдельный config.toml второго процесса mtg на релее
 	MtgSecondaryApplier *MtgApplier
@@ -77,7 +78,12 @@ type Config struct {
 // Agent - агент одной машины.
 type Agent struct {
 	cfg     Config
-	masters []master
+	masters []master // неизменяемый стартовый список
+
+	relayPathsEnabled bool // настроен стартовый SOCKS или есть принятый кэш
+	relayPathsMu      sync.RWMutex
+	relayPaths        []relayPath // nil - мастер не прислал список
+	relayMasters      []master
 
 	mu        sync.Mutex
 	known     int64                     // последняя полученная ревизия
@@ -93,6 +99,7 @@ type Agent struct {
 
 // master - адрес мастера и HTTP-клиент со своим прокси (туннелем).
 type master struct {
+	entry  string
 	base   string
 	client *http.Client
 }
@@ -100,6 +107,10 @@ type master struct {
 func parseMaster(entry string, timeout time.Duration, pin string) (master, error) {
 	base, proxy, hasProxy := strings.Cut(entry, "|")
 	m := master{base: strings.TrimRight(strings.TrimSpace(base), "/")}
+	m.entry = m.base
+	if hasProxy {
+		m.entry += "|" + strings.TrimSpace(proxy)
+	}
 	if u, err := url.Parse(m.base); err != nil || u.Scheme == "" || u.Host == "" {
 		return m, fmt.Errorf("адрес мастера %q: нужен вид http://host:port", base)
 	}
@@ -210,6 +221,8 @@ func New(cfg Config) (*Agent, error) {
 		}
 		a.masters = append(a.masters, m)
 	}
+	a.loadRelayPaths()
+	a.relayPathsEnabled = a.relayPaths != nil || hasBootstrapRelayPath(a.masters)
 	return a, nil
 }
 
@@ -246,9 +259,7 @@ func (a *Agent) Run(ctx context.Context) {
 	if a.cfg.Runtime != nil && a.cfg.RuntimeEvery > 0 {
 		go a.runtimeLoop(ctx) // своим тикером: не ждёт long-poll и отчёт observed
 	}
-	if len(a.masters) > 1 {
-		go a.probeLoop(ctx) // своим тикером: не зависит от runtime-цикла и его пауз (U17)
-	}
+	go a.probeLoop(ctx) // позднее мастер может добавить пути; цикл сам пропускает пустой список
 	backoff := 2 * time.Second
 	for ctx.Err() == nil {
 		if _, err := a.RunOnce(ctx); err != nil {
@@ -273,7 +284,7 @@ func (a *Agent) RunOnce(ctx context.Context) (int64, error) {
 	a.mu.Unlock()
 
 	var errs []error
-	for _, m := range a.masters {
+	for _, m := range a.controlMasters() {
 		bundle, changed, err := a.poll(ctx, m, known)
 		if err != nil {
 			var fatal *fatalError
@@ -322,6 +333,9 @@ func (a *Agent) poll(ctx context.Context, m master, known int64) (store.Bundle, 
 		return b, false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+a.cfg.Token)
+	if a.relayPathsEnabled {
+		req.Header.Set(relayPathsAcceptHeader, "1")
+	}
 	resp, err := m.client.Do(req)
 	if err != nil {
 		return b, false, err
@@ -332,8 +346,10 @@ func (a *Agent) poll(ctx context.Context, m master, known int64) (store.Bundle, 
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&b); err != nil {
 			return b, false, fmt.Errorf("бандл не читается: %w", err)
 		}
+		a.acceptRelayPaths(ctx, resp.Header.Get(relayPathsHeader))
 		return b, true, nil
 	case http.StatusNotModified:
+		a.acceptRelayPaths(ctx, resp.Header.Get(relayPathsHeader))
 		return b, false, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return b, false, &fatalError{fmt.Sprintf("мастер отверг токен машины %q: %d", a.cfg.Target, resp.StatusCode)}

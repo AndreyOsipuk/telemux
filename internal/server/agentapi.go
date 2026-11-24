@@ -22,6 +22,7 @@ type AgentStore interface {
 	AgentTargetByToken(ctx context.Context, token string) (code string, enabled bool, err error)
 	MaxRevision(ctx context.Context, target string) (int64, error)
 	DesiredBundle(ctx context.Context, target string) (store.Bundle, error)
+	RelayMasterTargets(ctx context.Context, relay string) (bool, []store.Target, error)
 	RecordObserved(ctx context.Context, rep store.ObservedReport) error
 	// RecordRelayVia - отчёт агента пришёл через мост выхода bridge (R3.1);
 	// не выход - store.ErrUnknownBridge.
@@ -160,6 +161,7 @@ func (s *Server) routesAgents() {
 					s.writeStoreErr(w, err)
 					return
 				}
+				s.writeRelayMasters(w, r, code)
 				writeJSON(w, b)
 				return
 			}
@@ -167,6 +169,7 @@ func (s *Server) routesAgents() {
 			case <-woken:
 			case <-poll.C:
 			case <-deadline.C:
+				s.writeRelayMasters(w, r, code)
 				w.WriteHeader(http.StatusNotModified)
 				return
 			case <-r.Context().Done():

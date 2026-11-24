@@ -643,7 +643,7 @@ export interface paths {
          *     `web_domains` и адрес релея). Допустимые ключи - по виду машины, проверка - как при
          *     добавлении: выход - `address` (публичный IPv4), `bridge_socks`
          *     (`socks5://127.0.0.1:<порт>`); релей - `address` (IP машины) и `web_domains` (домены
-         *     через запятую); вход панели - `inbound_id`, `node_id`,
+         *     через запятую), `relay_paths_managed` (0 или 1); вход панели - `inbound_id`, `node_id`,
          *     `port` (целые больше 0) и `node_code`. Чужой или неверный ключ - 400 `bad_setting`,
          *     неизвестное поле тела - 400.
          *     Выключенной машине не публикуются новые ревизии (публикация ресурса ей - 409
@@ -877,6 +877,12 @@ export interface paths {
          *     (максимум 60 с) и возвращает 304. Токен машины даёт доступ только к её бандлу.
          *     Выключенная машина (`enabled: false`) новых ревизий не получает: запрос ждёт
          *     до `wait` и возвращает 304; отчёты `/v1/observed` и `/v1/runtime` она шлёт как обычно.
+         *     Включённый релей с `settings.relay_paths_managed=1` получает от лидера
+         *     список путей, если запрошен заголовок `X-Telemux-Accept-Relay-Masters`.
+         *     Формат списка - base64url без padding от JSON с полем `paths`, в каждом
+         *     элементе есть `exit` (код выхода) и `master` (HTTP-адрес и SOCKS через |).
+         *     Пустой список снимает активные пробы. При отсутствии заголовка агент
+         *     сохраняет последний принятый список.
          */
         get: operations["getDesired"];
         put?: never;
@@ -2995,7 +3001,9 @@ export interface operations {
                 rev: number;
                 wait?: string;
             };
-            header?: never;
+            header?: {
+                "X-Telemux-Accept-Relay-Masters"?: "1";
+            };
             path?: never;
             cookie?: never;
         };
@@ -3004,6 +3012,7 @@ export interface operations {
             /** @description Бандл новее известной агенту ревизии */
             200: {
                 headers: {
+                    "X-Telemux-Relay-Masters"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -3013,6 +3022,7 @@ export interface operations {
             /** @description Новее нет */
             304: {
                 headers: {
+                    "X-Telemux-Relay-Masters"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;

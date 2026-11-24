@@ -15,7 +15,8 @@ package agent
 // процессы-потомки агента (запрет setuid и файловых capabilities); systemd-run ни
 // того, ни другого не требует (агент и так root), а временный юнит - потомок PID 1,
 // а не агента, флаг он не наследует. Окружение агента юнит тоже не наследует - отсюда
-// EnvironmentFile с тем же agent.env.
+// EnvironmentFile с тем же agent.env. Список путей из реестра при его наличии
+// передаётся через --master, который имеет приоритет над окружением.
 //
 // Ревизия stack - разовая команда: агент запускает обновление по ревизии один раз и
 // помнит её итог. Перепроверка той же ревизии (раз в RecheckEvery) только сравнивает
@@ -78,7 +79,8 @@ type StackJob struct {
 	Product  string
 	Binary   stack.Binary
 	Revision int64
-	Bin      string // абсолютный путь
+	Bin      string   // абсолютный путь
+	Masters  []string // текущие пути, если мастер прислал список из реестра
 }
 
 func (s *StackApplier) defaults() {
@@ -108,7 +110,7 @@ func (s *StackApplier) Command(j StackJob) (string, []string, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("путь к бинарю telemux: %w", err)
 	}
-	return "systemd-run", []string{
+	args := []string{
 		"--wait", "--pipe", "--collect", "--quiet",
 		"--unit=telemux-stack-" + j.Product + "-" + strconv.FormatInt(j.Revision, 10),
 		"-p", "EnvironmentFile=" + s.EnvFile,
@@ -119,7 +121,11 @@ func (s *StackApplier) Command(j StackJob) (string, []string, error) {
 		"--version", j.Binary.Version,
 		"--size", strconv.FormatInt(j.Binary.Size, 10),
 		"--bin", j.Bin,
-	}, nil
+	}
+	if len(j.Masters) > 0 {
+		args = append(args, "--master", strings.Join(j.Masters, ","))
+	}
+	return "systemd-run", args, nil
 }
 
 // Update обновляет продукт и ждёт результата. Ошибка - с хвостом вывода stack-apply.
@@ -278,7 +284,7 @@ func (a *Agent) applyStack(ctx context.Context, d *store.Desired) ApplyResult {
 			continue
 		}
 		a.cfg.Log.Info("агент: обновление продукта", "product", s.product, "from", s.current, "to", s.want.Version)
-		j := StackJob{Product: s.product, Binary: s.want, Revision: d.Revision, Bin: s.bin}
+		j := StackJob{Product: s.product, Binary: s.want, Revision: d.Revision, Bin: s.bin, Masters: a.stackMasterURLs()}
 		if err := a.cfg.StackApplier.Update(ctx, j); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: обновление до %s не удалось: %v", s.product, s.want.Version, err))
 			continue

@@ -140,6 +140,7 @@ func runAgent(args []string) int {
 	masterPin := fs.String("master-pin", envOr("TELEMUX_AGENT_MASTER_PIN", ""), "sha256 сертификата мастера для https-адресов")
 	tokenFile := fs.String("token-file", envOr("TELEMUX_AGENT_TOKEN_FILE", "/etc/telemux/agent.token"), "файл с токеном машины")
 	target := fs.String("target", envOr("TELEMUX_AGENT_TARGET", ""), "код этой машины")
+	pathsCache := fs.String("relay-paths-cache", envOr("TELEMUX_AGENT_RELAY_PATHS_CACHE", agent.DefaultRelayPathsCache), "кэш подтверждённых путей релея; none - только память")
 	usersFile := fs.String("users-file", envOr("TELEMUX_AGENT_USERS_FILE", "/etc/telemt/users.toml"), "users.toml на машине; none - telemt на машине нет")
 	mtgFile := fs.String("mtg-file", envOr("TELEMUX_AGENT_MTG_FILE", "none"), "config.toml mtg-multi; none - mtg не ведётся")
 	mtgStats := fs.String("mtg-stats-url", envOr("TELEMUX_AGENT_MTG_STATS_URL", "http://127.0.0.1:8081/stats"), "/stats mtg-multi (secrets_sha256)")
@@ -234,7 +235,11 @@ func runAgent(args []string) int {
 			mtgApplier = &agent.MtgApplier{StatsURL: *mtgStats, Service: agent.SystemdMtg{Unit: *mtgUnit}, HotReload: *mtgHot}
 		}
 	}
+	if *pathsCache == "none" {
+		*pathsCache = ""
+	}
 	a, err := agent.New(agent.Config{
+		RelayPathsCache:  *pathsCache,
 		MtgSecondaryFile: *secondaryFile, MtgSecondaryApplier: secondaryApplier,
 		Applier: applier, MtgApplier: mtgApplier, MtgFile: *mtgFile, MasterPin: *masterPin,
 		TelemtConfigFile: mainFile, TelemtLocalFile: *localConfig, ConfigApplier: configApplier,

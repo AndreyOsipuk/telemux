@@ -887,7 +887,8 @@ func (a *Agent) SendRuntime(ctx context.Context) error {
 	}
 	var errs []error
 	unsupported := 0
-	for _, m := range a.masters {
+	masters := a.controlMasters()
+	for _, m := range masters {
 		req, err := http.NewRequestWithContext(tctx, http.MethodPost, m.base+"/v1/runtime", bytes.NewReader(body))
 		if err != nil {
 			return err
@@ -916,7 +917,7 @@ func (a *Agent) SendRuntime(ctx context.Context) error {
 			return fmt.Errorf("%s отверг отчёт: %d %s", m.base, resp.StatusCode, bytes.TrimSpace(msg))
 		}
 	}
-	if unsupported > 0 && unsupported == len(a.masters) {
+	if unsupported > 0 && unsupported == len(masters) {
 		return fmt.Errorf("%w: %w", ErrRuntimeUnsupported, errors.Join(errs...))
 	}
 	return fmt.Errorf("ни один мастер не принял runtime-отчёт: %w", errors.Join(errs...))
@@ -948,14 +949,15 @@ func (a *Agent) probeLoop(ctx context.Context) {
 // релею с несколькими своими нодами: агент ходит к мастеру через первую доступную,
 // и без пробы мост второй ноды релея не видел бы (пара навсегда relay_silent,
 // спецификация relay-via-exit, U1). Ответ не используется: новые ревизии агент
-// берёт своим long-poll. С одним адресом - ничего.
+// берёт своим long-poll. Для стартового списка с одним адресом отдельной пробы нет.
 func (a *Agent) ProbeMasters(ctx context.Context) {
-	if len(a.masters) < 2 {
+	masters := a.probeMasters()
+	if len(masters) == 0 {
 		return
 	}
 	q := url.Values{"target": {a.cfg.Target}, "rev": {strconv.FormatInt(a.knownRev(), 10)}, "wait": {"0s"}}
 	var wg sync.WaitGroup
-	for _, m := range a.masters {
+	for _, m := range masters {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
