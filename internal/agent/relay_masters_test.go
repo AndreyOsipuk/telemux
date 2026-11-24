@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -307,5 +308,30 @@ func TestRelayMastersRejectBridgeWithoutAuthorizedMaster(t *testing.T) {
 	err = a.updateRelayPaths(context.Background(), relayPathHeaderForTest(t, relayPath{Exit: "ps1", Master: masterURL}))
 	if err == nil || !strings.Contains(err.Error(), "HTTP 403") || a.relayPaths != nil {
 		t.Fatalf("релей принял путь без доступа к мастеру: %v", err)
+	}
+}
+
+func TestRelayMastersRejectCachedMasterResponse(t *testing.T) {
+	for _, code := range []int{http.StatusOK, http.StatusNotModified} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/relays" {
+					_, _ = io.WriteString(w, `{"bridge":"ps1"}`)
+					return
+				}
+				w.Header().Set("X-Telemux-From-Cache", "1")
+				w.WriteHeader(code)
+			}))
+			defer server.Close()
+			addr := testRelayMasterURL(t, server)
+			a, err := New(Config{MasterURLs: []string{addr}, Target: "pr1", Token: "test", Mode: ModeCompare})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = a.updateRelayPaths(context.Background(), relayPathHeaderForTest(t, relayPath{Exit: "ps1", Master: addr}))
+			if err == nil || a.relayPaths != nil {
+				t.Fatalf("агент принял путь по кэшу моста: %v", err)
+			}
+		})
 	}
 }

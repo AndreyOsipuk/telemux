@@ -564,6 +564,7 @@ func (b *Bridge) handleDesired(w http.ResponseWriter, r *http.Request) {
 	case <-r.Context().Done():
 		return
 	}
+	w.Header().Set("X-Telemux-From-Cache", "1")
 	w.WriteHeader(http.StatusNotModified)
 }
 

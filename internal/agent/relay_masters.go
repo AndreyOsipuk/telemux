@@ -310,6 +310,9 @@ func (a *Agent) verifyRelayPath(ctx context.Context, exit string, m master) erro
 		return fmt.Errorf("выход %s: мастер недоступен: %w", exit, err)
 	}
 	defer masterResponse.Body.Close()
+	if masterResponse.Header.Get("X-Telemux-From-Cache") == "1" {
+		return fmt.Errorf("выход %s: мост ответил из кэша, мастер не подтверждён", exit)
+	}
 	if masterResponse.StatusCode != http.StatusOK && masterResponse.StatusCode != http.StatusNotModified {
 		return fmt.Errorf("выход %s: мастер ответил HTTP %d", exit, masterResponse.StatusCode)
 	}

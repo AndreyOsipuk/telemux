@@ -147,8 +147,8 @@ func TestBridge_ServesCacheWhenMasterDown(t *testing.T) {
 	}
 	// Ревизия в кэше не новее известной - 304 после короткой паузы.
 	start := time.Now()
-	if rec := get(b, "relay-tok", "3"); rec.Code != http.StatusNotModified {
-		t.Fatalf("ждали 304, получили %d", rec.Code)
+	if rec := get(b, "relay-tok", "3"); rec.Code != http.StatusNotModified || rec.Header().Get("X-Telemux-From-Cache") != "1" {
+		t.Fatalf("ждали 304 из кэша, получили %d, marker=%q", rec.Code, rec.Header().Get("X-Telemux-From-Cache"))
 	}
 	if time.Since(start) < 25*time.Millisecond {
 		t.Fatal("без новой ревизии мост должен выдержать паузу, а не гнать агента по кругу")
