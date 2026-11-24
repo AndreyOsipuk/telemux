@@ -111,14 +111,14 @@ var metricsSteps = map[string]time.Duration{"1m": time.Minute, "5m": 5 * time.Mi
 
 // targetSettingKeys - какие настройки задаются машине какого вида.
 var targetSettingKeys = map[string][]string{
-	"exit":  {store.SettingAddress, store.SettingBridgeSocks},
-	"relay": {store.SettingAddress, store.SettingWebDomains, store.SettingRelayPathsManaged},
+	"exit":  {store.SettingAddress, store.SettingBridgeSocks, store.SettingMaintenanceUntil},
+	"relay": {store.SettingAddress, store.SettingWebDomains, store.SettingRelayPathsManaged, store.SettingMaintenanceUntil},
 	"panel": {"inbound_id", "node_id", "port", "node_code"},
 }
 
 // checkTargetSettings проверяет изменённые настройки машины вида kind так же, как
 // при добавлении машины. Удалить (пустое значение) можно только web_domains и
-// адрес релея: без адреса и socks-входа выход теряет мост, вход панели - привязку.
+// адрес релея, а также завершить объявленное окно обслуживания.
 func checkTargetSettings(kind string, patch map[string]string) error {
 	allowed := targetSettingKeys[kind]
 	keys := make([]string, 0, len(patch))
@@ -135,7 +135,7 @@ func checkTargetSettings(kind string, patch map[string]string) error {
 			return fmt.Errorf("%q не задаётся машине вида %s (допустимы: %s)", k, kind, strings.Join(allowed, ", "))
 		}
 		if v == "" {
-			if k == store.SettingWebDomains || (kind == "relay" && k == store.SettingAddress) {
+			if k == store.SettingWebDomains || k == store.SettingMaintenanceUntil || (kind == "relay" && k == store.SettingAddress) {
 				continue
 			}
 			return fmt.Errorf("%s нельзя удалить, только заменить", k)
@@ -151,6 +151,12 @@ func checkTargetSettings(kind string, patch map[string]string) error {
 		case store.SettingBridgeSocks:
 			if err := agentjoin.ValidBridgeSocks(v); err != nil {
 				return err
+			}
+		case store.SettingMaintenanceUntil:
+			until, err := time.Parse(time.RFC3339Nano, v)
+			now := time.Now()
+			if err != nil || !until.After(now) || until.Sub(now) > store.MaxMaintenanceDuration {
+				return fmt.Errorf("%s: нужен будущий срок RFC3339 не дальше %s", k, store.MaxMaintenanceDuration)
 			}
 		case store.SettingRelayPathsManaged:
 			if v != "0" && v != "1" {
@@ -173,11 +179,22 @@ func checkTargetSettings(kind string, patch map[string]string) error {
 
 // targetPatchBody - тело PUT /api/v1/targets/{code} (схема TargetPatch).
 type targetPatchBody struct {
-	Enabled  *bool             `json:"enabled"`
-	Settings map[string]string `json:"settings"`
+	Enabled                  *bool             `json:"enabled"`
+	Settings                 map[string]string `json:"settings"`
+	ExpectedMaintenanceUntil *string           `json:"expected_maintenance_until"`
 }
 
 func (b targetPatchBody) validate() error {
+	if expected := b.ExpectedMaintenanceUntil; expected != nil {
+		if _, ok := b.Settings[store.SettingMaintenanceUntil]; !ok {
+			return errors.New("expected_maintenance_until требует settings.maintenance_until")
+		}
+		if *expected != "" {
+			if _, err := time.Parse(time.RFC3339Nano, *expected); err != nil {
+				return errors.New("expected_maintenance_until: нужен срок RFC3339 или пустая строка")
+			}
+		}
+	}
 	if b.Enabled == nil && b.Settings == nil {
 		return errors.New("нужно enabled и (или) settings")
 	}
@@ -439,7 +456,9 @@ func (s *Server) routesMachineOps() {
 		if body.Settings != nil {
 			check = func(kind string, _ map[string]string) error { return checkTargetSettings(kind, body.Settings) }
 		}
-		t, err := s.deps.Ops.UpdateTarget(r.Context(), code, store.TargetPatch{Enabled: body.Enabled, Settings: body.Settings}, check)
+		t, err := s.deps.Ops.UpdateTarget(r.Context(), code, store.TargetPatch{
+			Enabled: body.Enabled, Settings: body.Settings, ExpectedMaintenanceUntil: body.ExpectedMaintenanceUntil,
+		}, check)
 		if errors.Is(err, store.ErrUnknownTarget) {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("нет машины %q", code), s.deps.Log)
 			return

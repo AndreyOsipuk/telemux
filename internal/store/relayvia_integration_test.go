@@ -576,7 +576,7 @@ func TestIntegration_RelayVia_PairStateRelayDeletedConcurrently(t *testing.T) {
 	defer st.Close()
 	ctx := context.Background()
 	pairsAlive(t, st)
-	g, err := st.loadRelayGraph(ctx, st.pool)
+	g, err := st.loadRelayGraph(ctx, st.pool, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

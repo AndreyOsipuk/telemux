@@ -208,18 +208,22 @@ func fillRelayStatus(p *Pair, now time.Time) {
 
 // relayGraph - релеи и выходы флота для детектора: релей -> его свои ноды.
 type relayGraph struct {
-	relays []Machine
-	exits  map[string][]Machine // код релея -> выходы с relay_code = релей, по коду
+	relays  []Machine
+	exits   map[string][]Machine // код релея -> выходы с relay_code = релей, по коду
+	planned map[string]bool      // включённые машины с действующим окном обслуживания
 }
 
 // loadRelayGraph читает релеи и выходы в транзакции детектора.
-func (s *Store) loadRelayGraph(ctx context.Context, db queryer) (relayGraph, error) {
-	g := relayGraph{exits: map[string][]Machine{}}
+func (s *Store) loadRelayGraph(ctx context.Context, db queryer, now time.Time) (relayGraph, error) {
+	g := relayGraph{exits: map[string][]Machine{}, planned: map[string]bool{}}
 	list, err := s.queryMachines(ctx, db, `WHERE t.kind IN ('relay', 'exit') ORDER BY t.code`)
 	if err != nil {
 		return g, err
 	}
 	for _, m := range list {
+		if m.Enabled && m.inMaintenance(now) {
+			g.planned[m.Code] = true
+		}
 		switch m.Kind {
 		case "relay":
 			g.relays = append(g.relays, m)
@@ -230,6 +234,14 @@ func (s *Store) loadRelayGraph(ctx context.Context, db queryer) (relayGraph, err
 		}
 	}
 	return g, nil
+}
+
+func (g relayGraph) maintenanceTargets() []string {
+	targets := make([]string, 0, len(g.planned))
+	for code := range g.planned {
+		targets = append(targets, code)
+	}
+	return targets
 }
 
 // downRelays - коды релеев, упавших по правилу R3.3; выключенные выходы не в
@@ -273,7 +285,8 @@ func fmtUTC(t *time.Time) string {
 // состояние. Выключенные релеи и выходы и релеи без агента тревог не порождают, их
 // строки удаляются. down - релеи, упавшие по R3.3: пока релей down, пары о нём
 // молчат и хранят прежнее состояние, как при exit_down (U19) - одно падение даёт
-// одно событие down, а не ещё relay_silent по каждой своей ноде.
+// одно событие down, а не ещё relay_silent по каждой своей ноде. Для машин
+// внутри планового окна сохраняется состояние, включая чужие мосты.
 func (s *Store) detectPairEvents(ctx context.Context, tx pgx.Tx, g relayGraph, down []string, now time.Time) ([]MachineEvent, error) {
 	isDown := make(map[string]bool, len(down))
 	for _, c := range down {
@@ -323,6 +336,11 @@ func (s *Store) detectPairEvents(ctx context.Context, tx pgx.Tx, g relayGraph, d
 	}
 
 	want := map[pairKey]string{} // строки, которые должны быть после прохода
+	for key, state := range prev {
+		if g.planned[key.relay] || g.planned[key.exit] {
+			want[key] = state
+		}
+	}
 	var events []pairEvent
 	set := func(k pairKey, status string, onNew func(old string, had bool)) {
 		want[k] = status
@@ -333,7 +351,7 @@ func (s *Store) detectPairEvents(ctx context.Context, tx pgx.Tx, g relayGraph, d
 	}
 	for _, r := range g.relays {
 		// Выключенный релей и релей, где агента ещё не ставили, тревог не порождают.
-		if !r.Enabled || machineLastSeen(r) == nil {
+		if !r.Enabled || g.planned[r.Code] || machineLastSeen(r) == nil {
 			continue
 		}
 		exits := g.exits[r.Code]
@@ -344,7 +362,7 @@ func (s *Store) detectPairEvents(ctx context.Context, tx pgx.Tx, g relayGraph, d
 			})
 		}
 		for _, e := range exits {
-			if !e.Enabled {
+			if !e.Enabled || g.planned[e.Code] {
 				continue
 			}
 			k := pairKey{r.Code, e.Code}
@@ -369,7 +387,7 @@ func (s *Store) detectPairEvents(ctx context.Context, tx pgx.Tx, g relayGraph, d
 				}
 			})
 		}
-		if r.ForeignBridge != nil && *r.ForeignBridge && r.RelayVia != nil {
+		if r.ForeignBridge != nil && *r.ForeignBridge && r.RelayVia != nil && !g.planned[*r.RelayVia] {
 			via := *r.RelayVia
 			set(pairKey{r.Code, via}, EventForeignBridge, func(string, bool) {
 				events = append(events, pairEvent{r.Code, via, EventForeignBridge,

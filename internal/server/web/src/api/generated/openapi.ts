@@ -640,12 +640,19 @@ export interface paths {
          * Включить, выключить машину и поправить её настройки
          * @description Частичное обновление: `enabled` и (или) `settings`, хотя бы одно. Только мастер.
          *     `settings` сливаются с текущими: ключ с пустым значением удаляется (можно только
-         *     `web_domains` и адрес релея). Допустимые ключи - по виду машины, проверка - как при
+         *     `web_domains`, адрес релея и `maintenance_until`). Допустимые ключи - по виду машины, проверка - как при
          *     добавлении: выход - `address` (публичный IPv4), `bridge_socks`
          *     (`socks5://127.0.0.1:<порт>`); релей - `address` (IP машины) и `web_domains` (домены
          *     через запятую), `relay_paths_managed` (0 или 1); вход панели - `inbound_id`, `node_id`,
          *     `port` (целые больше 0) и `node_code`. Чужой или неверный ключ - 400 `bad_setting`,
          *     неизвестное поле тела - 400.
+         *     Выходы и релеи поддерживают `maintenance_until` - будущий срок RFC3339,
+         *     не дальше 15 минут. До истечения срока мастер сохраняет прежние состояния
+         *     тревог канала управления этой машины; клиентские пробы и ошибки применения
+         *     конфигураций продолжаются. `expected_maintenance_until` задаёт условие
+         *     обновления; пустая строка означает отсутствие действующего окна. Если
+         *     условие не выполнено или новое окно перезаписывает уже открытое без
+         *     условия, возвращается 409 `maintenance_conflict`.
          *     Выключенной машине не публикуются новые ревизии (публикация ресурса ей - 409
          *     `machine_disabled`), её нет в тревогах; агент продолжает отчитываться, а
          *     `/v1/desired` отвечает ему 304. При включении мастер публикует `telemt.users`
@@ -1040,6 +1047,11 @@ export interface components {
             /** @description Адрес машины (settings.address); null - не задан. По нему внешние системы сопоставляют свои записи с машинами */
             address?: string | null;
             enabled: boolean;
+            /**
+             * Format: date-time
+             * @description Срок планового обслуживания канала управления. После истечения срока проверки идут как обычно.
+             */
+            maintenance_until?: string;
             resources: string[];
             agent_version?: string;
             via?: string;
@@ -1616,10 +1628,12 @@ export interface components {
         };
         TargetPatch: {
             enabled?: boolean;
-            /** @description Сливаются с текущими; пустое значение удаляет ключ (только web_domains и адрес релея) */
+            /** @description Сливаются с текущими; пустое значение удаляет web_domains, адрес релея или maintenance_until. */
             settings?: {
                 [key: string]: string;
             };
+            /** @description Условие обновления settings.maintenance_until. Срок RFC3339 или пустая строка, если активного окна нет. */
+            expected_maintenance_until?: string;
         };
         Target: {
             code: string;

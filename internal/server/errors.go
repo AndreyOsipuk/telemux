@@ -152,6 +152,7 @@ var storeInputErrs = []struct {
 	{store.ErrMachineInUse, http.StatusConflict, "machine_in_use"},
 	{store.ErrMachineDisabled, http.StatusConflict, "machine_disabled"},
 	{store.ErrBadSettings, http.StatusBadRequest, "bad_setting"},
+	{store.ErrMaintenanceConflict, http.StatusConflict, "maintenance_conflict"},
 	{store.ErrStackUpdateInProgress, http.StatusConflict, "update_in_progress"},
 }
 

@@ -27,14 +27,17 @@ type Machine struct {
 	RelayCode string `json:"relay_code,omitempty"`
 	// Адрес машины (settings.address); nil - не задан. По нему внешние системы
 	// сопоставляют свои записи с машинами telemux (спека relay-via-exit, U13).
-	Address      *string           `json:"address"`
-	Enabled      bool              `json:"enabled"`
-	Resources    []string          `json:"resources"`
-	AgentVersion string            `json:"agent_version,omitempty"`
-	Via          string            `json:"via,omitempty"`
-	SeenAt       *time.Time        `json:"seen_at"`
-	Checks       []ObservedCheck   `json:"checks"`
-	Observed     []MachineResource `json:"observed"`
+	Address *string `json:"address"`
+	Enabled bool    `json:"enabled"`
+	// Срок объявленного обслуживания канала управления. Просроченный срок
+	// не мешает оценивать реальные статусы.
+	MaintenanceUntil *time.Time        `json:"maintenance_until,omitempty"`
+	Resources        []string          `json:"resources"`
+	AgentVersion     string            `json:"agent_version,omitempty"`
+	Via              string            `json:"via,omitempty"`
+	SeenAt           *time.Time        `json:"seen_at"`
+	Checks           []ObservedCheck   `json:"checks"`
+	Observed         []MachineResource `json:"observed"`
 	// Из последнего runtime-отчёта агента (пусто - отчёта нет или продукта нет).
 	TelemtVersion string     `json:"telemt_version,omitempty"`
 	MtgVersion    string     `json:"mtg_version,omitempty"`
@@ -94,6 +97,7 @@ func (s *Store) Machines(ctx context.Context, f MachineFilter, limit, offset int
 func (s *Store) queryMachines(ctx context.Context, db queryer, tail string, args ...any) ([]Machine, error) {
 	rows, err := db.Query(ctx,
 		`SELECT t.code, t.kind, COALESCE(t.relay_code, ''), NULLIF(t.settings->>'address', ''), t.enabled, t.resources,
+		        COALESCE(t.settings->>'maintenance_until', ''),
 		        COALESCE(a.agent_version, ''), COALESCE(a.via, ''), a.seen_at, COALESCE(a.checks, '[]'),
 		        COALESCE(r.telemt->>'version', ''), COALESCE(r.mtg->>'version', ''), r.seen_at,
 		        r.host, `+apiOKExpr("r.telemt")+`, `+apiOKExpr("r.mtg")+`,
@@ -115,13 +119,17 @@ func (s *Store) queryMachines(ctx context.Context, db queryer, tail string, args
 	idx := map[string]int{}
 	for rows.Next() {
 		var m Machine
-		if err := rows.Scan(&m.Code, &m.Kind, &m.RelayCode, &m.Address, &m.Enabled, &m.Resources,
+		var maintenance string
+		if err := rows.Scan(&m.Code, &m.Kind, &m.RelayCode, &m.Address, &m.Enabled, &m.Resources, &maintenance,
 			&m.AgentVersion, &m.Via, &m.SeenAt, &m.Checks,
 			&m.TelemtVersion, &m.MtgVersion, &m.RuntimeSeenAt,
 			&m.Host, &m.TelemtAPIOK, &m.MtgAPIOK, &m.Connections, &m.UsersOnline,
 			&m.RelayVia, &m.RelayViaAt, &m.ForeignBridge, &m.Bridge); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan machine: %w", err)
+		}
+		if m.Kind == "exit" || m.Kind == "relay" {
+			m.MaintenanceUntil = maintenanceTime(maintenance)
 		}
 		if m.Resources == nil {
 			m.Resources = []string{}

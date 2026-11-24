@@ -42,6 +42,8 @@ var (
 	ErrMachineInUse = errors.New("машина используется")
 	// ErrMachineDisabled - машина выключена: новые ревизии ей не публикуются.
 	ErrMachineDisabled = errors.New("машина выключена: новые ревизии ей не публикуются")
+	// ErrMaintenanceConflict - окно поменялось после проверки состояния.
+	ErrMaintenanceConflict = errors.New("окно обслуживания уже занято или изменилось")
 )
 
 // MachineInUseError - кто ссылается на машину (удаление запрещено).
@@ -78,6 +80,8 @@ type TargetPatch struct {
 	Enabled *bool
 	// Settings сливается с текущими настройками: ключ с пустым значением удаляется.
 	Settings map[string]string
+	// ExpectedMaintenanceUntil - ожидаемый срок; пустая строка означает отсутствие активного окна.
+	ExpectedMaintenanceUntil *string
 }
 
 // SettingsCheck проверяет настройки машины вида kind после слияния (ошибка - 400).
@@ -113,6 +117,9 @@ func (s *Store) UpdateTarget(ctx context.Context, code string, p TargetPatch, ch
 			if err := check(t.Kind, merged); err != nil {
 				return t, fmt.Errorf("%w: %v", ErrBadSettings, err)
 			}
+		}
+		if err := checkMaintenanceTransition(t.Settings[SettingMaintenanceUntil], p, time.Now()); err != nil {
+			return t, err
 		}
 		if err := normalizeSettings(t.Kind, merged); err != nil {
 			return t, err
@@ -380,6 +387,8 @@ func (s *Store) PruneMachineOps(ctx context.Context, metricsBefore, eventsBefore
 //   - apply_failed - агент сообщил провал применения ресурса; одно событие на
 //     ревизию ресурса (повторы отчёта и проходы детектора его не дублируют).
 //
+// Плановое окно приостанавливает down/up и события затронутых пар, сохраняя
+// прежнее состояние. Ошибки применения ресурсов идут своим потоком.
 // Одна транзакция под advisory-lock. Возвращает новые события.
 func (s *Store) DetectMachineEvents(ctx context.Context, silentAfter time.Duration) ([]MachineEvent, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -394,18 +403,20 @@ func (s *Store) DetectMachineEvents(ctx context.Context, silentAfter time.Durati
 	if err := tx.QueryRow(ctx, `SELECT now()`).Scan(&now); err != nil {
 		return nil, fmt.Errorf("alerts now: %w", err)
 	}
-	graph, err := s.loadRelayGraph(ctx, tx)
+	graph, err := s.loadRelayGraph(ctx, tx, now)
 	if err != nil {
 		return nil, err
 	}
 	downRelays := graph.downRelays(silentAfter, now)
+	maintenance := graph.maintenanceTargets()
 	rows, err := tx.Query(ctx,
 		`WITH cur AS (
 		   SELECT t.code, t.kind, GREATEST(a.seen_at, r.seen_at) AS seen
 		     FROM targets t
 		     LEFT JOIN agent_state a ON a.target = t.code
 		     LEFT JOIN agent_runtime r ON r.target = t.code
-		    WHERE t.enabled AND (a.seen_at IS NOT NULL OR r.seen_at IS NOT NULL)
+		    WHERE t.enabled AND NOT (t.code = ANY($3::text[]))
+		      AND (a.seen_at IS NOT NULL OR r.seen_at IS NOT NULL)
 		 ), st AS (
 		   INSERT INTO machine_alert_state AS s (code, down, changed_at)
 		   SELECT code,
@@ -427,7 +438,7 @@ func (s *Store) DetectMachineEvents(ctx context.Context, silentAfter time.Durati
 		   FROM st JOIN cur ON cur.code = st.code
 		  WHERE NOT (st.inserted AND NOT st.down)
 		  ORDER BY st.code
-		 RETURNING `+eventCols, silentAfter.Seconds(), downRelays)
+		 RETURNING `+eventCols, silentAfter.Seconds(), downRelays, maintenance)
 	if err != nil {
 		return nil, fmt.Errorf("тревоги down/up: %w", err)
 	}
