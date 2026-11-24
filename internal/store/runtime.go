@@ -15,8 +15,9 @@ import (
 
 // Продукты в runtime-отчёте.
 const (
-	ProductTelemt = "telemt"
-	ProductMtg    = "mtg"
+	ProductTelemt       = "telemt"
+	ProductMtg          = "mtg"
+	ProductMtgSecondary = "mtg_secondary"
 )
 
 // Виды ошибок журнала telemt (правила - как у команды /logs бота).
@@ -33,19 +34,21 @@ type RuntimeHost struct {
 	UptimeS   int64   `json:"uptime_s"`
 }
 
-// RuntimeUser - подключения одного пользователя. bytes_in, bytes_out и
-// last_seen есть только у mtg.
+// RuntimeUser - подключения пользователя. TrafficSample подтверждает наличие
+// обоих счётчиков в источнике, включая нулевые значения.
 type RuntimeUser struct {
-	Key         string     `json:"key"`
-	Connections int64      `json:"connections"`
-	ActiveIPs   []string   `json:"active_ips"`
-	BytesIn     int64      `json:"bytes_in,omitempty"`
-	BytesOut    int64      `json:"bytes_out,omitempty"`
-	LastSeen    *time.Time `json:"last_seen,omitempty"`
+	TrafficSample bool       `json:"traffic_sample,omitempty"`
+	Key           string     `json:"key"`
+	Connections   int64      `json:"connections"`
+	ActiveIPs     []string   `json:"active_ips"`
+	BytesIn       int64      `json:"bytes_in,omitempty"`
+	BytesOut      int64      `json:"bytes_out,omitempty"`
+	LastSeen      *time.Time `json:"last_seen,omitempty"`
 }
 
 // RuntimeTelemt - состояние telemt на машине.
 type RuntimeTelemt struct {
+	TrafficGeneration string        `json:"traffic_generation,omitempty"`
 	Version           string        `json:"version"`
 	APIOK             bool          `json:"api_ok"`
 	Error             string        `json:"error"`
@@ -62,11 +65,12 @@ type RuntimeTelemt struct {
 
 // RuntimeMtg - состояние mtg-multi на машине.
 type RuntimeMtg struct {
-	Version          string        `json:"version"`
-	APIOK            bool          `json:"api_ok"`
-	Error            string        `json:"error"`
-	ConnectionsTotal int64         `json:"connections_total"`
-	Users            []RuntimeUser `json:"users,omitempty"`
+	TrafficGeneration string        `json:"traffic_generation,omitempty"`
+	Version           string        `json:"version"`
+	APIOK             bool          `json:"api_ok"`
+	Error             string        `json:"error"`
+	ConnectionsTotal  int64         `json:"connections_total"`
+	Users             []RuntimeUser `json:"users,omitempty"`
 }
 
 // LogErrorItem - сколько раз ошибка вида kind встретилась у пользователя key
@@ -118,11 +122,13 @@ func (b *BridgeSummary) RelayLastSeen(code string) *time.Time {
 // на машине нет этого продукта. bridge - только у выхода с мостом (агенту задан
 // адрес моста); у остальных поля в JSON нет.
 type RuntimeReport struct {
+	ObservedAt   *time.Time        `json:"observed_at,omitempty"`
 	Target       string            `json:"target"`
 	AgentVersion string            `json:"agent_version"`
 	Host         *RuntimeHost      `json:"host"`
 	Telemt       *RuntimeTelemt    `json:"telemt"`
 	Mtg          *RuntimeMtg       `json:"mtg"`
+	MtgSecondary *RuntimeMtg       `json:"mtg_secondary,omitempty"`
 	LogErrors    *RuntimeLogErrors `json:"log_errors"`
 	Bridge       *BridgeSummary    `json:"bridge,omitempty"`
 }
@@ -130,11 +136,12 @@ type RuntimeReport struct {
 // RuntimeTables - таблицы миграции 0007, без которых мастер не стартует.
 var RuntimeTables = []string{"agent_runtime", "runtime_user_conns", "runtime_log_errors"}
 
-// CheckRuntimeSchema проверяет, что миграция 0007 применена в текущей схеме
-// (current_schema(), а не любой схеме базы): иначе /api/v1/machines и ручки
-// runtime падали бы 500 (42P01) на каждом запросе.
+// CheckRuntimeSchema проверяет миграции снимков и учёта трафика в текущей схеме.
 func (s *Store) CheckRuntimeSchema(ctx context.Context) error {
-	return s.checkTables(ctx, RuntimeTables, "migrations/0007_agent_runtime.sql")
+	if err := s.checkTables(ctx, RuntimeTables, "migrations/0007_agent_runtime.sql"); err != nil {
+		return err
+	}
+	return s.checkTables(ctx, []string{"runtime_traffic_counters", "runtime_traffic_deltas"}, "migrations/0016_runtime_traffic.sql")
 }
 
 // checkTables - есть ли в текущей схеме все таблицы tables; нет - ошибка с
@@ -218,14 +225,32 @@ func (s *Store) RecordRuntime(ctx context.Context, rep RuntimeReport) error {
 		bridgeDoc = *rep.Bridge
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO agent_runtime (target, agent_version, host, telemt, mtg, bridge, seen_at)
-		 VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7)
+		`INSERT INTO agent_runtime (target, agent_version, host, telemt, mtg, bridge, seen_at, mtg_secondary_api_ok)
+		 VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8)
 		 ON CONFLICT (target) DO UPDATE
 		   SET agent_version = EXCLUDED.agent_version, host = EXCLUDED.host,
 		       telemt = EXCLUDED.telemt, mtg = EXCLUDED.mtg, bridge = EXCLUDED.bridge,
-		       seen_at = EXCLUDED.seen_at`,
-		rep.Target, rep.AgentVersion, hostDoc, telemtDoc, mtgDoc, bridgeDoc, now); err != nil {
+		       seen_at = EXCLUDED.seen_at, mtg_secondary_api_ok = EXCLUDED.mtg_secondary_api_ok`,
+		rep.Target, rep.AgentVersion, hostDoc, telemtDoc, mtgDoc, bridgeDoc, now,
+		rep.MtgSecondary != nil && rep.MtgSecondary.APIOK); err != nil {
 		return fmt.Errorf("agent_runtime %s: %w", rep.Target, err)
+	}
+	if rep.ObservedAt != nil {
+		if t := rep.Telemt; t != nil && t.APIOK {
+			if err := recordTraffic(ctx, tx, rep.Target, ProductTelemt, t.TrafficGeneration, *rep.ObservedAt, t.Users); err != nil {
+				return err
+			}
+		}
+		for _, source := range []struct {
+			product string
+			stats   *RuntimeMtg
+		}{{ProductMtg, rep.Mtg}, {ProductMtgSecondary, rep.MtgSecondary}} {
+			if m := source.stats; m != nil && m.APIOK {
+				if err := recordTraffic(ctx, tx, rep.Target, source.product, m.TrafficGeneration, *rep.ObservedAt, m.Users); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	// Какие продукты заменяются: есть в отчёте и API ответил - новыми строками,
 	// нет в отчёте - удаляются; API не ответил - строки не трогаем.

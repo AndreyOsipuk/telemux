@@ -972,6 +972,11 @@ export interface components {
             /** Format: date-time */
             expires_at?: string | null;
             max_tcp_conns?: number | null;
+            /**
+             * Format: int64
+             * @description Страховочная квота telemt в байтах. По умолчанию 0. Ноль, null или отсутствие поля снимает квоту.
+             */
+            data_quota_bytes?: number | null;
             /** @description Старый секрет после смены ключа, действует до previous_secret_expires_at */
             previous_secret?: components["schemas"]["Secret"];
             /** Format: date-time */

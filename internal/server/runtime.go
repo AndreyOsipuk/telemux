@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/AndreyOsipuk/telemux/internal/store"
@@ -106,7 +107,7 @@ func validRuntimeUsers(product string, users []store.RuntimeUser) error {
 	}
 	seen := make(map[string]bool, len(users))
 	for _, u := range users {
-		if u.Key == "" || len(u.Key) > maxRuntimeKeyLen {
+		if u.Key == "" || len(u.Key) > maxRuntimeKeyLen || strings.ContainsRune(u.Key, 0) {
 			return fmt.Errorf("%s: у пользователя нужен ключ до %d символов", product, maxRuntimeKeyLen)
 		}
 		if seen[u.Key] {
@@ -178,6 +179,9 @@ func validBridge(b *store.BridgeSummary, now time.Time) error {
 // validateRuntime проверяет лимиты и значения отчёта (target сверяется отдельно);
 // now - время мастера для проверки периода журнала.
 func validateRuntime(rep store.RuntimeReport, now time.Time) error {
+	if rep.ObservedAt != nil && (rep.ObservedAt.IsZero() || rep.ObservedAt.After(now.Add(maxClockSkew))) {
+		return errors.New("observed_at: требуется время снимка без опережения часов мастера более чем на 5 минут")
+	}
 	if err := validText("agent_version", rep.AgentVersion); err != nil {
 		return err
 	}
@@ -185,6 +189,9 @@ func validateRuntime(rep store.RuntimeReport, now time.Time) error {
 		return err
 	}
 	if t := rep.Telemt; t != nil {
+		if err := validateTrafficSample(rep.ObservedAt, t.TrafficGeneration, t.Users); err != nil {
+			return err
+		}
 		if err := validText("telemt", t.Version, t.Error, t.TLSDomain, t.ConfigSHA256); err != nil {
 			return err
 		}
@@ -195,14 +202,24 @@ func validateRuntime(rep store.RuntimeReport, now time.Time) error {
 			return err
 		}
 	}
-	if m := rep.Mtg; m != nil {
-		if err := validText("mtg", m.Version, m.Error); err != nil {
+	for _, source := range []struct {
+		product string
+		stats   *store.RuntimeMtg
+	}{{store.ProductMtg, rep.Mtg}, {store.ProductMtgSecondary, rep.MtgSecondary}} {
+		m := source.stats
+		if m == nil {
+			continue
+		}
+		if err := validateTrafficSample(rep.ObservedAt, m.TrafficGeneration, m.Users); err != nil {
+			return fmt.Errorf("%s: %w", source.product, err)
+		}
+		if err := validText(source.product, m.Version, m.Error); err != nil {
 			return err
 		}
 		if m.ConnectionsTotal < 0 {
-			return errors.New("mtg: отрицательные счётчики")
+			return fmt.Errorf("%s: отрицательные счётчики", source.product)
 		}
-		if err := validRuntimeUsers(store.ProductMtg, m.Users); err != nil {
+		if err := validRuntimeUsers(source.product, m.Users); err != nil {
 			return err
 		}
 	}
@@ -272,6 +289,9 @@ func (s *Server) runtimePruneLoop(ctx context.Context) {
 }
 
 func (s *Server) routesRuntime() {
+	if reader, ok := s.deps.Agents.(trafficUsageReader); ok {
+		s.routesTraffic(reader)
+	}
 	// Runtime-отчёт агента: нагрузка, версии, подключения, ошибки журнала.
 	s.mux.HandleFunc("POST /v1/runtime", func(w http.ResponseWriter, r *http.Request) {
 		code := s.agentTarget(w, r)

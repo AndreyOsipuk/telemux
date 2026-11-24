@@ -141,6 +141,8 @@ func telemtAPI(t *testing.T, down *bool) *httptest.Server {
 		}
 		var data any
 		switch r.URL.Path {
+		case "/metrics":
+			return
 		case "/v1/users":
 			data = []map[string]any{
 				{"username": "placeholder", "current_connections": 9},
@@ -179,10 +181,11 @@ func newCollector(t *testing.T, telemtURL, mtgURL string) (*RuntimeCollector, *f
 	}, mtime: map[string]time.Time{"/usr/bin/telemt": now, "/usr/bin/mtg": now}}
 	fr := &fakeRunner{out: map[string]string{
 		"/usr/bin/telemt": "telemt 3.5.17\n",
+		"systemctl":       "1234567890abcdef1234567890abcdef\n",
 		"/usr/bin/mtg":    "mtg-multi 2510861 (go1.24)\n",
 	}, fail: map[string]bool{}}
 	c := &RuntimeCollector{
-		Telemt: true, Mtg: true, TelemtAPI: telemtURL, MtgStatsURL: mtgURL,
+		Telemt: true, Mtg: true, TelemtAPI: telemtURL, TelemtMetricsURL: telemtURL + "/metrics", MtgStatsURL: mtgURL,
 		UsersFile: "/etc/telemt/users.toml", CPUSampleGap: time.Millisecond,
 		Runner: fr, ReadFile: ffs.read, Stat: ffs.stat,
 		// В PATH - только бинари, у которых в фикстуре есть файл.

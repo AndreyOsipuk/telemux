@@ -124,15 +124,18 @@ func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 // RuntimeCollector собирает runtime-отчёт машины. Внешние команды, файлы и
 // /proc - через поля-функции, чтобы проверять разбор на фикстурах.
 type RuntimeCollector struct {
-	Telemt       bool   // на машине есть telemt (ресурс telemt.users)
-	Mtg          bool   // на машине есть mtg-multi (ресурс mtg.config)
-	TelemtAPI    string // по умолчанию http://127.0.0.1:9091
-	TelemtBin    string // по умолчанию telemt
-	TelemtConfig string // по умолчанию /etc/telemt/telemt.toml
-	UsersFile    string // users.toml telemt (сроки и лимиты пользователей)
-	MtgStatsURL  string // по умолчанию http://127.0.0.1:8081/stats
-	MtgBin       string // по умолчанию mtg
-	JournalUnit  string // по умолчанию telemt
+	Telemt               bool   // на машине есть telemt (ресурс telemt.users)
+	Mtg                  bool   // на машине есть mtg-multi (ресурс mtg.config)
+	TelemtAPI            string // по умолчанию http://127.0.0.1:9091
+	TelemtMetricsURL     string // по умолчанию http://127.0.0.1:9090/metrics
+	TelemtUnit           string // юнит, обслуживающий TelemtMetricsURL
+	TelemtBin            string // по умолчанию telemt
+	TelemtConfig         string // по умолчанию /etc/telemt/telemt.toml
+	UsersFile            string // users.toml telemt (сроки и лимиты пользователей)
+	MtgStatsURL          string // по умолчанию http://127.0.0.1:8081/stats
+	MtgSecondaryStatsURL string // /stats второго mtg, пусто - второй источник выключен
+	MtgBin               string // по умолчанию mtg
+	JournalUnit          string // по умолчанию telemt
 	// BridgeURL - адрес моста этого выхода (GET <BridgeURL>/v1/relays); пусто -
 	// поля bridge в отчёте нет (R2.3). BridgeTimeout - сколько ждать мост, по умолчанию 3 с.
 	BridgeURL     string
@@ -172,6 +175,12 @@ func (c *RuntimeCollector) defaults() {
 		c.TelemtAPI = "http://127.0.0.1:9091"
 	}
 	c.TelemtAPI = strings.TrimRight(c.TelemtAPI, "/")
+	if c.TelemtMetricsURL == "" {
+		c.TelemtMetricsURL = "http://127.0.0.1:9090/metrics"
+	}
+	if c.TelemtUnit == "" {
+		c.TelemtUnit = "telemt"
+	}
 	if c.TelemtBin == "" {
 		c.TelemtBin = "telemt"
 	}
@@ -232,7 +241,8 @@ func (c *RuntimeCollector) Collect(ctx context.Context, every time.Duration) sto
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.defaults()
-	rep := store.RuntimeReport{Host: c.collectHost(ctx)}
+	observedAt := c.Now().UTC()
+	rep := store.RuntimeReport{Host: c.collectHost(ctx), ObservedAt: &observedAt}
 	if c.Telemt {
 		rep.Telemt = c.collectTelemt(ctx)
 		le, err := c.collectJournal(ctx, every)
@@ -243,7 +253,10 @@ func (c *RuntimeCollector) Collect(ctx context.Context, every time.Duration) sto
 		rep.LogErrors = le
 	}
 	if c.Mtg {
-		rep.Mtg = c.collectMtg(ctx)
+		rep.Mtg = c.collectMtg(ctx, c.MtgStatsURL)
+	}
+	if c.MtgSecondaryStatsURL != "" {
+		rep.MtgSecondary = c.collectMtg(ctx, c.MtgSecondaryStatsURL)
 	}
 	if c.BridgeURL != "" {
 		rep.Bridge = c.collectBridge(ctx)
@@ -328,6 +341,7 @@ func (c *RuntimeCollector) telemtData(ctx context.Context, path string, v any) e
 type telemtAPIUser struct {
 	Username           string  `json:"username"`
 	CurrentConnections int64   `json:"current_connections"`
+	TotalOctets        *uint64 `json:"total_octets"`
 	ExpirationRFC3339  *string `json:"expiration_rfc3339"`
 }
 
@@ -342,14 +356,18 @@ func (c *RuntimeCollector) collectTelemt(ctx context.Context) *store.RuntimeTele
 	t := &store.RuntimeTelemt{Version: c.binVersion(ctx, c.TelemtBin), APIOK: true}
 	var errs []string
 
-	var users []telemtAPIUser
+	initialGeneration, trafficErr := c.telemtGeneration(ctx)
+	var users, configured []telemtAPIUser
 	var ips []telemtActiveIPs
 	if err := c.telemtData(ctx, "/v1/users", &users); err != nil {
 		t.APIOK = false
 		errs = append(errs, err.Error())
-	} else if err := c.telemtData(ctx, "/v1/stats/users/active-ips", &ips); err != nil {
-		t.APIOK = false
-		errs = append(errs, err.Error())
+	} else {
+		configured = users
+		if err := c.telemtData(ctx, "/v1/stats/users/active-ips", &ips); err != nil {
+			t.APIOK = false
+			errs = append(errs, err.Error())
+		}
 	}
 
 	// Сроки и лимиты - из users.toml (то, что telemt действительно читает).
@@ -403,6 +421,13 @@ func (c *RuntimeCollector) collectTelemt(ctx context.Context) *store.RuntimeTele
 		}
 		u.ActiveIPs = capIPs(a.ActiveIPs)
 	}
+	if trafficErr == nil {
+		t.TrafficGeneration, trafficErr = c.collectTelemtTraffic(ctx, initialGeneration, configured, byKey)
+	}
+	if trafficErr != nil {
+		c.Log.Warn("агент: счётчики трафика telemt не собраны", "err", trafficErr)
+		errs = append(errs, "трафик: "+trafficErr.Error())
+	}
 	t.Users = sortedUsers(byKey)
 
 	if data, err := c.ReadFile(c.TelemtConfig); err != nil {
@@ -439,11 +464,12 @@ func ParseTelemtSummary(cfg []byte) (keepalive, ack int, tlsDomain string) {
 // --- mtg ---
 
 type mtgStats struct {
-	TotalConnections int64 `json:"total_connections"`
+	StartedAt        time.Time `json:"started_at"`
+	TotalConnections int64     `json:"total_connections"`
 	Users            map[string]struct {
 		Connections int64    `json:"connections"`
-		BytesIn     int64    `json:"bytes_in"`
-		BytesOut    int64    `json:"bytes_out"`
+		BytesIn     *int64   `json:"bytes_in"`
+		BytesOut    *int64   `json:"bytes_out"`
 		LastSeen    *string  `json:"last_seen"`
 		ActiveIPs   []string `json:"active_ips"` // нет у старых сборок
 	} `json:"users"`
@@ -455,26 +481,41 @@ func ParseMtgStats(body []byte) (total int64, users []store.RuntimeUser, err err
 	if err := json.Unmarshal(body, &s); err != nil {
 		return 0, nil, fmt.Errorf("/stats mtg: разбор: %w", err)
 	}
-	byKey := map[string]*store.RuntimeUser{}
-	for key, u := range s.Users {
-		if u.Connections <= 0 && len(u.ActiveIPs) == 0 {
-			continue // не в сети: строка только раздует отчёт
-		}
-		byKey[key] = &store.RuntimeUser{Key: key, Connections: u.Connections, BytesIn: max(u.BytesIn, 0),
-			BytesOut: max(u.BytesOut, 0), LastSeen: parseTimePtr(u.LastSeen), ActiveIPs: capIPs(u.ActiveIPs)}
-	}
-	return max(s.TotalConnections, 0), sortedUsers(byKey), nil
+	return max(s.TotalConnections, 0), s.runtimeUsers(), nil
 }
 
-func (c *RuntimeCollector) collectMtg(ctx context.Context) *store.RuntimeMtg {
-	m := &store.RuntimeMtg{Version: c.binVersion(ctx, c.mtgBin()), APIOK: true}
-	var raw json.RawMessage
-	err := c.getJSON(ctx, c.MtgStatsURL, &raw)
-	if err == nil {
-		m.ConnectionsTotal, m.Users, err = ParseMtgStats(raw)
+func (s mtgStats) runtimeUsers() []store.RuntimeUser {
+	byKey := map[string]*store.RuntimeUser{}
+	for key, u := range s.Users {
+		trafficSample := isTrafficPilotUser(key) && u.BytesIn != nil && u.BytesOut != nil &&
+			*u.BytesIn >= 0 && *u.BytesOut >= 0
+		if u.Connections <= 0 && len(u.ActiveIPs) == 0 && !trafficSample {
+			continue
+		}
+		user := &store.RuntimeUser{Key: key, Connections: max(u.Connections, 0),
+			TrafficSample: trafficSample, LastSeen: parseTimePtr(u.LastSeen), ActiveIPs: capIPs(u.ActiveIPs)}
+		if u.BytesIn != nil {
+			user.BytesIn = max(*u.BytesIn, 0)
+		}
+		if u.BytesOut != nil {
+			user.BytesOut = max(*u.BytesOut, 0)
+		}
+		byKey[key] = user
 	}
-	if err != nil {
+	return sortedUsers(byKey)
+}
+
+func (c *RuntimeCollector) collectMtg(ctx context.Context, statsURL string) *store.RuntimeMtg {
+	m := &store.RuntimeMtg{Version: c.binVersion(ctx, c.mtgBin()), APIOK: true}
+	var stats mtgStats
+	if err := c.getJSON(ctx, statsURL, &stats); err != nil {
 		m.APIOK, m.Error = false, clip(err.Error())
+		c.Log.Warn("агент: статистика mtg не собрана", "err", err)
+		return m
+	}
+	m.ConnectionsTotal, m.Users = max(stats.TotalConnections, 0), stats.runtimeUsers()
+	if !stats.StartedAt.IsZero() {
+		m.TrafficGeneration = stats.StartedAt.UTC().Format(time.RFC3339Nano)
 	}
 	return m
 }
@@ -679,7 +720,7 @@ func capIPs(ips []string) []string {
 	return out
 }
 
-// sortedUsers - пользователи по ключу; больше лимита - отрезаются самые малые по подключениям.
+// sortedUsers ограничивает обычные строки и сохраняет все строки трафика.
 func sortedUsers(m map[string]*store.RuntimeUser) []store.RuntimeUser {
 	out := make([]store.RuntimeUser, 0, len(m))
 	for _, u := range m {
@@ -689,8 +730,7 @@ func sortedUsers(m map[string]*store.RuntimeUser) []store.RuntimeUser {
 		out = append(out, *u)
 	}
 	if len(out) > runtimeMaxUsers {
-		sort.Slice(out, func(i, j int) bool { return out[i].Connections > out[j].Connections })
-		out = out[:runtimeMaxUsers]
+		return trimUsers(out, runtimeMaxUsers)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
@@ -776,14 +816,28 @@ func (a *Agent) runtimeLoop(ctx context.Context) {
 	}
 }
 
-// trimUsers оставляет keep пользователей с наибольшим числом подключений
-// (порядок - по ключу, как у sortedUsers).
+func trafficSampleCount(users []store.RuntimeUser) int {
+	n := 0
+	for _, user := range users {
+		if user.TrafficSample {
+			n++
+		}
+	}
+	return n
+}
+
+// trimUsers сохраняет все строки трафика и заполняет оставшиеся места
+// пользователями с наибольшим числом подключений. Итоговый порядок - по ключу.
 func trimUsers(users []store.RuntimeUser, keep int) []store.RuntimeUser {
+	keep = max(keep, trafficSampleCount(users))
 	if keep >= len(users) {
 		return users
 	}
 	out := append([]store.RuntimeUser(nil), users...)
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].TrafficSample != out[j].TrafficSample {
+			return out[i].TrafficSample
+		}
 		if out[i].Connections != out[j].Connections {
 			return out[i].Connections > out[j].Connections
 		}
@@ -798,6 +852,11 @@ func trimUsers(users []store.RuntimeUser, keep int) []store.RuntimeUser {
 // сначала active_ips, затем пользователей (остаются с наибольшим connections),
 // затем строки журнала (остаются самые частые). В error продукта - пометка.
 func encodeRuntime(rep store.RuntimeReport, limit int) ([]byte, error) {
+	if (rep.Telemt != nil && len(rep.Telemt.Users) > runtimeMaxUsers) ||
+		(rep.Mtg != nil && len(rep.Mtg.Users) > runtimeMaxUsers) ||
+		(rep.MtgSecondary != nil && len(rep.MtgSecondary.Users) > runtimeMaxUsers) {
+		return nil, fmt.Errorf("runtime-отчёт превышает лимит %d строк на продукт", runtimeMaxUsers)
+	}
 	body, err := json.Marshal(rep)
 	if err != nil || len(body) <= limit {
 		return body, err
@@ -815,10 +874,12 @@ func encodeRuntime(rep store.RuntimeReport, limit int) ([]byte, error) {
 		rep.Telemt = &t
 		prods = append(prods, prod{&t.Users, &t.Error, t.Error, len(t.Users), true})
 	}
-	if rep.Mtg != nil {
-		m := *rep.Mtg
-		rep.Mtg = &m
-		prods = append(prods, prod{&m.Users, &m.Error, m.Error, len(m.Users), false})
+	for _, source := range []**store.RuntimeMtg{&rep.Mtg, &rep.MtgSecondary} {
+		if *source != nil {
+			m := **source
+			*source = &m
+			prods = append(prods, prod{&m.Users, &m.Error, m.Error, len(m.Users), false})
+		}
 	}
 	logTotal := 0
 	if rep.LogErrors != nil {
@@ -831,7 +892,7 @@ func encodeRuntime(rep store.RuntimeReport, limit int) ([]byte, error) {
 		for _, p := range prods {
 			note := "отчёт урезан до лимита мастера: без active_ips"
 			if len(*p.users) < p.total {
-				note += fmt.Sprintf(", пользователей %d из %d (с наибольшим числом подключений)", len(*p.users), p.total)
+				note += fmt.Sprintf(", пользователей %d из %d (с трафиком или наибольшим числом подключений)", len(*p.users), p.total)
 			}
 			if logCut && p.telemt {
 				note += fmt.Sprintf(", строк журнала %d из %d", len(rep.LogErrors.Items), logTotal)
@@ -856,10 +917,9 @@ func encodeRuntime(rep store.RuntimeReport, limit int) ([]byte, error) {
 		// Шаг 2: пользователей - по четверти, пока есть кого резать.
 		cut := false
 		for _, p := range prods {
-			if n := len(*p.users); n > 0 {
-				*p.users = trimUsers(*p.users, n*3/4)
-				cut = true
-			}
+			n := len(*p.users)
+			*p.users = trimUsers(*p.users, n*3/4)
+			cut = cut || len(*p.users) < n
 		}
 		if cut {
 			continue

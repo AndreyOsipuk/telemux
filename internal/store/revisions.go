@@ -164,7 +164,7 @@ func (s *Store) PublishTelemtUsers(ctx context.Context, defaultMaxConns int) (Pu
 func renderUsers(ctx context.Context, tx pgx.Tx) ([]telemtcfg.RenderUser, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT username, secret, expiration_at, max_tcp_conns,
-		        COALESCE(previous_secret, ''), previous_secret_expires_at
+		        COALESCE(previous_secret, ''), previous_secret_expires_at, data_quota_bytes
 		   FROM users WHERE enabled`)
 	if err != nil {
 		return nil, fmt.Errorf("users for render: %w", err)
@@ -173,7 +173,7 @@ func renderUsers(ctx context.Context, tx pgx.Tx) ([]telemtcfg.RenderUser, error)
 	var out []telemtcfg.RenderUser
 	for rows.Next() {
 		var u telemtcfg.RenderUser
-		if err := rows.Scan(&u.Key, &u.Secret, &u.ExpiresAt, &u.MaxTCPConns, &u.PreviousSecret, &u.PreviousSecretExpiresAt); err != nil {
+		if err := rows.Scan(&u.Key, &u.Secret, &u.ExpiresAt, &u.MaxTCPConns, &u.PreviousSecret, &u.PreviousSecretExpiresAt, &u.DataQuotaBytes); err != nil {
 			return nil, fmt.Errorf("scan user for render: %w", err)
 		}
 		out = append(out, u)
@@ -259,16 +259,17 @@ func (s *Store) UpsertUser(ctx context.Context, r ImportRow) (bool, error) {
 	var inserted bool
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO users (username, secret, expiration_at, max_tcp_conns, enabled,
-		                    previous_secret, previous_secret_expires_at)
-		 VALUES ($1, $2, $3, $4, true, NULLIF($5, ''), $6)
+		                    previous_secret, previous_secret_expires_at, data_quota_bytes)
+		 VALUES ($1, $2, $3, $4, true, NULLIF($5, ''), $6, $7)
 		 ON CONFLICT (username) DO UPDATE
 		   SET secret = EXCLUDED.secret, expiration_at = EXCLUDED.expiration_at,
 		       max_tcp_conns = EXCLUDED.max_tcp_conns, enabled = true,
 		       previous_secret = EXCLUDED.previous_secret,
 		       previous_secret_expires_at = EXCLUDED.previous_secret_expires_at,
+		       data_quota_bytes = EXCLUDED.data_quota_bytes,
 		       updated_at = now()
 		 RETURNING (xmax = 0)`,
-		r.Username, r.Secret, r.ExpirationAt, r.MaxTCPConns, r.PreviousSecret, r.PreviousSecretExpiresAt).Scan(&inserted)
+		r.Username, r.Secret, r.ExpirationAt, r.MaxTCPConns, r.PreviousSecret, r.PreviousSecretExpiresAt, r.DataQuotaBytes).Scan(&inserted)
 	if err != nil {
 		return false, fmt.Errorf("upsert user %q: %w", r.Username, err)
 	}

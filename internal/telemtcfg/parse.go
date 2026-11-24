@@ -12,10 +12,11 @@ import (
 
 // ImportedUser — юзер, разобранный из users.toml.
 type ImportedUser struct {
-	Username     string
-	Secret       string
-	ExpirationAt *time.Time
-	MaxTCPConns  *int
+	Username       string
+	Secret         string
+	ExpirationAt   *time.Time
+	MaxTCPConns    *int
+	DataQuotaBytes int64
 }
 
 // ParseUsersToml разбирает include-файл telemt с секциями:
@@ -23,6 +24,7 @@ type ImportedUser struct {
 //	[access.users]            username = "<secret-hex>"
 //	[access.user_expirations] username = "<rfc3339>"
 //	[access.user_max_tcp_conns] username = <int>
+//	[access.user_data_quota] username = <int64>
 //
 // Возвращает юзеров (ключ = username из [access.users]); срок/лимит подтягиваются
 // из своих секций по совпадению username. Незнакомые секции/строки игнорируются.
@@ -31,6 +33,7 @@ func ParseUsersToml(data string) []ImportedUser {
 	order := []string{}
 	exps := map[string]*time.Time{}
 	conns := map[string]*int{}
+	quotas := map[string]int64{}
 
 	section := ""
 	sc := bufio.NewScanner(strings.NewReader(data))
@@ -59,6 +62,11 @@ func ParseUsersToml(data string) []ImportedUser {
 				tt := t
 				exps[key] = &tt
 			}
+		case "access.user_data_quota":
+			number, _, _ := strings.Cut(val, "#")
+			if n, err := strconv.ParseInt(strings.TrimSpace(number), 0, 64); err == nil && n >= 0 {
+				quotas[key] = n
+			}
 		case "access.user_max_tcp_conns":
 			if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
 				nn := n
@@ -71,7 +79,7 @@ func ParseUsersToml(data string) []ImportedUser {
 	for _, name := range order {
 		out = append(out, ImportedUser{
 			Username: name, Secret: secrets[name],
-			ExpirationAt: exps[name], MaxTCPConns: conns[name],
+			ExpirationAt: exps[name], MaxTCPConns: conns[name], DataQuotaBytes: quotas[name],
 		})
 	}
 	return out

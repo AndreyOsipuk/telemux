@@ -77,6 +77,7 @@ func (a *auth) isPublic(path string) bool {
 		path == "/api/v1/connections" || path == "/api/v1/connections/summary" || path == "/api/v1/connections/by-user",
 		path == "/api/v1/overview",
 		path == "/api/v1/log-errors",
+		path == "/api/v1/usage",
 		path == "/api/v1/pairs",
 		path == "/api/v1/drift",
 		path == "/api/v1/certs",

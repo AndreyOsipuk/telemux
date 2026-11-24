@@ -490,7 +490,7 @@ func runImportToml(args []string) int {
 	for _, u := range parsed {
 		rows = append(rows, store.ImportRow{
 			Username: u.Username, Secret: u.Secret,
-			ExpirationAt: u.ExpirationAt, MaxTCPConns: u.MaxTCPConns,
+			ExpirationAt: u.ExpirationAt, MaxTCPConns: u.MaxTCPConns, DataQuotaBytes: u.DataQuotaBytes,
 		})
 	}
 

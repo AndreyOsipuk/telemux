@@ -1278,6 +1278,12 @@ components:
         secret: { $ref: '#/components/schemas/Secret' }
         expires_at: { type: string, format: date-time, nullable: true }
         max_tcp_conns: { type: integer, minimum: 1, nullable: true }
+        data_quota_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: Страховочная квота telemt в байтах. По умолчанию 0. Ноль, null или отсутствие поля снимает квоту.
         previous_secret:
           description: Старый секрет после смены ключа, действует до previous_secret_expires_at
           allOf: [{ $ref: '#/components/schemas/Secret' }]

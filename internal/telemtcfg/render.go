@@ -13,10 +13,11 @@ import (
 
 // RenderUser - пользователь для включаемого файла users.toml.
 type RenderUser struct {
-	Key         string     // имя в [access.users]
-	Secret      string     // 32 hex-символа
-	ExpiresAt   *time.Time // nil - без срока
-	MaxTCPConns *int       // nil - лимит по умолчанию
+	Key            string     // имя в [access.users]
+	Secret         string     // 32 hex-символа
+	ExpiresAt      *time.Time // nil - без срока
+	MaxTCPConns    *int       // nil - лимит по умолчанию
+	DataQuotaBytes int64      // 0 - без квоты
 
 	// Старый секрет после смены ключа: пишется отдельной записью <Key>_legacy
 	// со своим сроком, срок отсекает сам telemt.
@@ -40,6 +41,9 @@ var (
 // ValidateRenderUser проверяет ключ и секреты: мусор в ключе ломает TOML,
 // а с ним и весь конфиг telemt.
 func ValidateRenderUser(u RenderUser) error {
+	if u.DataQuotaBytes < 0 {
+		return fmt.Errorf("пользователь %q: data_quota_bytes должен быть неотрицательным целым", u.Key)
+	}
 	if !keyRe.MatchString(u.Key) {
 		return fmt.Errorf("ключ %q: допустимы a-z, 0-9 и _, от 1 до 64 символов", u.Key)
 	}
@@ -56,7 +60,7 @@ func ValidateRenderUser(u RenderUser) error {
 }
 
 // RenderUsersToml собирает включаемый файл telemt с секциями [access.users],
-// [access.user_max_tcp_conns] и [access.user_expirations]. Результат зависит
+// [access.user_max_tcp_conns], [access.user_expirations] и [access.user_data_quota]. Результат зависит
 // только от входных данных: записи сортируются по ключу, время не учитывается.
 // Пользователи должны пройти ValidateRenderUser.
 func RenderUsersToml(users []RenderUser, defaultMaxConns int) []byte {
@@ -64,6 +68,7 @@ func RenderUsersToml(users []RenderUser, defaultMaxConns int) []byte {
 		key, secret string
 		conns       int
 		expires     *time.Time
+		quotaBytes  int64
 	}
 	var entries []entry
 	for _, u := range users {
@@ -71,9 +76,10 @@ func RenderUsersToml(users []RenderUser, defaultMaxConns int) []byte {
 		if u.MaxTCPConns != nil {
 			conns = *u.MaxTCPConns
 		}
-		entries = append(entries, entry{u.Key, u.Secret, conns, u.ExpiresAt})
+		entries = append(entries, entry{u.Key, u.Secret, conns, u.ExpiresAt, u.DataQuotaBytes})
 		if u.PreviousSecret != "" && u.PreviousSecretExpiresAt != nil {
-			entries = append(entries, entry{u.Key + legacySuffix, u.PreviousSecret, conns, u.PreviousSecretExpiresAt})
+			// Старое имя тоже должно иметь локальный лимит, пока его секрет действителен.
+			entries = append(entries, entry{u.Key + legacySuffix, u.PreviousSecret, conns, u.PreviousSecretExpiresAt, u.DataQuotaBytes})
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
@@ -103,6 +109,16 @@ func RenderUsersToml(users []RenderUser, defaultMaxConns int) []byte {
 	if exp.Len() > 0 {
 		b.WriteString("\n[access.user_expirations]\n")
 		b.WriteString(exp.String())
+	}
+	var quotas strings.Builder
+	for _, e := range entries {
+		if e.quotaBytes > 0 {
+			fmt.Fprintf(&quotas, "%s = %d\n", e.key, e.quotaBytes)
+		}
+	}
+	if quotas.Len() > 0 {
+		b.WriteString("\n[access.user_data_quota]\n")
+		b.WriteString(quotas.String())
 	}
 	return []byte(b.String())
 }

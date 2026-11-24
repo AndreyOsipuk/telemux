@@ -35,6 +35,7 @@ type v1User struct {
 	Secret                  string     `json:"secret"`
 	ExpiresAt               *time.Time `json:"expires_at"`
 	MaxTCPConns             *int       `json:"max_tcp_conns"`
+	DataQuotaBytes          int64      `json:"data_quota_bytes"`
 	PreviousSecret          string     `json:"previous_secret"`
 	PreviousSecretExpiresAt *time.Time `json:"previous_secret_expires_at"`
 }
@@ -43,12 +44,12 @@ func (u v1User) validate() error {
 	if u.MaxTCPConns != nil && *u.MaxTCPConns < 1 {
 		return fmt.Errorf("пользователь %q: max_tcp_conns должен быть больше 0", u.Key)
 	}
-	return telemtcfg.ValidateRenderUser(telemtcfg.RenderUser{Key: u.Key, Secret: u.Secret, PreviousSecret: u.PreviousSecret})
+	return telemtcfg.ValidateRenderUser(telemtcfg.RenderUser{Key: u.Key, Secret: u.Secret, PreviousSecret: u.PreviousSecret, DataQuotaBytes: u.DataQuotaBytes})
 }
 
 func (u v1User) row() store.ImportRow {
 	return store.ImportRow{
-		Username: u.Key, Secret: u.Secret, ExpirationAt: u.ExpiresAt, MaxTCPConns: u.MaxTCPConns,
+		Username: u.Key, Secret: u.Secret, ExpirationAt: u.ExpiresAt, MaxTCPConns: u.MaxTCPConns, DataQuotaBytes: u.DataQuotaBytes,
 		PreviousSecret: u.PreviousSecret, PreviousSecretExpiresAt: u.PreviousSecretExpiresAt,
 	}
 }

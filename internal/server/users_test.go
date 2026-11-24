@@ -10,14 +10,15 @@ import (
 	"testing"
 	"time"
 
-	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 	"github.com/AndreyOsipuk/telemux/internal/store"
+	syncpkg "github.com/AndreyOsipuk/telemux/internal/sync"
 )
 
 // fakeUsers — in-memory реализация UserAdmin.
 type fakeUsers struct {
-	mu sync.Mutex
-	m  map[string]store.User
+	mu             sync.Mutex
+	m              map[string]store.User
+	lastReconciled []store.ImportRow
 }
 
 func newFakeUsers(n int) *fakeUsers {
@@ -76,6 +77,7 @@ func (f *fakeUsers) SetEnabled(_ context.Context, username string, en bool) (boo
 func (f *fakeUsers) ReconcileUsers(_ context.Context, rows []store.ImportRow, force bool) (store.ReconcileResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastReconciled = rows
 	var res store.ReconcileResult
 	current := len(f.m)
 	keep := map[string]bool{}

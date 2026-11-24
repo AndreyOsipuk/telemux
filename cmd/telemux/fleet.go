@@ -163,6 +163,7 @@ func runAgent(args []string) int {
 	recheck := fs.Duration("recheck", 5*time.Minute, "перепроверка диска без новой ревизии")
 	runtimeEvery := fs.Duration("runtime-every", envDuration("TELEMUX_AGENT_RUNTIME_EVERY", 60*time.Second), "период runtime-отчёта (нагрузка, подключения, журнал); 0 - выключить")
 	telemtAPI := fs.String("telemt-api", envOr("TELEMUX_AGENT_TELEMT_API", "http://127.0.0.1:9091"), "API telemt для runtime-отчёта")
+	telemtMetrics := fs.String("telemt-metrics-url", envOr("TELEMUX_AGENT_TELEMT_METRICS_URL", "http://127.0.0.1:9090/metrics"), "/metrics telemt для счётчиков трафика")
 	telemtBin := fs.String("telemt-bin", envOr("TELEMUX_AGENT_TELEMT_BIN", "telemt"), "бинарь telemt (версия через --version)")
 	telemtConfig := fs.String("telemt-config", envOr("TELEMUX_AGENT_TELEMT_CONFIG", "/etc/telemt/telemt.toml"), "telemt.toml для сводки в runtime-отчёте")
 	mtgBin := fs.String("mtg-bin", envOr("TELEMUX_AGENT_MTG_BIN", ""), "бинарь mtg для версии (--version); пусто - mtg-multi, если есть в PATH, иначе mtg")
@@ -250,8 +251,8 @@ func runAgent(args []string) int {
 		RuntimeEvery: *runtimeEvery,
 		Runtime: &agent.RuntimeCollector{
 			Telemt: *usersFile != "", Mtg: *mtgFile != "", UsersFile: *usersFile,
-			TelemtAPI: *telemtAPI, TelemtBin: *telemtBin, TelemtConfig: *telemtConfig,
-			MtgStatsURL: *mtgStats, MtgBin: *mtgBin, JournalUnit: *journalUnit, Log: logger,
+			TelemtAPI: *telemtAPI, TelemtMetricsURL: *telemtMetrics, TelemtUnit: *unit, TelemtBin: *telemtBin, TelemtConfig: *telemtConfig,
+			MtgStatsURL: *mtgStats, MtgSecondaryStatsURL: *secondaryStats, MtgBin: *mtgBin, JournalUnit: *journalUnit, Log: logger,
 			BridgeURL: *bridgeURL,
 		},
 	})

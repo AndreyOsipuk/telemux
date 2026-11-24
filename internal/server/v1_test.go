@@ -20,11 +20,13 @@ type fakeRevisions struct {
 	published   int
 	status      map[int64][]store.TargetStatus
 	lastContent string
+	lastUser    store.ImportRow
 }
 
 func (f *fakeRevisions) UpsertUser(_ context.Context, r store.ImportRow) (bool, error) {
 	f.users.mu.Lock()
 	defer f.users.mu.Unlock()
+	f.lastUser = r
 	_, existed := f.users.m[r.Username]
 	f.users.m[r.Username] = store.User{Username: r.Username, Secret: r.Secret, ExpirationAt: r.ExpirationAt, MaxTCPConns: r.MaxTCPConns, Enabled: true}
 	return !existed, nil
@@ -96,6 +98,39 @@ func TestV1_PutUsers_ReconcilesAndPublishes(t *testing.T) {
 	}
 	if out.Revision != 1 || out.Inserted != 2 || len(out.Changed) != 2 || fr.published != 1 {
 		t.Fatalf("ждали ревизию 1, 2 вставки, 2 машины; получили %+v, публикаций %d", out, fr.published)
+	}
+}
+
+func TestV1_PutUsers_DataQuota(t *testing.T) {
+	s, fr := v1Server(false, 0)
+	const bulkPath = "/api/v1/users"
+	const userPath = "/api/v1/users/free_1"
+	body := `{"key":"free_1","secret":"` + s1 + `","data_quota_bytes":3000000000}`
+	if rec := do(s, "PUT", bulkPath, botToken, `{"users":[`+body+`]}`); rec.Code != http.StatusOK {
+		t.Fatalf("ожидали 200, получили %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := fr.users.lastReconciled[0].DataQuotaBytes; got != 3_000_000_000 {
+		t.Fatalf("квота в reconcile = %d", got)
+	}
+	if rec := do(s, "PUT", userPath, botToken, body); rec.Code != http.StatusOK {
+		t.Fatalf("ожидали 200, получили %d: %s", rec.Code, rec.Body.String())
+	}
+	if fr.lastUser.DataQuotaBytes != 3_000_000_000 {
+		t.Fatalf("квота в upsert = %d", fr.lastUser.DataQuotaBytes)
+	}
+	for _, invalid := range []string{"-1", "1.5", "9223372036854775808", `"300"`} {
+		invalidUser := strings.Replace(body, "3000000000", invalid, 1)
+		for path, payload := range map[string]string{userPath: invalidUser, bulkPath: `{"users":[` + invalidUser + `]}`} {
+			if rec := do(s, "PUT", path, botToken, payload); rec.Code != http.StatusBadRequest {
+				t.Errorf("%s с квотой %s: ожидали 400, получили %d", path, invalid, rec.Code)
+			}
+		}
+	}
+	if fr.published != 2 {
+		t.Fatalf("публикаций = %d, ожидали 2", fr.published)
+	}
+	if rec := do(s, "PUT", userPath, botToken, `{"secret":"`+s1+`"}`); rec.Code != http.StatusOK || fr.lastUser.DataQuotaBytes != 0 {
+		t.Fatalf("отсутствующая квота: ответ %d, квота %d", rec.Code, fr.lastUser.DataQuotaBytes)
 	}
 }
 

@@ -136,3 +136,32 @@ func TestValidateRenderUser(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderUsersToml_DataQuota(t *testing.T) {
+	users := []RenderUser{
+		{Key: "paid", Secret: strings.Repeat("a", 32)},
+		{Key: "free", Secret: strings.Repeat("b", 32), PreviousSecret: strings.Repeat("c", 32),
+			PreviousSecretExpiresAt: tp("2027-01-01T00:00:00Z")},
+	}
+	baseline := string(RenderUsersToml(users, 50))
+	if strings.Contains(baseline, "[access.user_data_quota]") {
+		t.Fatal("секция квот появилась при нулевых значениях")
+	}
+
+	users[1].DataQuotaBytes = 3_000_000_000
+	rendered := string(RenderUsersToml(users, 50))
+	const quotaSection = "\n[access.user_data_quota]\nfree = 3000000000\nfree_legacy = 3000000000\n"
+	if rendered != baseline+quotaSection {
+		t.Fatalf("неожиданный users.toml:\n%s", rendered)
+	}
+
+	for _, u := range ParseUsersToml(rendered) {
+		want := int64(3_000_000_000)
+		if u.Username == "paid" {
+			want = 0
+		}
+		if u.DataQuotaBytes != want {
+			t.Errorf("квота %q после разбора = %d, ожидали %d", u.Username, u.DataQuotaBytes, want)
+		}
+	}
+}

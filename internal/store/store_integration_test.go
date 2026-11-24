@@ -27,12 +27,14 @@ func setup(t *testing.T) *Store {
 		t.Fatalf("Open: %v", err)
 	}
 	// Применяем схему (миграция идемпотентна — IF NOT EXISTS).
-	mig, err := os.ReadFile("../../migrations/0001_init.sql")
-	if err != nil {
-		t.Fatalf("чтение миграции: %v", err)
-	}
-	if _, err := st.pool.Exec(ctx, string(mig)); err != nil {
-		t.Fatalf("применение миграции: %v", err)
+	for _, path := range []string{"../../migrations/0001_init.sql", "../../migrations/0017_user_data_quota.sql"} {
+		mig, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("чтение миграции %s: %v", path, err)
+		}
+		if _, err := st.pool.Exec(ctx, string(mig)); err != nil {
+			t.Fatalf("применение миграции %s: %v", path, err)
+		}
 	}
 	if _, err := st.pool.Exec(ctx, "TRUNCATE users"); err != nil {
 		t.Fatalf("TRUNCATE: %v", err)
